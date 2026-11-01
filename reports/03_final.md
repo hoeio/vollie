@@ -116,6 +116,8 @@ throttling), recorded from app 2.1.7 on.
 | spec: story 64, draft n=4 / n=2 | tokens/eval 2.0 / 1.9 → 12-16 tok/s (adversarial text: smaller gain) | — |
 | release: RssFile after load | ≥ 300 MB lower `file=` than the normal load; official runs +0 to +8% vs baseline | `file=` unchanged (the kernel had already evicted the source pages → 0 gain) |
 
+**R17 host results after the build was frozen (measured on host, relative only).** In-generation A/B on the idle M4 (3 threads, 72-token story, µs/token A → B): `MMID 0→1` 18.36 → 18.98 ms (+3%: the per-thread quantization and map cost more than a 0.4 µs host barrier saves; `MUL_MAT_ID` wait 192 → 61 µs), `MMID 0→3` 18.23 → 18.32 (0%), `Q3K_X4` 18.28 → 17.30 (−5.4%; `MUL_MAT_ID` compute 9.00 → 8.05 ms = −10.6%), both 18.20 → 17.71 (−2.7%), `EXPERT_SKIP 80` 18.32 → 17.82 (−2.7%, 5% of experts skipped), `EXPERT_SKIP 100` 18.31 → 16.71 (−8.7%, 17% skipped). Full wikitext-2: skip < 0.08 → **9.6061 (+0.01%)**, skip < 0.10 → **9.6834 (+0.82%, over the +0.5% working tolerance)**; renormalising the remaining weights made it worse on 60 chunks (0.06: 9.845 → 9.917), so the kit tests skipping without it.
+
 **Why are the experts slow on the phone? (open, R8 → R9).** First guess: IQ4_XS is costly to decode
 on the A78. Tested on host (1 thread, warm, repack off for both): IQ4_XS experts 14.0 ms for ~251 MB,
 Q4_0/Q4_1 experts 11.7 ms for ~213 MB, i.e. the same cost per byte (17.9 vs 18.3 GB/s-equivalent). So a
