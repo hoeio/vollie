@@ -11,7 +11,7 @@ Scripts that produced every number in `reports/`. They expect the lab workspace 
 | `host_bench.sh <tag> <model.gguf>` | host CPU-only `llama-bench` with the app's settings (FA, q8_0 KV), appends to `bench.csv`; relative numbers only |
 | `cost.py <model.gguf>` | bytes read per token, active parameters, state size, from the GGUF |
 | `sd888_estimate.py` | the bandwidth model used for estimates (superseded by device measurements, kept for the record) |
-| `layer_k_sweep.sh` | per-layer expert-count sensitivity on the wikitext-2 *validation* split |
+| `layer_k_sweep.sh` | per-layer expert-count sensitivity on the wikitext-2 *validation* split (needs `patches/llama.cpp/experiments`) |
 | `build_android_bench.sh`, `bench_device.sh`, `BENCH_DEVICE.md` | cross-built `llama-bench`/`llama-perplexity` and a kit to run them on a phone via adb or Termux, with a CSV result format |
 
 On a phone, Vollie's in-app speed test (`docs/tuning.md`) replaced the adb kit, since no device

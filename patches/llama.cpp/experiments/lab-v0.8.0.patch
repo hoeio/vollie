@@ -1,0 +1,70 @@
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index a963f2480..64a3e0763 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1241,8 +1241,15 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+ 
+         ggml_backend_buffer_type_t buft = nullptr;
+ 
++        // lab: LLAMA_NO_REPACK=<regex> keeps matching tensors in the plain (mmap-able) CPU buffer
++        if (const char * nr = getenv("LLAMA_NO_REPACK")) {
++            if (std::regex_search(tn.str(), std::regex(nr))) {
++                buft = ggml_backend_cpu_buffer_type();
++            }
++        }
++
+         // check overrides
+-        if (tensor_buft_overrides) {
++        if (!buft && tensor_buft_overrides) {
+             std::string tensor_name = tn.str();
+             for (const auto * overrides = tensor_buft_overrides; overrides->pattern != nullptr; ++overrides) {
+                 std::regex pattern(overrides->pattern);
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 81af8903f..da5657acf 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1413,6 +1413,14 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
+     ml.get_key(LLM_KV_EXPERT_COUNT,            hparams.n_expert,        false);
+     std::fill(hparams.n_expert_used_arr.begin(), hparams.n_expert_used_arr.end(), 0);
+     ml.get_key_or_arr(LLM_KV_EXPERT_USED_COUNT, hparams.n_expert_used_arr, hparams.n_layer_all, false);
++    // lab: LLAMA_EXPERTS_PER_LAYER="6,6,4,..." overrides the per-layer counts (missing tail = last value)
++    if (const char * e = getenv("LLAMA_EXPERTS_PER_LAYER")) {
++        uint32_t v = 0; const char * p = e;
++        for (uint32_t il = 0; il < hparams.n_layer_all; ++il) {
++            if (*p) { v = (uint32_t) strtoul(p, (char **) &p, 10); if (*p == ',') p++; }
++            hparams.n_expert_used_arr[il] = v;
++        }
++    }
+     ml.get_key(LLM_KV_EXPERT_GROUP_COUNT,      hparams.n_expert_groups, false);
+     ml.get_key(LLM_KV_EXPERT_GROUP_USED_COUNT, hparams.n_group_used,    false);
+ 
+diff --git a/src/models/granite-hybrid.cpp b/src/models/granite-hybrid.cpp
+index a752a365c..908b3270a 100644
+--- a/src/models/granite-hybrid.cpp
++++ b/src/models/granite-hybrid.cpp
+@@ -264,7 +264,8 @@ ggml_tensor * llama_model_granite_hybrid::graph::build_layer_ffn(ggml_tensor *
+                 model.layers[il].ffn_gate_exps,
+                 model.layers[il].ffn_down_exps,
+                 nullptr,
+-                n_expert, n_expert_used,
++                // per-layer count when the GGUF stores expert_used_count as an array (warmup uses all experts)
++                n_expert, n_expert_used == n_expert ? n_expert : (int64_t) hparams.n_expert_used(il),
+                 LLM_FFN_SILU, true,
+                 hparams.expert_weights_scale,
+                 LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX,
+diff --git a/tools/llama-bench/llama-bench.cpp b/tools/llama-bench/llama-bench.cpp
+index 96ae4870f..69c1431ac 100644
+--- a/tools/llama-bench/llama-bench.cpp
++++ b/tools/llama-bench/llama-bench.cpp
+@@ -2410,7 +2410,10 @@ int llama_bench(int argc, char ** argv) {
+             exit(1);
+         }
+ 
+-        llama_attach_threadpool(ctx, threadpool, NULL);
++        // lab: LLAMA_BENCH_DISPOSABLE_TP=1 mimics llamadart (no attached pool -> ggml spawns threads per decode)
++        if (!getenv("LLAMA_BENCH_DISPOSABLE_TP")) {
++            llama_attach_threadpool(ctx, threadpool, NULL);
++        }
+ 
+         // warmup run
+         if (!params.no_warmup) {

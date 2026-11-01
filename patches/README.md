@@ -30,3 +30,10 @@ For apps using the [llamadart](https://pub.dev/packages/llamadart) Flutter bindi
   weight repacking off on phones where the repacked copy doesn't fit in RAM.
 - `LlamaEngine.setThreads(threads, threadsBatch)` → `llama_set_n_threads`: change threads on a loaded
   model instead of reloading it (used for heat throttling and fast thread sweeps).
+
+## Experiments only — `llama.cpp/experiments/lab-v0.8.0.patch` (base: `experiments/BASE`, v0.8.0)
+
+Lab probes behind results in `reports/`, never shipped: per-layer expert counts for Granite (used
+by `tools/layer_k_sweep.sh`), `LLAMA_NO_REPACK` (keep chosen tensors out of the repacked copy; it
+showed 60% of the repack gain comes from the dense weights alone, which led to the D-series
+files), and a llama-bench switch for llama.cpp's per-call threadpool (no difference on host).
