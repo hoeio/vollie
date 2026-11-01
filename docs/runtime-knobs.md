@@ -23,3 +23,24 @@ cpu-prof graphs=32 threads=3 tiny=65536 eio=5 q3k=1 pred=85% us/token=98176 comp
 per op type, sorted by cost: `count per token : µs computing + µs waiting`. A page fault inside a
 kernel shows as computing time on the thread that took it; pair the line with major-fault counts
 (`/proc/self/stat`) to tell flash reads from arithmetic.
+
+## Round-1 knobs (app 2.2.6+29, research kit `r1`; see the campaign report)
+
+All off unless set; checked bit-identical at `-ub 1`, `-ub 32`, `-b 512` unless marked otherwise.
+
+| variable | values | effect | status |
+|---|---|---|---|
+| `GGML_MMID` | bit mask | one-token `MUL_MAT_ID`: **1** no barrier inside the op (each thread quantizes the activation row and builds the expert map itself); **2** 32-row chunks claimed dynamically through per-expert counters that thread 0 resets before the preceding barrier (needs 1) | bit-identical; device pending |
+| `GGML_Q3K_X4` | `1` | Q3_K expert rows four at a time sharing the activation loads (`ggml_vec_dot_q3_K_q8_K_x4`) | bit-identical; device pending |
+| `GGML_EXPERT_SKIP` | permille | an expert whose normalized routing weight is below this is not computed (its rows are zero); `GGML_EXPERT_SKIP_RENORM=1` rescales the remaining weights | **not bit-exact**; host wikitext-2 60 chunks: stock 9.870, 30 → 9.874, 60 → 9.845, 100 → 9.916, 150 (renorm) → 13.63; only ~1% of routed experts fall under 0.06 |
+| `GGML_HELPER_CPUS` | `0-3`, `0,1,2,3` | cores for the next-layer expert-guess helper thread (re-read per job; `''` = every core) | device pending |
+| `GGML_REPACK_RELEASE` | `1` (at load) | after a tensor is repacked, `MADV_PAGEOUT` (fallback `MADV_COLD`/`DONTNEED`) its memory-mapped source pages so the page cache can hold experts instead | device pending (RssFile after load) |
+| `GGML_BARRIER_BENCH` | n | once per distinct value: n empty barriers before the first op of the next one-token graph; prints `cpu-bench barriers=n threads=t us/barrier=x` | measurement |
+| `GGML_CPU_AB` | `knob:NAME:A:B[,NAME:A:B…]` | generic in-generation A/B over TINY_OP, MMID, Q3K_VEC, Q3K_X4, EXPERT_SKIP | measurement |
+| `GGML_EXPERT_LOG` | `1` | lab: prints the routed expert ids per layer per token (`eid …`) | measurement |
+
+`cpu-prof` lines now carry `x4= mmid= skip=<t>/<share>% mmid_thr=<µs per thread inside MUL_MAT_ID>`.
+
+llamadart (`patches/llamadart`): `ModelParams.speculativeRollbackTokenMax` is now accepted for recurrent/hybrid
+models (llama.cpp 620d2225c keeps `n_rs_seq` per-token recurrent snapshots and `llama_memory_seq_rm` rolls back within
+them), which lets `SpeculativeDecodingConfig.draftSimple` run on Granite 4.0 H. Each slot costs ~58 MB on Granite 4.0 H Tiny.

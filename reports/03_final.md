@@ -1,6 +1,6 @@
 # 03 — Final report and research log (living document)
 
-Last updated: **2026-11-01, app 2.2.5+28**. Each new result is appended to §5 and `results.csv`; the
+Last updated: **2026-11-02, app 2.2.6+29 (research kit r1, R17 pre-registered)**; campaign plan in `04_campaign.md`. Each new result is appended to §5 and `results.csv`; the
 summary in §1 is rewritten to match.
 
 Every speed number is labelled: **measured on device** (the user's Galaxy Z Flip 3, run by the user
@@ -93,6 +93,28 @@ throttling), recorded from app 2.1.7 on.
 | R13 | 2.2.3+26 | **next-layer expert prediction** (`GGML_EXPERT_IO` bit 4): at layer L's first expert mat-mul, a helper thread on the 4th big core applies layer L+1's router and norm weight to layer L's FFN input and prefetches the top 6 a layer early; real routing still prefetches. Sweep 0/1/5 (3 dropped) | expert I/O 0 / 1 / 5 (3t): **9.2 / 10.6 / 12.0** w, f = 2,038 / 235 / 249; small ops 65,536 3t: **12.2 w** (best so far). **Guess right 85% on the device.** Profile at 4t: 90.5 ms/token (experts 24 + 22 wait; syncs 31 ms in total) vs 126.7 ms with everything off. Test picked 4t / 9.2 w / 25 r from a low 3t outlier (8.4) | kept. At 4 threads the helper competes for a big core; writing wants 3, reading 4 |
 | R14 | 2.2.4+27 | guess 2 more experts (bit 8; host: top-8 covers 91.6% vs 83.6%), sweep 0/1/5/13; the sweep's pick counts as a timing of its thread count, each count scored by its best run (fixes the R13 pick) | picked **writes 3 / reads 4: 11.2 w / 24 r**. Expert I/O (4t) 0/1/5/13 = 6.6/11.4/9.8/9.1 w with f = 543/1,958/380/28: faults no longer track speed. Profile 3t: 98 ms, experts 34 + 17 wait (24 ms at 4t → scales with threads) | selection fix works. On a warm phone the experts are now **compute-bound in the Q3_K kernel**, and single runs vary ±20%, too much to judge the remaining options |
 | R15 | 2.2.5+28 | **faster NEON Q3_K dot** (sub-block sums kept in vectors, 4 scales per multiply-add, one horizontal add per block; bit-identical) and an **in-generation A/B** (`GGML_CPU_AB`): the module alternates a compute setting every token and splits the profile, so heat and clocks hit both sides alike. Speed test adds a Q3_K A/B reply; profile lines record core clocks | *pending* | host A/B: expert mat-muls −4% and −8% with the new kernel (end-to-end runs can't see it) |
+| R17 | 2.2.6+29 (research kit r1) | **Round 1 build, pre-registered.** CPU module: `GGML_MMID` (1 = no barrier inside `MUL_MAT_ID`, every thread quantizes the activation and builds the expert map itself; 2 = 32-row chunks claimed dynamically, counters reset by thread 0 before the preceding barrier), `GGML_Q3K_X4` (four Q3_K rows per call sharing the activation loads), `GGML_EXPERT_SKIP=<permille>` (+`_RENORM`; **not bit-exact**), `GGML_HELPER_CPUS` (expert-guess helper on the little cores), `GGML_REPACK_RELEASE` (page out the repacked tensors' mmap source after load), `GGML_BARRIER_BENCH`, generic `GGML_CPU_AB=knob:…`, per-thread `mmid_thr` in the profile. llamadart: `speculativeRollbackTokenMax` accepted on hybrids (n_rs_seq snapshots) → `draftSimple` speculation with Granite-4.0-350m Q4_0 (owner-approved, ibm-granite commit b8208a86). Kit: Settings → "Run research kit", one JSON (`tools/research_kit.md`, parser `tools/research_parse.py`) | *pending — predictions below* | bit-identical at ub 1/32/512 for MMID 1/3, X4, combined, RELEASE, HELPER (3 chunks); host A/B relative numbers in the text below |
+| R16 | — (host only) | **Campaign to 20 tok/s, Phase A/B** (`04_campaign.md`): per-token model and roofline (DRAM roofline for this file = 46.8 ms at the measured 19.7 GB/s → raw 20 tok/s sits at the roofline; realistic raw ceiling 15-17 tok/s, estimated), 30+ ideas with numbers. Two machine-independent facts measured on host with a lab-only `GGML_EXPERT_LOG` dump (D6-e6, greedy, 4 texts): **expert overlap** — distinct experts per layer over k consecutive tokens 9.0-9.3 (k=2), 11.5-11.9 (k=3), 13.5-14.1 (k=4) vs 6k independent; 45-50% of a token's experts were used by the previous token. **Prompt-lookup drafting** — 1.20-1.27 tokens per model evaluation on the official prompt, 1.01-1.17 on story/code/list (`lab/ngram_sim.py`) | no device run | n-gram speculation **falsified** (≤ +27% before verify costs); batched verification of 3-4 tokens reads 0.58-0.66 of k × 6 experts → draft-model speculation (another GGUF, owner's call) is the one route with the numbers for 20; raw-decode ideas B2/B4/C1/B5/A2 queued for round 1 |
+
+**R17 pre-registered predictions (written 2026-11-02 before the phone run; all "estimated", device scale = R14 profile, 3 threads, 98 ms/token).**
+
+| kit phase / variant | prediction | falsified if |
+|---|---|---|
+| barrier bench, 3 threads | 5-20 µs per empty barrier (4 threads 10-30); 818 + 120 barriers → 5-19 ms of the 23 ms wait is sync latency | < 2 µs (then the wait is all imbalance → B4/B6 matter, B2/B7 don't) or > 50 µs |
+| A/B `MMID:0:1` | −1 to −3 ms/token (120 fewer barriers); `MUL_MAT_ID` wait down, compute unchanged | B ≥ A |
+| A/B `MMID:0:3` | −3 to −8 ms/token; `MUL_MAT_ID` wait 16.9 → ≤ 12 ms; `mmid_thr` spread narrows | wait unchanged, or compute up by more than the wait saved |
+| A/B `Q3K_X4:0:1` | `MUL_MAT_ID` compute −10 to −20% (34 → 27-31 ms) | < −5% |
+| A/B `MMID:0:3,Q3K_X4:0:1` | −6 to −14 ms/token together (98 → 84-92 ms profile scale → best-run ≈ 13.5-14.5 tok/s) | < −4 ms |
+| A/B `TINY_OP:65536:262144` | within ±2 ms (R7-R14 saw small differences) | — |
+| A/B `EXPERT_SKIP:0:60` (+renorm) | ~1% of routed experts skipped (host) → within ±1 ms; **E1 is nearly worthless on this router** | — |
+| A/B `EXPERT_SKIP:0:100` (+renorm) | ~3-6% skipped → −1 to −2 ms; PPL cost +0.46% on 60 chunks (host) — at the tolerance edge, so not for shipping unless the full set says otherwise | — |
+| threads: 4t + helper on 0-3 vs 3t inherit | if the 4-thread collapse was helper contention: 4t+helper-on-A55 beats 3t by 5-15% (experts 34 → ~25 ms); if it was throttling/Android contention: 4t still loses and clocks (`mhz_after`) show it | neither (equal within noise) |
+| threads: 3t + helper on 0-3 vs 3t inherit | ±3% (the helper rarely collides with 3 compute threads) | — |
+| spec: reload with 4 rollback slots, no draft | within −5% of baseline (232 MB more anon → fewer cached experts → a few more faults) | > 10% slower (then the slots cost too much memory on this phone) |
+| spec: official 64, draft n=2 | tokens/eval ≈ 2.0 (host) → **effective 15-19 tok/s** if a 3-token verify costs ≤ 1.3× a single token | effective ≤ no-draft (verify too expensive) |
+| spec: official 64, draft n=4 | tokens/eval ≈ 2.5 → **14-20 tok/s**; verify of 5 tokens 1.6-1.9× | as above |
+| spec: story 64, draft n=4 / n=2 | tokens/eval 2.0 / 1.9 → 12-16 tok/s (adversarial text: smaller gain) | — |
+| release: RssFile after load | ≥ 300 MB lower `file=` than the normal load; official runs +0 to +8% vs baseline | `file=` unchanged (the kernel had already evicted the source pages → 0 gain) |
 
 **Why are the experts slow on the phone? (open, R8 → R9).** First guess: IQ4_XS is costly to decode
 on the A78. Tested on host (1 thread, warm, repack off for both): IQ4_XS experts 14.0 ms for ~251 MB,

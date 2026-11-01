@@ -1,5 +1,6 @@
---- a/lib/src/backends/backend.dart
-+++ b/lib/src/backends/backend.dart
+diff -ruN lib/src/backends/backend.dart lib/src/backends/backend.dart
+--- lib/src/backends/backend.dart	2026-10-22 17:36:31
++++ lib/src/backends/backend.dart	2026-11-01 09:15:08
 @@ -564,6 +564,12 @@
    });
  }
@@ -13,8 +14,9 @@
  /// Optional backend capability for dedicated text-to-speech synthesis.
  abstract class BackendTextToSpeech {
    /// Discovers support for the loaded context and multimodal projector.
---- a/lib/src/backends/llama_cpp/llama_cpp_backend.dart
-+++ b/lib/src/backends/llama_cpp/llama_cpp_backend.dart
+diff -ruN lib/src/backends/llama_cpp/llama_cpp_backend.dart lib/src/backends/llama_cpp/llama_cpp_backend.dart
+--- lib/src/backends/llama_cpp/llama_cpp_backend.dart	2026-10-22 17:36:31
++++ lib/src/backends/llama_cpp/llama_cpp_backend.dart	2026-11-01 09:15:26
 @@ -41,6 +41,7 @@
          BackendNextTokenScoring,
          BackendStatePersistence,
@@ -39,12 +41,31 @@
    }
  
    @override
---- a/lib/src/backends/llama_cpp/llama_cpp_service.dart
-+++ b/lib/src/backends/llama_cpp/llama_cpp_service.dart
-@@ -4416,6 +4416,16 @@
+diff -ruN lib/src/backends/llama_cpp/llama_cpp_service.dart lib/src/backends/llama_cpp/llama_cpp_service.dart
+--- lib/src/backends/llama_cpp/llama_cpp_service.dart	2026-10-22 17:36:31
++++ lib/src/backends/llama_cpp/llama_cpp_service.dart	2026-11-02 00:24:29
+@@ -4246,6 +4246,15 @@
+         (!isRecurrent && !isHybrid)) {
+       return;
+     }
++    // Vollie: llama.cpp 620d2225c keeps n_rs_seq per-token recurrent-state
++    // snapshots and llama_memory_seq_rm rolls back within them (see
++    // llama-memory-recurrent.cpp seq_rm), which is what draft-model
++    // speculation needs on Mamba-2 hybrids such as Granite 4.0 H. The reserve
++    // costs (1 + n_rs_seq) x the recurrent state in memory (58 MB per slot
++    // for Granite 4.0 H Tiny), so callers keep it small.
++    if (isRecurrent || isHybrid) {
++      return;
++    }
+     throw LlamaUnsupportedException(
+       'Native llama.cpp recurrent/hybrid models cannot safely reserve '
+       'speculativeRollbackTokenMax=${params.speculativeRollbackTokenMax}: '
+@@ -4414,6 +4423,16 @@
+   /// Frees the context associated with [contextHandle].
+   void freeContext(int contextHandle) {
      _freeContext(contextHandle);
-   }
- 
++  }
++
 +  /// Changes the CPU thread counts of a live context, keeping model and KV.
 +  void setThreads(int contextHandle, int threads, int threadsBatch) {
 +    final ctx = _contexts[contextHandle];
@@ -53,13 +74,12 @@
 +    llama_set_n_threads(ctx.pointer, threads, threadsBatch);
 +    params.n_threads = threads;
 +    params.n_threads_batch = threadsBatch;
-+  }
-+
+   }
+ 
    void _freeContext(int handle) {
-     _contextToModel.remove(handle);
-     _activeLoras.remove(handle);
---- a/lib/src/backends/llama_cpp/load_param_helpers.dart
-+++ b/lib/src/backends/llama_cpp/load_param_helpers.dart
+diff -ruN lib/src/backends/llama_cpp/load_param_helpers.dart lib/src/backends/llama_cpp/load_param_helpers.dart
+--- lib/src/backends/llama_cpp/load_param_helpers.dart	2026-10-22 17:36:31
++++ lib/src/backends/llama_cpp/load_param_helpers.dart	2026-10-31 18:12:38
 @@ -89,6 +89,7 @@
    };
    mparams.load_modeAsInt = loadMode.value;
@@ -68,8 +88,9 @@
  }
  
  /// Applies the user-controlled fields of [params] to a `llama_context_params`
---- a/lib/src/backends/llama_cpp/worker.dart
-+++ b/lib/src/backends/llama_cpp/worker.dart
+diff -ruN lib/src/backends/llama_cpp/worker.dart lib/src/backends/llama_cpp/worker.dart
+--- lib/src/backends/llama_cpp/worker.dart	2026-10-22 17:36:31
++++ lib/src/backends/llama_cpp/worker.dart	2026-11-01 09:13:51
 @@ -488,6 +488,11 @@
              );
              message.sendPort.send(DoneResponse());
@@ -82,8 +103,9 @@
            case BackendInfoRequest():
              final info = service.getActiveBackendName();
              message.sendPort.send(BackendInfoResponse(info));
---- a/lib/src/backends/llama_cpp/worker_messages.dart
-+++ b/lib/src/backends/llama_cpp/worker_messages.dart
+diff -ruN lib/src/backends/llama_cpp/worker_messages.dart lib/src/backends/llama_cpp/worker_messages.dart
+--- lib/src/backends/llama_cpp/worker_messages.dart	2026-10-22 17:36:31
++++ lib/src/backends/llama_cpp/worker_messages.dart	2026-11-01 09:13:42
 @@ -318,6 +318,18 @@
    }) : super(sendPort);
  }
@@ -103,8 +125,9 @@
  /// Request for backend information.
  class BackendInfoRequest extends WorkerRequest {
    /// Creates a new [BackendInfoRequest].
---- a/lib/src/backends/native/native_backend.dart
-+++ b/lib/src/backends/native/native_backend.dart
+diff -ruN lib/src/backends/native/native_backend.dart lib/src/backends/native/native_backend.dart
+--- lib/src/backends/native/native_backend.dart	2026-10-22 17:36:31
++++ lib/src/backends/native/native_backend.dart	2026-11-01 09:15:43
 @@ -55,6 +55,7 @@
          BackendChatPromptGeneration,
          BackendDeferredEngineCreation,
@@ -129,8 +152,9 @@
    }
  
    @override
---- a/lib/src/core/engine/engine.dart
-+++ b/lib/src/core/engine/engine.dart
+diff -ruN lib/src/core/engine/engine.dart lib/src/core/engine/engine.dart
+--- lib/src/core/engine/engine.dart	2026-10-22 17:36:31
++++ lib/src/core/engine/engine.dart	2026-11-01 09:15:51
 @@ -3376,6 +3376,17 @@
      }
    }
@@ -149,8 +173,9 @@
    /// Removes all active LoRA adapters from the current context.
    Future<void> clearLoras() async {
      _ensureReady();
---- a/lib/src/core/models/inference/model_params.dart
-+++ b/lib/src/core/models/inference/model_params.dart
+diff -ruN lib/src/core/models/inference/model_params.dart lib/src/core/models/inference/model_params.dart
+--- lib/src/core/models/inference/model_params.dart	2026-10-22 17:36:31
++++ lib/src/core/models/inference/model_params.dart	2026-10-31 18:12:38
 @@ -415,6 +415,12 @@
    /// automatically.
    final bool loadMtp;
