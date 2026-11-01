@@ -1,0 +1,190 @@
+--- a/lib/src/backends/backend.dart
++++ b/lib/src/backends/backend.dart
+@@ -564,6 +564,12 @@
+   });
+ }
+ 
++/// Optional backend capability: change a live context's CPU thread counts.
++abstract class BackendThreads {
++  /// Sets generation and prompt-batch threads, keeping the model and KV.
++  Future<void> setThreads(int contextHandle, int threads, int threadsBatch);
++}
++
+ /// Optional backend capability for dedicated text-to-speech synthesis.
+ abstract class BackendTextToSpeech {
+   /// Discovers support for the loaded context and multimodal projector.
+--- a/lib/src/backends/llama_cpp/llama_cpp_backend.dart
++++ b/lib/src/backends/llama_cpp/llama_cpp_backend.dart
+@@ -41,6 +41,7 @@
+         BackendNextTokenScoring,
+         BackendStatePersistence,
+         BackendTextToSpeech,
++        BackendThreads,
+         BackendDecision,
+         BackendGenerationCapabilitiesSupport,
+         BackendVideoRuntimeSupport,
+@@ -1039,6 +1040,15 @@
+     );
+     final res = await _receiveResponse(rp);
+     _expectDoneResponse(res, 'set LoRA adapter');
++  }
++
++  @override
++  Future<void> setThreads(int contextHandle, int threads, int threadsBatch) async {
++    await _ensureIsolate();
++    final rp = _openResponsePort();
++    _dispatchRequest(rp, ThreadsRequest(contextHandle, threads, threadsBatch, rp.sendPort));
++    final res = await _receiveResponse(rp);
++    _expectDoneResponse(res, 'set threads');
+   }
+ 
+   @override
+--- a/lib/src/backends/llama_cpp/llama_cpp_service.dart
++++ b/lib/src/backends/llama_cpp/llama_cpp_service.dart
+@@ -4416,6 +4416,16 @@
+     _freeContext(contextHandle);
+   }
+ 
++  /// Changes the CPU thread counts of a live context, keeping model and KV.
++  void setThreads(int contextHandle, int threads, int threadsBatch) {
++    final ctx = _contexts[contextHandle];
++    final params = _contextParams[contextHandle];
++    if (ctx == null || params == null) return;
++    llama_set_n_threads(ctx.pointer, threads, threadsBatch);
++    params.n_threads = threads;
++    params.n_threads_batch = threadsBatch;
++  }
++
+   void _freeContext(int handle) {
+     _contextToModel.remove(handle);
+     _activeLoras.remove(handle);
+--- a/lib/src/backends/llama_cpp/load_param_helpers.dart
++++ b/lib/src/backends/llama_cpp/load_param_helpers.dart
+@@ -89,6 +89,7 @@
+   };
+   mparams.load_modeAsInt = loadMode.value;
+   mparams.load_mtp = params.loadMtp;
++  mparams.use_extra_bufts = params.useExtraBuffers;
+ }
+ 
+ /// Applies the user-controlled fields of [params] to a `llama_context_params`
+--- a/lib/src/backends/llama_cpp/worker.dart
++++ b/lib/src/backends/llama_cpp/worker.dart
+@@ -488,6 +488,11 @@
+             );
+             message.sendPort.send(DoneResponse());
+ 
++          case ThreadsRequest():
++            await waitForActiveGenerate();
++            service.setThreads(message.contextHandle, message.threads, message.threadsBatch);
++            message.sendPort.send(DoneResponse());
++
+           case BackendInfoRequest():
+             final info = service.getActiveBackendName();
+             message.sendPort.send(BackendInfoResponse(info));
+--- a/lib/src/backends/llama_cpp/worker_messages.dart
++++ b/lib/src/backends/llama_cpp/worker_messages.dart
+@@ -318,6 +318,18 @@
+   }) : super(sendPort);
+ }
+ 
++/// Request to change a context's CPU thread counts (llama_set_n_threads).
++class ThreadsRequest extends WorkerRequest {
++  /// The handle of the context.
++  final int contextHandle;
++
++  /// Threads for generation and for prompt batches.
++  final int threads, threadsBatch;
++
++  /// Creates a new [ThreadsRequest].
++  ThreadsRequest(this.contextHandle, this.threads, this.threadsBatch, super.sendPort);
++}
++
+ /// Request for backend information.
+ class BackendInfoRequest extends WorkerRequest {
+   /// Creates a new [BackendInfoRequest].
+--- a/lib/src/backends/native/native_backend.dart
++++ b/lib/src/backends/native/native_backend.dart
+@@ -55,6 +55,7 @@
+         BackendChatPromptGeneration,
+         BackendDeferredEngineCreation,
+         BackendTextToSpeech,
++        BackendThreads,
+         BackendDecision,
+         BackendGenerationCapabilitiesSupport,
+         BackendVideoRuntimeSupport,
+@@ -327,6 +328,15 @@
+   @override
+   Future<void> setLoraAdapter(int contextHandle, String path, double scale) {
+     return _requireDelegate().setLoraAdapter(contextHandle, path, scale);
++  }
++
++  @override
++  Future<void> setThreads(int contextHandle, int threads, int threadsBatch) {
++    final delegate = _requireDelegate();
++    if (delegate is! BackendThreads) {
++      throw UnsupportedError('This backend cannot change threads in place.');
++    }
++    return (delegate as BackendThreads).setThreads(contextHandle, threads, threadsBatch);
+   }
+ 
+   @override
+--- a/lib/src/core/engine/engine.dart
++++ b/lib/src/core/engine/engine.dart
+@@ -3376,6 +3376,17 @@
+     }
+   }
+ 
++  /// Changes the loaded context's CPU threads without reloading the model.
++  /// Throws [UnsupportedError] on backends that can't.
++  Future<void> setThreads(int threads, int threadsBatch) async {
++    _ensureReady();
++    final b = backend;
++    if (b is! BackendThreads) {
++      throw UnsupportedError('This backend cannot change threads in place.');
++    }
++    await (b as BackendThreads).setThreads(_contextHandle!, threads, threadsBatch);
++  }
++
+   /// Removes all active LoRA adapters from the current context.
+   Future<void> clearLoras() async {
+     _ensureReady();
+--- a/lib/src/core/models/inference/model_params.dart
++++ b/lib/src/core/models/inference/model_params.dart
+@@ -415,6 +415,12 @@
+   /// automatically.
+   final bool loadMtp;
+ 
++  /// `llama_model_params.use_extra_bufts`: lets the CPU backend copy weights
++  /// into repacked (and KleidiAI) layouts. Faster, but the copies are
++  /// anonymous memory the size of the model; `false` runs from the mmap.
++  /// (Vollie patch.)
++  final bool useExtraBuffers;
++
+   /// `llama_context_params.flash_attn_type`. User-explicit values override
+   /// the platform/backend heuristic.
+   final FlashAttention flashAttention;
+@@ -508,6 +514,7 @@
+     this.useMmap = true,
+     this.useMlock = false,
+     this.loadMtp = false,
++    this.useExtraBuffers = true,
+     this.flashAttention = FlashAttention.auto,
+     this.cacheTypeK = KvCacheType.f16,
+     this.cacheTypeV = KvCacheType.f16,
+@@ -695,6 +702,7 @@
+     bool? useMmap,
+     bool? useMlock,
+     bool? loadMtp,
++    bool? useExtraBuffers,
+     FlashAttention? flashAttention,
+     KvCacheType? cacheTypeK,
+     KvCacheType? cacheTypeV,
+@@ -753,6 +761,7 @@
+       useMmap: useMmap ?? this.useMmap,
+       useMlock: useMlock ?? this.useMlock,
+       loadMtp: loadMtp ?? this.loadMtp,
++      useExtraBuffers: useExtraBuffers ?? this.useExtraBuffers,
+       flashAttention: flashAttention ?? this.flashAttention,
+       cacheTypeK: cacheTypeK ?? this.cacheTypeK,
+       cacheTypeV: cacheTypeV ?? this.cacheTypeV,
