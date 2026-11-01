@@ -1,0 +1,16 @@
+# Models, datasets, builds and device binaries stay out of git.
+*.gguf
+*.so
+*.dylib
+*.apk
+*.aab
+*.jks
+key.properties
+.env
+lab/
+out/
+build/
+tools/device-bin/
+.dart_tool/
+pubspec.lock
+.DS_Store
