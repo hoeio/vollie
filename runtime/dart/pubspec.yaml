@@ -1,0 +1,8 @@
+name: vollie_runtime
+description: App-side helpers for serving llama.cpp on Android phones (knobs, thread pinning, page-fault and memory probes, setting selection).
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+dev_dependencies:
+  test: ^1.25.0
