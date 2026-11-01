@@ -34,8 +34,10 @@ expert read waits and sync waits close to zero (estimated).
   Granite 4.0 H Tiny: 7B MoE, 64 experts, 36 Mamba2 + 4 attention layers). Rejected: Qwen3.5-4B (B,
   0.909 vs 0.750 bits/byte, 2.4x the bytes/token), Ling-3.0-tiny (C, 0.906 bpb).
 - **Quality gate:** `llama-perplexity -c 512 -b 512`, wikitext-2-raw test (all chunks) against the same
-  model's F16 with its own 6 experts (9.0438); sanity set `lab/text/en.txt` (F16 10.3768), also held to
-  ≤ 10%. `tools/ppl.sh`. Never changed during the project.
+  model's F16 with its own 6 experts (9.0438). `tools/ppl.sh`. Sanity set `lab/text/en.txt` (F16 10.3768) is
+  reported with every result. *Until 2026-11-01 en.txt was also held to ≤ 10% (my addition); the owner
+  then set the gate to wikitext-2 only. Under that rule D4 (+9.5%) and D5 (+7.8%) would have passed; no
+  decision is reopened, since the served file is frozen at D6.* Rules: `RULES.md` in the research repo.
 - **Host:** M4 Pro, llama.cpp v0.8.0 @ 8642541b and Vollie's 620d2225c, built CPU-only for
   armv8.2-a+dotprod+fp16 (the SD888's ISA: dotprod, fp16, no i8mm/SVE).
 - **Phone:** Z Flip 3, SD888 (1x X1 + 3x A78 + 4x A55), 8 GB, Android; Vollie's CPU backend.

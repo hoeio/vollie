@@ -1,4 +1,4 @@
-# Served file: `vollie-granite-4.0-h-tiny-d6-e6.gguf`
+# Served file: `vollie-granite-4.0-h-tiny-d6-e6.gguf` (frozen)
 
 | | |
 |---|---|
@@ -8,8 +8,8 @@
 | model | huihui-ai `Huihui-granite-4.0-h-tiny-abliterated` (IBM Granite 4.0 H Tiny, Apache-2.0: 6.9B MoE, 64 experts, 36 Mamba-2 + 4 attention layers) |
 | source weights | `mradermacher/Huihui-granite-4.0-h-tiny-abliterated-GGUF` F16, with mradermacher's imatrix |
 | types | Q4_0 dense tensors, **Q3_K experts**, Q6_K output head; **6 experts per token** (the model's own count) |
-| wikitext-2 test PPL (ctx 512) | 9.6051 vs F16 9.0438: **+6.21%** |
-| en.txt PPL | 11.1001 vs F16 10.3768: **+6.97%** |
+| wikitext-2 test PPL (ctx 512, the gate) | 9.6051 vs F16 9.0438: **+6.21%** |
+| en.txt PPL (sanity check) | 11.1001 vs F16 10.3768: **+6.97%** |
 
 Recipe (`tools/quant_variant.sh`, llama.cpp v0.8.0):
 
@@ -24,5 +24,7 @@ Why these types (all PPL measured on host, details in `reports/03_final.md` §4)
 - Experts in a type without a repack path, so they stay mmapped. IQ4_XS experts at 5 per token
   (+6.4%) were the previous file; 3-bit experts at 6 per token are better (+6.2%) and 0.6 GB
   smaller, which matters because the experts are re-read from flash when they don't fit in the
-  page cache. IQ3_XXS experts failed the gate on en.txt (+10.05%).
-- Q6_K head: a Q4_0 or Q4_K head failed the gate.
+  page cache. IQ3_XXS experts (wikitext-2 +8.2%) were rejected on en.txt (+10.05%) under the
+  rule at the time, which also held en.txt to 10% (see `RULES.md`: wikitext-2 alone is the gate now).
+- Q6_K head: a Q4_0 head failed the gate (+10.3%); a Q4_K head passed wikitext-2 narrowly (+9.5%)
+  but was rejected on en.txt under the same earlier rule.

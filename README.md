@@ -7,8 +7,9 @@ evaluation tools, and the full research log. The app itself is not part of it.
 
 Test device: Samsung Galaxy Z Flip 3 (Snapdragon 888: 1x Cortex-X1 + 3x A78 + 4x A55, 8 GB LPDDR5).
 Model: Granite-4.0-H-Tiny abliterated (7B mixture-of-experts, 64 experts, Mamba-2 hybrid), one fixed
-GGUF ([recipe](models/granite-4.0-h-tiny-d6-e6.md)). The constraint throughout: perplexity at most
-10% above the same model's F16 weights.
+GGUF ([recipe](models/granite-4.0-h-tiny-d6-e6.md)). The constraint throughout: wikitext-2 perplexity
+at most 10% above the same model's F16 weights. All conditions a change must meet are in
+[RULES.md](RULES.md).
 
 ## Results so far
 
@@ -50,6 +51,7 @@ SoC's bandwidth), so 50 ms/token is the realistic ceiling; it is not reached yet
 | [docs/](docs/) | findings, runtime knobs, the on-device tuning procedure |
 | [reports/](reports/) | the research log: model choice, Vollie vs llama.cpp, methods survey, final report, `results.csv` |
 | [tools/](tools/) | perplexity gate, host benchmarks, quantization recipes, on-device benchmark kit |
+| [RULES.md](RULES.md) | the conditions every change must meet: quality gate, frozen model file, real-phone conditions, correctness checks, how to measure and record |
 | [models/](models/) | how the served GGUF was made, with checksums (weights are on Hugging Face) |
 
 ## Quick start
