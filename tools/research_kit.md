@@ -17,6 +17,8 @@ so a Granite-H target can roll a rejected draft back — round 1's speculation r
 | `ab` | 4 | in-generation A/B over a 72-token story: new defaults vs off (regression check), then tiny-op 65,536 vs 262,144 three times | `GGML_CPU_AB=knob:…` |
 | `spec` | 9 | reload with 4 recurrent rollback slots; warm-up on free text with 4 draft tokens (a rejection must occur — a note is added if not); official 32 without a draft, then with 1 / 2 / 3 / 4 draft tokens; story 64 without, then with 2 / 4. Draft = Granite 4.0 350M Q4_0 (downloaded once, 228 MB, SHA-256 checked). Draft runs set `GGML_CPU_PROF=2`: the profile line covers the 2-8-token verify graphs only (`us/token` there = µs per graph, `tokens` = tokens they covered) → batched-verify cost | `ModelParams.speculativeRollbackTokenMax`, `SpeculativeDecodingConfig.draftSimple`, `GGML_CPU_PROF=2` |
 
+Round-2 results: `reports/03_final.md` R20 (speculation measured and closed; tiny-op 262,144 default). Known r2 kit flaws: `GGML_CPU_PROF=2` lines also count the draft's 2-5-token catch-up graphs (and, with rollback slots, some 1-token target graphs), so the verify cost is read from `spec.eval_ms / attempts`; the saved knobs drifted between rounds (expert I/O 5 → 1) because the speed test re-ran — a kit should pin what it is not testing.
+
 `decode_tps` of a draft run is the **effective** rate (every accepted token counts; greedy, so the text is the
 model's own). Round 1's barrier, threads and release phases are gone: answered (`03_final.md` R18).
 

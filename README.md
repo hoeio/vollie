@@ -39,15 +39,18 @@ What limited the phone, in the order it was found (details in [docs/findings.md]
    4-row Q3_K kernel took 8.3 % off a token (bit-identical, by in-generation A/B). A 4th compute
    thread loses to Android's own threads even at equal clocks; the expert-guess helper on an A55 is
    too slow to lead the flash.
-4. **Now: effective tokens per second.** The experts still move bytes ~4× slower than the dense
-   stream, which is the whole remaining gap to the 47 ms DRAM roofline, so raw 20 tok/s is out of
-   reach on the CPU path. Draft-model speculation (a 350M draft, same tokenizer; output unchanged
-   under greedy) is the route with the numbers; round 1 could not run it because the phone's prebuilt
-   `libllama.so` lacked Granite-H in its rollback list — round 2 ships a rebuilt one
-   (`patches/llama.cpp/0002-granite-rollback.patch`).
+4. **Speculation does not pay on this CPU (round 2).** With the rebuilt `libllama.so` the draft-model
+   path ran: acceptance was as predicted (2.5-2.9 tokens per evaluation), but verifying k tokens costs
+   about k times one token — the dense mat-mul is at the bandwidth/compute ridge at one token and goes
+   linear with rows, the 3-bit expert kernel is compute-bound, and the slots + draft (+530 MB) cost a
+   quarter of the plain rate on an 8 GB phone. Effective rate 0.48-0.76× the plain one at every
+   setting; closed. A larger small-op threshold (262,144) gave another −8 to −12 % per token.
 
-The goal is 20 tok/s. On this phone the dense weights alone take ~25 ms per token (near the
-SoC's bandwidth), so 50 ms/token is the realistic ceiling; it is not reached yet.
+The goal was 20 tok/s. On this phone the dense weights alone take ~25 ms per token (at the SoC's
+bandwidth and, at one token, already at its compute), so 50 ms/token is a roofline, 60-65 ms the
+realistic ceiling (15-17 tok/s, estimated), and the output-identical route past it (speculation) is
+closed here. The current defaults measure about 13-15 tok/s (estimated from A/B deltas). Whether the
+target or the rules move is the owner's call (`reports/04_campaign.md` §8).
 
 ## Layout
 
