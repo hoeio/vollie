@@ -1,5 +1,5 @@
 diff --git a/ggml/src/ggml-cpu/arch/arm/quants.c b/ggml/src/ggml-cpu/arch/arm/quants.c
-index cfbbf6617..2492cf0a9 100644
+index cfbbf6617..dba0e085f 100644
 --- a/ggml/src/ggml-cpu/arch/arm/quants.c
 +++ b/ggml/src/ggml-cpu/arch/arm/quants.c
 @@ -2015,6 +2015,10 @@ void ggml_vec_dot_q2_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
@@ -294,11 +294,11 @@ index cfbbf6617..2492cf0a9 100644
 +}
 +#endif
 +
-+// Vollie: env GGML_Q3K_ILP=1 (default off): the x4 dot below with the 4 rows' block sums
++// Vollie: env GGML_Q3K_ILP (default on since r4; GGML_Q3K_ILP=0 turns it off): the x4 dot below with the 4 rows' block sums
 +// computed side by side and no serial accumulator chain (bit-identical: integer block sums,
 +// same float step per block and row). GGML_Q3K_PF=1 (default off): prfm pldl1keep of the next
 +// 4 rows' block i while rows 0-3 work on block i (advice only). Both set per graph by ggml-cpu.c.
-+int ggml_cpu_q3k_ilp = 0, ggml_cpu_q3k_pf = 0;
++int ggml_cpu_q3k_ilp = 1, ggml_cpu_q3k_pf = 0;
 +
 +#if defined(__ARM_NEON)
 +static inline void ggml_q3k_prefetch4(const block_q3_K * GGML_RESTRICT const x[4], int i, size_t bx) {
@@ -426,7 +426,7 @@ index cfbbf6617..2492cf0a9 100644
  static inline svuint32_t ggml_decode_q4scales_and_mins_for_mmla(const uint32_t * vx_scales) {
      const svbool_t pg_all   = svptrue_pat_b32(SV_VL4);
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index ab82e3d6c..9fc7f4463 100644
+index ab82e3d6c..6d8b90022 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -197,6 +197,7 @@ typedef void * thread_ret_t;
@@ -908,7 +908,7 @@ index ab82e3d6c..9fc7f4463 100644
                          // matrix_row_counts
                          cur += n_as * sizeof(int64_t) + sizeof(int64_t);
                          // matrix_rows
-@@ -3064,40 +3438,622 @@ struct ggml_cplan ggml_graph_plan(
+@@ -3064,40 +3438,710 @@ struct ggml_cplan ggml_graph_plan(
  // Returns the number of nodes skipped by fusion (>=1), or 0 if no fusion was applied.
  static bool ggml_cpu_disable_fusion = false;  // initialized once in ggml_cpu_init(), read-only afterwards
  
@@ -925,13 +925,14 @@ index ab82e3d6c..9fc7f4463 100644
      if (ggml_cpu_disable_fusion || cplan->use_ref) {
 -        return 0;
 +        return false;
-+    }
-+
+     }
+ 
+-    struct ggml_tensor * node = cgraph->nodes[node_n];
 +    const struct ggml_tensor * node = cgraph->nodes[node_n];
 +    const enum ggml_op fuse_ops[] = { GGML_OP_RMS_NORM, GGML_OP_MUL };
 +    if (node->op != GGML_OP_RMS_NORM || !ggml_can_fuse(cgraph, node_n, fuse_ops, 2)) {
 +        return false;
-     }
++    }
 +    const struct ggml_tensor * mul_node = cgraph->nodes[node_n + 1];
 +    const struct ggml_tensor * mul_w = (mul_node->src[0] == node)
 +        ? mul_node->src[1] : mul_node->src[0];
@@ -941,21 +942,8 @@ index ab82e3d6c..9fc7f4463 100644
 +           mul_w->ne[0]        == node->ne[0]   &&
 +           mul_w->nb[0]        == sizeof(float);
 +}
- 
--    struct ggml_tensor * node = cgraph->nodes[node_n];
- 
--    if (node->op == GGML_OP_RMS_NORM) {
--        // RMS_NORM + MUL fusion
--        const enum ggml_op fuse_ops[] = { GGML_OP_RMS_NORM, GGML_OP_MUL };
--        if (ggml_can_fuse(cgraph, node_n, fuse_ops, 2)) {
--            struct ggml_tensor * mul_node = cgraph->nodes[node_n + 1];
--            const struct ggml_tensor * mul_w = (mul_node->src[0] == node)
--                ? mul_node->src[1] : mul_node->src[0];
--            if (node->src[0]->type  == GGML_TYPE_F32 &&
--                mul_node->type      == GGML_TYPE_F32 &&
--                mul_w->type         == GGML_TYPE_F32 &&
--                mul_w->ne[0]        == node->ne[0]   &&
--                mul_w->nb[0]        == sizeof(float)) {
++
++
 +// Vollie: an op on a few thousand elements takes less time than the barrier
 +// that follows it, and a decode graph is mostly such ops (Granite 4.0 H Tiny:
 +// ~3300 nodes per token). Tiny ops run on thread 0 alone, and the barrier
@@ -1046,9 +1034,108 @@ index ab82e3d6c..9fc7f4463 100644
 +            ggml_cpu_budget_tok ? (double) (ggml_cpu_budget_routed - ggml_cpu_budget_skipped) / ggml_cpu_budget_tok : 0.0);
 +}
  
+-    if (node->op == GGML_OP_RMS_NORM) {
+-        // RMS_NORM + MUL fusion
+-        const enum ggml_op fuse_ops[] = { GGML_OP_RMS_NORM, GGML_OP_MUL };
+-        if (ggml_can_fuse(cgraph, node_n, fuse_ops, 2)) {
+-            struct ggml_tensor * mul_node = cgraph->nodes[node_n + 1];
+-            const struct ggml_tensor * mul_w = (mul_node->src[0] == node)
+-                ? mul_node->src[1] : mul_node->src[0];
+-            if (node->src[0]->type  == GGML_TYPE_F32 &&
+-                mul_node->type      == GGML_TYPE_F32 &&
+-                mul_w->type         == GGML_TYPE_F32 &&
+-                mul_w->ne[0]        == node->ne[0]   &&
+-                mul_w->nb[0]        == sizeof(float)) {
++// Vollie: env GGML_SSM_INPLACE=1 (default off; bit-identical: the same floats land in the same cache
++// bytes, only the 1.5 MB/layer bounce through the scan output and back is gone). For a one-token,
++// one-sequence, no-snapshot SSM_SCAN whose final state is CPY'd straight into the recurrent cache
++// (llm_build_mamba_base::build_mamba2_layer), the scan writes its state into the CPY's destination
++// (pointer in the scan's op_params[2..3], read in ops.cpp) and the CPY is not run. Applied per graph
++// and undone after it, so a reused graph is unchanged. Refused if a node between the scan and the CPY
++// touches that cache tensor, or anything other than the CPY reads the scan's state part.
++// ponytail: at most 64 layers per graph; more layers fall back to the stock CPY
++static int ggml_cpu_ssm_inplace = 0;
++static struct ggml_tensor * ggml_cpu_ssm_scan[64], * ggml_cpu_ssm_cpy[64];
++static int ggml_cpu_ssm_n = 0;
++
++static inline const struct ggml_tensor * ggml_cpu_base(const struct ggml_tensor * t) {
++    return t->view_src ? t->view_src : t;
++}
+ 
 -                ggml_compute_forward_rms_norm_mul_fused(params, node, mul_node);
 -                return 1;
--            }
++static void ggml_cpu_ssm_apply(struct ggml_cgraph * g) {
++    ggml_cpu_ssm_n = 0;
++    for (int j = 0; j < g->n_nodes && ggml_cpu_ssm_n < 64; j++) {
++        struct ggml_tensor * c = g->nodes[j];
++        if (c->op != GGML_OP_CPY || !c->src[0]->view_src || c->src[0]->view_src->op != GGML_OP_SSM_SCAN) {
++            continue;
++        }
++        struct ggml_tensor * scan = c->src[0]->view_src;
++        const struct ggml_tensor * s = scan->src[0], * x = scan->src[1];
++        const size_t s_off = ggml_nelements(x) * ggml_element_size(x);
++        const size_t s_bytes = (size_t) s->ne[0] * s->ne[1] * s->ne[2] * sizeof(float);
++        if (ggml_get_op_params_i32(scan, 0) != 1 || x->ne[2] != 1 || x->ne[3] != 1 || scan->src[6]->ne[0] != 1 ||
++            s->type != GGML_TYPE_F32 || c->src[0]->view_offs != s_off || ggml_nbytes(c->src[0]) != s_bytes ||
++            !(c->flags & GGML_TENSOR_FLAG_COMPUTE) ||
++            !ggml_is_contiguous(c->src[0]) || c->src[1]->type != GGML_TYPE_F32 || !ggml_is_contiguous(c->src[1]) ||
++            ggml_nbytes(c->src[1]) != s_bytes) {
++            continue;
++        }
++        const struct ggml_tensor * cache = ggml_cpu_base(c->src[1]);
++        int i = j - 1;
++        while (i >= 0 && g->nodes[i] != scan) i--;
++        bool ok = i >= 0;
++        for (int k = i + 1; ok && k < j; k++) {
++            const struct ggml_tensor * n = g->nodes[k];
++            if (ggml_op_is_empty(n->op) || ggml_is_empty(n)) continue;
++            ok = ggml_cpu_base(n) != cache;
++            for (int q = 0; ok && q < GGML_MAX_SRC && n->src[q]; q++) {
++                ok = ggml_cpu_base(n->src[q]) != cache;
+             }
+         }
++        if (ok) {
++            ggml_cpu_ssm_scan[ggml_cpu_ssm_n] = scan;
++            ggml_cpu_ssm_cpy[ggml_cpu_ssm_n++] = c;
++        }
+     }
++    // drop a pair if any compute node other than its CPY reads the scan's state part
++    for (int k = 0; ggml_cpu_ssm_n && k < g->n_nodes; k++) {
++        const struct ggml_tensor * n = g->nodes[k];
++        if (ggml_op_is_empty(n->op)) continue;
++        for (int q = 0; q < GGML_MAX_SRC && n->src[q]; q++) {
++            const struct ggml_tensor * t = n->src[q], * b = ggml_cpu_base(t);
++            if (b->op != GGML_OP_SSM_SCAN) continue;
++            for (int p = 0; p < ggml_cpu_ssm_n; p++) {
++                if (ggml_cpu_ssm_scan[p] != b || n == ggml_cpu_ssm_cpy[p]) continue;
++                const size_t s_off = ggml_nelements(b->src[1]) * ggml_element_size(b->src[1]);
++                if (t == b || t->view_offs + ggml_nbytes(t) > s_off) {
++                    ggml_cpu_ssm_scan[p] = ggml_cpu_ssm_scan[--ggml_cpu_ssm_n];
++                    ggml_cpu_ssm_cpy[p]  = ggml_cpu_ssm_cpy[ggml_cpu_ssm_n];
++                }
++                break;
++            }
++        }
++    }
++    static int logged = 0;
++    if (!logged++) {
++        fprintf(stderr, "ssm-inplace layers=%d\n", ggml_cpu_ssm_n); // once per process
++    }
++    for (int p = 0; p < ggml_cpu_ssm_n; p++) {
++        void * dst = ggml_cpu_ssm_cpy[p]->src[1]->data;
++        memcpy((char *) ggml_cpu_ssm_scan[p]->op_params + 8, &dst, sizeof(dst));
++        ggml_cpu_ssm_cpy[p]->flags &= ~GGML_TENSOR_FLAG_COMPUTE;
++    }
++}
++
++static void ggml_cpu_ssm_undo(void) {
++    for (int p = 0; p < ggml_cpu_ssm_n; p++) {
++        memset((char *) ggml_cpu_ssm_scan[p]->op_params + 8, 0, sizeof(void *));
++        ggml_cpu_ssm_cpy[p]->flags |= GGML_TENSOR_FLAG_COMPUTE;
++    }
++    ggml_cpu_ssm_n = 0;
++}
++
 +// Finds the mixture weights a layer's MUL_MAT_ID ops are combined with: src[1] of the MUL
 +// named ffn_moe_weighted that follows (llama.cpp's build_moe_ffn), [1, n_ids, n_tokens] F32.
 +static const struct ggml_tensor * ggml_cpu_moe_weights(const struct ggml_cgraph * cgraph, int node_n) {
@@ -1056,16 +1143,16 @@ index ab82e3d6c..9fc7f4463 100644
 +        const struct ggml_tensor * n = cgraph->nodes[j];
 +        if (n->op == GGML_OP_MUL && strncmp(n->name, "ffn_moe_weighted", 16) == 0) {
 +            return n->src[1];
-         }
-     }
++        }
++    }
 +    return NULL;
 +}
-+
+ 
 +// Vollie: env GGML_BARRIER_BENCH=<n>: once per process, before the first graph's first op,
 +// all threads run n empty barriers and thread 0 prints the cost per barrier.
 +static int  ggml_cpu_bbench_n = 0; // last value run
 +static bool ggml_cpu_bbench_this = false;
- 
++
 +// Vollie: env GGML_HELPER_CPUS="0-3" or "0,1,2,3": cores for the expert-guess helper thread
 +// (it otherwise inherits thread 0's big-core affinity and competes with the compute threads).
 +static bool ggml_cpu_helper_mask[GGML_MAX_N_THREADS];
@@ -1550,7 +1637,7 @@ index ab82e3d6c..9fc7f4463 100644
  static thread_ret_t ggml_graph_compute_thread(void * data) {
      struct ggml_compute_state * state = (struct ggml_compute_state *) data;
      struct ggml_threadpool    * tp    = state->threadpool;
-@@ -3126,6 +4082,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3126,6 +4170,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
      GGML_PRINT_DEBUG("thread #%d compute-start cplan %p last-graph %d\n", state->ith, (const void *)cplan, state->last_graph);
  #endif
  
@@ -1573,7 +1660,7 @@ index ab82e3d6c..9fc7f4463 100644
      for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
          struct ggml_tensor * node = cgraph->nodes[node_n];
  
-@@ -3139,12 +4111,65 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3139,12 +4199,65 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
          }
  
          // TODO: move fused-op detection into ggml_graph_plan so fusion decisions are made once at planning time
@@ -1644,7 +1731,7 @@ index ab82e3d6c..9fc7f4463 100644
          }
  
          if (state->ith == 0 && cplan->abort_callback &&
-@@ -3153,8 +4178,33 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3153,8 +4266,33 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
              tp->ec    = GGML_STATUS_ABORTED;
          }
  
@@ -1679,7 +1766,7 @@ index ab82e3d6c..9fc7f4463 100644
          }
      }
  
-@@ -3398,6 +4448,137 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3398,6 +4536,143 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
      int n_threads                               = cplan->n_threads;
      struct ggml_threadpool * threadpool = cplan->threadpool;
  
@@ -1742,12 +1829,14 @@ index ab82e3d6c..9fc7f4463 100644
 +    const char * mink = getenv("GGML_EXPERT_MINK");
 +    ggml_cpu_expert_mink = mink && *mink ? atoi(mink) : 1;
 +    const char * ilp = getenv("GGML_Q3K_ILP");
-+    ggml_cpu_q3k_ilp = ilp && *ilp ? atoi(ilp) != 0 : 0;
++    ggml_cpu_q3k_ilp = ilp && *ilp ? atoi(ilp) != 0 : 1; // Vollie: default on since r4 (bit-identical, R23)
 +    const char * pf = getenv("GGML_Q3K_PF");
 +    ggml_cpu_q3k_pf = pf && *pf ? atoi(pf) != 0 : 0;
 +    const char * anon = getenv("GGML_EXPERT_ANON");
 +    ggml_cpu_expert_anon = anon && *anon ? atoi(anon) : 0;
 +    ggml_cpu_anon_use = ggml_cpu_expert_anon > 0;
++    const char * ssmi = getenv("GGML_SSM_INPLACE");
++    ggml_cpu_ssm_inplace = ssmi && *ssmi ? atoi(ssmi) != 0 : 0;
 +    if ((ggml_cpu_expert_skip || ggml_cpu_expert_topp || ggml_cpu_expert_gap) && !ggml_cpu_budget_atexit) {
 +        ggml_cpu_budget_atexit = true;
 +        atexit(ggml_cpu_budget_print);
@@ -1761,7 +1850,7 @@ index ab82e3d6c..9fc7f4463 100644
 +    }
 +    const char * ab = getenv("GGML_CPU_AB");
 +    // Modes: "q3k", "tiny:<n>", and the generic "knob:<NAME>:<A>:<B>" (NAME = TINY_OP, MMID,
-+    // Q3K_VEC, Q3K_X4, Q3K_ILP, Q3K_PF, EXPERT_SKIP, EXPERT_ANON): A on even decode graphs, B on odd
++    // Q3K_VEC, Q3K_X4, Q3K_ILP, Q3K_PF, EXPERT_SKIP, EXPERT_ANON, SSM_INPLACE): A on even decode graphs, B on odd
 +    // ones. EXPERT_ANON keeps one cache of max(A, B) slots, filled on both sides; a side reads it iff
 +    // its value is > 0 (so A/B measures reading the copies, not the fill).
 +    ggml_cpu_ab_mode = !ab ? 0 : strcmp(ab, "q3k") == 0 ? 1 : strncmp(ab, "tiny:", 5) == 0 ? 2 : strncmp(ab, "knob:", 5) == 0 ? 3 : 0;
@@ -1794,6 +1883,7 @@ index ab82e3d6c..9fc7f4463 100644
 +                else if (strcmp(name, "EXPERT_SKIP") == 0) ggml_cpu_expert_skip  = (int) v;
 +                else if (strcmp(name, "Q3K_ILP")     == 0) ggml_cpu_q3k_ilp      = v != 0;
 +                else if (strcmp(name, "Q3K_PF")      == 0) ggml_cpu_q3k_pf       = v != 0;
++                else if (strcmp(name, "SSM_INPLACE") == 0) ggml_cpu_ssm_inplace  = v != 0;
 +                else if (strcmp(name, "EXPERT_ANON") == 0) {
 +                    ggml_cpu_expert_anon = (int) MAX(a, b);
 +                    ggml_cpu_anon_use    = v > 0;
@@ -1813,14 +1903,18 @@ index ab82e3d6c..9fc7f4463 100644
 +    }
 +    ggml_cpu_anon_config(ggml_cpu_expert_anon);
 +    const int64_t prof_t0 = ggml_cpu_prof_this ? ggml_time_us() : 0;
++    if (ggml_cpu_ssm_inplace && decode) {
++        ggml_cpu_ssm_apply(cgraph);
++    }
 +
      bool disposable_threadpool = false;
  
      if (threadpool == NULL) {
-@@ -3455,6 +4636,25 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3455,6 +4730,26 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
  
      // don't leave affinity set on the main thread
      clear_numa_thread_affinity();
++    ggml_cpu_ssm_undo();
 +#if !defined(_WIN32)
 +    ggml_cpu_pred_drain();
 +#endif
@@ -1863,6 +1957,24 @@ index dd9bcbf63..922e5119c 100644
      GGML_UNUSED(buffer);
  }
  
+diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
+index 7a73e138e..e43417118 100644
+--- a/ggml/src/ggml-cpu/ops.cpp
++++ b/ggml/src/ggml-cpu/ops.cpp
+@@ -10125,6 +10125,13 @@ static void ggml_compute_forward_ssm_scan_f32(
+     for (int i3 = 0; i3 < ns; ++i3) {
+         const float * s0 = (const float *) ((const char *) src0->data + ids[i3]*(src0->nb[3])); // {d_state, dim, nh, ns}
+               float * s  = (      float *) ((      char *) dst->data  + i3*(src0->nb[3]) + s_off); // {d_state, dim, nh, ns}
++        // Vollie: GGML_SSM_INPLACE (ggml-cpu.c ggml_cpu_ssm_apply, one sequence only): the state goes
++        // straight into the recurrent cache slot the CPY after this op would have copied it to
++        float * s_cache;
++        memcpy(&s_cache, (const char *) dst->op_params + 8, sizeof(s_cache));
++        if (s_cache) {
++            s = s_cache;
++        }
+ 
+         for (int i2 = 0; i2 < nt; ++i2) {
+             const float * x  = (const float *) ((const char *) src1->data + i2*(src1->nb[2]) + i3*(src1->nb[3])); // {dim, nh, nt, ns}
 diff --git a/ggml/src/ggml-cpu/quants.h b/ggml/src/ggml-cpu/quants.h
 index 93ea7eeff..5efc0a101 100644
 --- a/ggml/src/ggml-cpu/quants.h
