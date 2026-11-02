@@ -282,3 +282,27 @@ Remaining raw-decode gap with B4 + C1 on: 93 ms/token = `MUL_MAT_ID` 42.5 + 8.2 
 - **D1 draft-model speculation: falsified on this CPU.** The rollback fix works (warm-up 36 drafted / 14 accepted, no error) and acceptance meets the host numbers (2.5-2.9 tokens per evaluation at n = 2-4 on the official prompt, 1.8-2.1 on the story), but one verification of 2 / 3 / 4 / 5 tokens costs **2.3 / 2.9 / 3.1 / 3.4×** a single token (official) and 2.5 / 3.9× (story), the draft 14-24 ms per token, and the slots + draft (+530 MB) alone cut the plain rate 8.0 → 6.1. Effective rates **0.48-0.76× the no-draft rate at every setting**. The §2 cost model assumed a bandwidth-bound decoder; the phone's dense mat-mul is at the bandwidth/compute ridge at one token and goes linear with rows (25.6 → 47-55 ms per graph at 5 tokens), and the experts are Q3_K compute plus un-prefetched page faults. **D5** (A55 drafting) could hide ≤ 61 of 557 ms per step; **C3** saves unpacking, not multiply-adds. Both dropped.
 - **Goal:** with the output-identical effective route closed, nothing in the idea list reaches 20 tok/s on the SD888 CPU within the rules. Raw: 13-15 estimated with the three defaults at R13's memory state; the remaining levers (≈ 7 ms of `MUL_MAT_ID` wait, larger tiny-op, A3 expert cache on pressured days) aim at the 15-17 ceiling of §2. The GPU was 0.7-2.9 tok/s; llama.cpp's Hexagon backend targets newer DSPs than the SD888's. **The decision on the goal is the owner's**: keep 20 and relax a rule (the frozen file — fewer experts per token is the lever with the arithmetic — or the device), or restate the target as the raw ceiling.
 - **Round 3 (if raw):** tiny-op 524,288 / 1,048,576 A/B; finer `MUL_MAT_ID` chunks and fused gate/up for the last ~7 ms of wait; `getrusage` flash bytes; kit fixes (pin untested knobs; `PROF=2` to count tokens from the embedding node and ignore graphs without `MUL_MAT_ID`).
+
+## 9. Goal restated by the owner (2026-11-02, after R20) and the research reset
+
+The owner's words, recorded verbatim in `RULES.md` §1 and `CLAUDE.md` §1: build a system that challenges
+the hardware's limit; research a new way to **print** ≥ 20 tok/s under the rules (under the rules,
+everything is allowed); the point is **not** to compute 20 tokens per second — not every printed token has
+to be fully calculated; the method must generalize to other models and devices.
+
+What R16-R20 fixed as fact: on this CPU, output per second is bounded by multiply-adds per printed token
+(compute-bound at any batch > 1), the barrier and I/O stories are largely told, and bit-identical runtime
+work has ≈ 13-15 tok/s raw in it (estimated) with a 15-17 ceiling. So the research question becomes:
+**which tokens, layers, experts or operations can be left uncomputed — or computed once and reused — with a
+quality cost inside the gate (+0.5 % working tolerance, +10 % hard), by a rule that does not depend on
+this model or this phone?** Candidate families to rank with host-measurable, machine-independent numbers
+first (Bonnie, memo `reports/05_compute_less.md`): per-token adaptive depth (early exit / layer skipping
+by a confidence rule), per-token adaptive expert count (the router's own weights as the signal), reuse
+across tokens (states or expert outputs of repeated contexts), cheap-token paths (tokens a tiny predictor
+gets right at high confidence, verified lazily or not at all when the rule allows), and anything that
+changes the arithmetic-per-token rather than the arithmetic's speed. Closed and not to be re-proposed
+without new arithmetic: batched speculation (D1/D5/C3), n-gram drafting, 4 threads, A55 helper, expert
+skip at a safe threshold, barrier latency.
+
+Team standard from here on (`CLAUDE.md` §2): Clyde leads, Bonnie researches with Clyde, Tom codes,
+Annie keeps git and the books.

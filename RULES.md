@@ -15,6 +15,17 @@ behind each lesson is in `reports/03_final.md` (R-numbers).
   it is not part of the pass/fail gate. Only English is evaluated.
 - If the goal looks out of reach, say so with numbers instead of bending a rule.
 
+**Owner's restatement (2026-11-02), after rounds 1-2 showed the SD888 CPU is compute-bound at any batch:**
+1. Build a system that challenges the limit of the hardware.
+2. Research a new way to *print* >= 20 tok/s under the rules — and under the rules, everything is allowed.
+3. The point is not to make the system *compute* 20 tokens per second; not every printed token has to be
+   fully calculated. The measure is what the user sees (Vollie's own benchmark: tokens printed per second,
+   raw and effective both reported and labelled).
+4. The method must be usable later for other models and other devices; this phone and this model are the
+   testbed, not the target of the tuning.
+Everything else in this file still binds: the quality gate, the frozen file, runtime-only fixes, device
+measurement, honest labels.
+
 ## 2. The model
 
 - **Model: Granite-4.0-H-Tiny abliterated (Huihui)**, locked: no other model, no architecture
