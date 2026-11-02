@@ -195,9 +195,10 @@ Expert compute = k̄ × 40 × [c · t_fast + (1 − c) · 0.177], c = pooled cov
 | 32 | 0.80-0.93 | 29.7-27.7 (−13 to −15) | 17.4-13.5 (−25 to −29) | 20.8-19.4 | 12.2-9.5 |
 | 64 (impossible) | 1 | 26.6 (−16) | 11.3 (−31) | 18.6 | 7.9 |
 
-At best-run scale (×0.84) N = 16 alone is −8 to −19 ms; **N = 16 + k̄ 4.2 is −16 to −24 ms, i.e. 67-77 → 45-60 ms =
-17-22 tok/s (estimated)** — the first combination on the board whose band contains 20, at +1.9 % PPL (60-chunk
-screen; ≈ +2.3 % full-set by the screen's bias) and 648 MB of anon memory.
+At best-run scale (×0.84) N = 16 alone would be −8 to −19 ms and N = 16 + k̄ 4.2 −16 to −24 ms (17-22 tok/s) **if
+the host ratio transferred to the phone. It does not transfer as written — see Clyde's (e″) and the re-derived
+band in (e‴): N = 16 is −3.5 to −12 ms at profile scale (median ≈ −6), and with k̄ 4.2 the combination lands at
+15.6-20.4 tok/s, 20 only in the top corner.** The table above is kept as the upper bound.
 
 **4. Quality.** None if the new kernel reproduces `ggml_vec_dot_q3_K_q8_K` exactly: per 256-block, the int32
 sum of each 16-weight sub-block × its 6-bit scale is order-free (integers), but the per-block float
@@ -213,6 +214,135 @@ PPL curve already measured; #2 is a kernel + cache + memory-pressure path — bu
 the cache multiplies #1's saving, and only together do they put 20 in the band. The cheapest step is the
 microbench (S5), which can kill the whole family in an hour if the re-laid dot is not ≥ 1.5× faster per MAC on
 the M4.
+
+### (e″) Clyde's check of (e′): what the 1.58× measures, and what the phone will see
+
+Read against the kernel (`lab/llama.cpp-tiny/ggml/src/ggml-cpu/arch/arm/quants.c`, `ggml_vec_dot_q3_K_q8_K_x4`
+→ `ggml_q3k_half`): per 256-weight block and row the Q3_K dot issues 16 `sdot`s and about 80 other
+instructions — 2 × (8 mask/shift ops for the high bits + 12 and/shift/sub ops for the low bits), 6 `vpadd` + 2
+`vmla`, 7 loads, and a scale unpack with a 16-iteration *scalar* subtract loop. Q4_0 is near 1 : 1. So Bonnie's
+host number (0.203 vs 0.129 ms per expert, 1.58×) is a true **instruction-count** gap. Two things qualify it
+for the phone:
+
+1. **Instruction savings have transferred badly to this device before.** `Q3K_X4` removes activation loads only:
+   −10.6 % of `MUL_MAT_ID` compute on the M4, **−2.4 % on the SD888** (R18, in-generation A/B). Transfer ratio
+   ≈ 0.23. The per-block arithmetic agrees: at 3 threads the phone spends ≈ 120 cycles per 110-byte block for
+   ~100 instructions (0.177 ms per expert, 3,072 blocks per thread), while an A78 issuing two NEON ops a cycle
+   would need ~50-60 → **roughly half of the device's expert time is stalls, not instructions.** Scaling the
+   1.58× by 0.23 gives ≈ 1.1-1.15× for an unpack-only re-layout on the phone, i.e. −3..−5 ms at N = 16 with a
+   55-75 % hit rate, not the −9..−12 "conservative" column.
+
+2. **The stall has a shape.** One expert row is 1,536 weights = 6 blocks = 660 bytes, then a jump of one row
+   stride; the x4 kernel reads 4 such short streams. The A78's hardware prefetcher needs several sequential
+   accesses to ramp, so each row restarts cold — latency-bound, low memory-level parallelism. The dense weights do
+   not have this problem because the KleidiAI repack lays rows out as one long contiguous tile stream; that, not
+   the 4-bit unpack, is plausibly why Q4_0 *experts* still ran at half the dense rate on the host (Bonnie's
+   observation). On the phone, with a 2.5 GB working set, 4 KB file pages (TLB reach ~1-2 MB) and page-cache
+   misses on top, this term should be larger than on the M4.
+
+Consequences for the plan:
+- A re-laid cache can win on the phone, but its device value comes from **stream shape + anon memory (no page
+  faults, possibly huge pages)**, with unpack a minor third. Bonnie's band should be re-derived with those three
+  terms, and the "conservative" column anchored to the device transfer ratio, not to the host.
+- The three terms can be separated **without building the cache**, in kit r3, each bit-identical and env-gated
+  (Tom, small):
+  - `GGML_CPU_AB=knob:Q3K_VEC:0:1` on the device — the R15 kernel is another instruction-only change with a known
+    host gain (−4..−8 %); its device delta is a second transfer-ratio point.
+  - `GGML_Q3K_PF=1`: software prefetch (`prfm pldl1keep`) of the next rows' blocks inside the x4 loop — attacks
+    the stream-shape term with zero memory and no layout; if it buys several ms, the layout's job shrinks to
+    unpack and huge pages.
+  - `GGML_EXPERT_ANON=<N>`: copy the N most-used experts per layer into anon memory **in the existing layout**
+    (plain `memcpy`, pointer redirect in `MUL_MAT_ID`, LRU as in S5) — measures the memory term alone (faults,
+    TLB with `MADV_HUGEPAGE` if THP is on) before any kernel work; ~30 lines against S5's kernel.
+- Decision rule for building S5(ii): only if (prefetch gain) + (anon-copy gain) + 0.23 × (host unpack gain) at
+  the measured hit rate is ≥ 8 ms per token on the device; otherwise the raw path is prefetch + anon copy
+  alone, and the 648 MB is better spent on page cache.
+
+(Clyde, host arithmetic + R18 device data; nothing new measured.)
+
+### (e‴) Bonnie's reply to (e″): confirmed on the stall share, pushed back on its cause; new band; LRU replay
+
+**1. Op count and cycles — agree on "≥ 50 % non-issue", disagree on what it is.** Counted in
+`ggml_vec_dot_q3_K_q8_K_x4` → `ggml_q3k_half` (per 256-block per row): 16 `sdot`; mask prep 4 `bic`+4 `shl` and
+4 `bic`+2 `shr` per half = 28; low-bit unpack 10 + 12 per half = 44; 12 `vpadd` + 4 `vmla`; 2 + 2 `vld` of the q3
+bytes and hmask + 2 `shr` on hmask; 4 shared activation loads per row; scale unpack 1 `vld` + 6 `movl` + 1 `vaddv`
++ 1 `fmla` + conversion; plus ~60 scalar ops (12-byte `memcpy`, 4 masked `utmp`, the 16-iteration `-= 32` loop
+unless clang vectorizes it). **≈ 16 sdot + ~105 other NEON + ~60 scalar**, a little above Clyde's 80 but the
+same picture: `sdot` is 13 % of the NEON work. Cycles: device 0.177 ms / 3,072 blocks = 57.6 ns ≈ **121 cycles at
+2.1 GHz** (R18 clocks) ≈ 1.0 NEON op per cycle; an A78 issues 2, the X1 4 → issue floor 30-60 → **yes, ≥ 50 %
+of the device's expert time is not issue.** But the **M4 does the same block in 0.203 ms / 9,216 = 22 ns ≈ 99
+cycles at 4.5 GHz ≈ 1.2 NEON op per cycle against a 4-wide floor of ~30** — with no page faults, 16 KB pages
+and the best prefetcher in the business. The host is at 30 % of its issue bound; the device at ~50 %. So most
+of the "stall" is **in the kernel, on both machines**: one `visum` chain per row (4 dependent `vmla` steps per
+block, each behind a 3-deep `vpadd` tree and the `sdot`s), four rows per x4 call whose chains an A78's ~160-entry
+window cannot fully overlap, and the scalar scale unpack sitting in front of every block. **The device-minus-host
+gap is 22 cycles per block ≈ 18 % of expert compute (≈ 7.7 ms at profile scale, k̄ = 6) — that is the upper bound
+for Clyde's stream-shape + memory terms together on a quiet day**, unless the M4 suffers the same stride penalty
+(cheap to test: S5(i) now times contiguous vs real-stride rows). Why `Q3K_X4` transferred at 0.23: it removed
+L1-hit activation loads, which cost issue slots on the 4-wide M4 and nothing on a latency-bound chain — it says
+"not issue-bound", not "memory-bound". The same arithmetic says a Q4_0-style unpack (fewer instructions on the
+same chain) will also transfer badly: **agree with (e″) that the pure unpack term is ≈ 0.23 × 37 % ≈ 8.5 %** of
+cached-slot time.
+
+**2. Three terms, N = 16, profile scale (`MUL_MAT_ID` compute 42.5 ms + 8.2 wait at k̄ = 6; hit rate h = 0.70
+from the LRU replay below, 0.55 if static):**
+
+| term | mechanism | needs | k̄ = 6 | k̄ = 4.2 | transfer evidence |
+|---|---|---|---|---|---|
+| U unpack instructions | fewer ops per block in the cached layout | re-laid format + kernel | 42.5 × 0.085 × h = **−2.5** | −1.8 | R18 `Q3K_X4` 0.23 |
+| S stream shape | 4 × 660 B runs → one contiguous tile stream per 4-row group; prefetcher ramps | re-laid format (an anon copy in the old layout does nothing here) or `prfm` | 0 to −2.7 (half of the ≤ 18 % bound × h) | 0 to −1.9 | none yet; bound from device − host cycles |
+| M memory | no minor/major faults, no TLB walks over 4 KB file pages for cached slots; protects 70 % of expert bytes from eviction | **anon copy only, any layout** | quiet day −1 to −7 (870 minor + 5-28 major faults/token today, ~1-2 µs and 0.1-0.5 ms each, ×h); pressured day −5 to −15 (R20 lost 24 % to cache loss) | −0.7 to −5 / −3.5 to −10 | R12-R14 fault counts, R20 day swing |
+| **N = 16 total** | | | **−3.5 to −12 (median ≈ −6)** quiet day | **−2.5 to −8.5** | |
+| D kernel ILP (not a cache term) | independent int32 accumulators per half/row, vectorized scale unpack; same bits | kernel only, **no memory, all 64 experts, every device** | −4 to −11 if latency-bound (host −15..−30 %, device −10..−25 % of compute) | −3 to −8 | to be calibrated by the `Q3K_VEC` A/B |
+
+**Which dominates on the phone: M**, by range and by variance — it is the only term that scales with the day's
+memory state, it needs no kernel, and Clyde's `GGML_EXPERT_ANON` measures it alone. U is small and certain; S is
+bounded and unproven. The biggest *machine-independent* lever is **D**, which is not a cache at all. Order of
+value: M (device-specific, 30 lines) > D (generalizes, kernel) > S > U. **S5(ii) as a re-laid-format cache is
+below Clyde's 8 ms rule in the median; build order is re-set in §3.**
+
+Combined with #1: k̄ 4.2 saves 12.7 ms of compute; plus the cache −2.5 to −8.5 → −15 to −21 ms at profile scale,
+×0.84 → −13 to −18 at best-run: 67-77 → 49-64 ms = **15.6-20.4 tok/s (estimated)**; add D if it holds (−3 to
+−8 at k̄ 4.2 → 18-23 tok/s). The honest statement: 20 needs k̄ ≈ 4.2 **and** two of {anon cache, ILP kernel,
+raw waits}; none of the three alone.
+
+**3. The kit-r3 probes — sufficient with one addition and one change of method.** Clyde's three separate U/S/M
+as intended. Add **`GGML_Q3K_ILP=1`** (D; see S5), because the `Q3K_VEC` A/B alone gives the transfer ratio but
+not the size of the prize. Change: `GGML_EXPERT_ANON` cannot be an in-generation A/B — the cache is state and
+needs ~160 tokens to fill (below) — so it runs as **separate reload rows** (anon 0 vs 16, same prompt, ≥ 200
+tokens, `minflt`/`majflt` per token and `anon`/`file` logged both sides), with a warm-up generation or a fill
+during prompt processing (every expert a prefill touches is read anyway; the copy is then a free by-product).
+Pre-registered predictions (device, profile scale, `MUL_MAT_ID` compute 42.5 ms):
+
+| probe | measures | prediction | decides |
+|---|---|---|---|
+| `GGML_CPU_AB=knob:Q3K_VEC:0:1` | transfer of a chain-shortening change (host −4..−8 % of compute, R15) | **−2 to −4 % (−1 to −2 ms)**; if ≥ 0.5 × host → in-core latency dominates (build D); if ≤ 0.25 × host → memory dominates (build M only) | D vs M order |
+| `GGML_Q3K_PF=1` (`prfm pldl1keep` next rows inside x4) | S without layout, all slots | **−0.5 to −3 ms**; < 1 ms or positive → S is not a lever and the re-laid format loses its second reason | S |
+| `GGML_EXPERT_ANON=16` (separate rows, warm) | M alone, h ≈ 0.70 | quiet day **−1 to −7 ms (median −3)**, minor faults −60 %, major −70 %; pressured day (MemAvailable < 1.5 GB) −5 to −15; if tok/s *falls* with anon +648 MB → too much for the day, retry N = 8 (324 MB, h ≈ 0.50) | M, and the N for this phone |
+| `GGML_Q3K_ILP=1` (if Tom builds it) | D | host −15 to −30 % of compute; **device −10 to −25 % (−4 to −11 ms) if latency-bound, ≤ −3 % if memory-bound** | the generalizing lever |
+
+Go/no-go for S5(ii) (re-laid format + cache) by Clyde's rule: PF (−0.5..−3) + ANON (−1..−7) + 0.23 × unpack
+(−2.5) = −4 to −12.5, median ≈ −7 → **likely no-go**; the format is built only if ANON + PF + ILP leave ≥ 8 ms
+on the table *and* the S5(i) stride test shows the tile stream matters on the M4.
+
+**4. LRU replay (host, `lab/logs/r21/lru-replay.txt`; per-layer cache of N experts, r16 traces; one expert =
+1.013 MB, all three matrices cached together, so byte hit rate = identity hit rate).**
+
+| policy | N | after 64 tok | after 256 | after 512-681 (4 texts concatenated, topic switches) | steady state (last 64 tok of each text) | copies per token |
+|---|---|---|---|---|---|---|
+| pure LRU (insert on every miss) | 8 | 48.9 % | 49.2 % | 50.0 / 49.6 % | 47-53 % | ~75 — infeasible |
+| pure LRU | **16** | **68.1 %** | **70.4 %** | **70.8 / 69.9 %** | **68-77 %** | ~70 — infeasible |
+| pure LRU | 24 | 78.7 % | 82.9 % | 82.1 / 81.2 % | 79-86 % | ~50 — infeasible |
+| window-LFU, ≤ 4 promotions/token (4 MB memcpy) | 16 | fills in ~160 tok (640 copies) | 56 % overall on the 681-tok session | — | **66-74 %** (35 % on the 84-token official prompt: never fills) | 3.7 |
+| window-LFU, ≤ 8/token | 16 | — | 62 % | — | 70-79 % | 6.5 |
+| window-LFU, ≤ 4/token | 8 | — | 42 % | — | 45-57 % | 3.5 |
+| window-LFU, ≤ 4/token | 24 | — | 63 % | — | 68-81 % | 3.8 |
+
+Pure LRU at N = 16 holds ~70 % from the 64th token on and survives topic switches (the within-text 70-80 % and the
+pooled 54.5 % bracket it; recency does the work — R16's 45-50 % repeat from the previous token). But it would copy
+~70 MB per token. With a 4 MB/token promotion budget the steady state is the same 66-74 %, **the fill takes ~160
+tokens, so a 32-token benchmark on a cold cache sees ~0 %**: the cache must live across requests and fill during
+prompt processing. Memory-term planning number: **h = 0.70 at N = 16 (steady), 0.50 at N = 8, 0.80 at N = 24.**
 
 ## 2. What was measured today (host, raw in `lab/logs/r21/`)
 
@@ -280,14 +410,24 @@ gate op of each layer (keep the previous token's quantized/raw `src1` row per la
 1536 floats × 40). Run the story prompt 72 tokens; report the per-layer median. Prediction: < 0.8 in every
 layer → expert-output reuse is closed without a PPL run.
 
-**S5 — re-laid expert microbench, then the bounded cache (build in this order; stop at the first failure).**
-(i) Microbench, host, no model: a 60-line `lab/relayout_bench.c` (or a `test-backend-ops`-style case) that takes
-one expert's gate matrix (512 × 1536 Q3_K, 1.01 MB; dump it once from D6 with `gguf-py` into
-`lab/logs/r21/expert.bin`) and one Q8_K activation row, times 1,000 × `ggml_vec_dot_q3_K_q8_K` over all 512 rows
-vs the same values in a candidate layout with its own dot (first candidate: 4-row interleave as `Q3K_X4` already
-walks it, 6-bit sub-block scales pre-expanded to int8, 2-bit and 1-bit planes de-interleaved per 4-row group;
-same byte count), asserts every row's result bit-identical, prints µs per MB for both at 1 thread. Go/no-go:
-≥ 1.5× faster per MAC (the host Q3_K→Q4_0 gap measured today); log to `lab/logs/r21/relayout-bench.txt`.
+**S5 — expert path, re-ordered after (e″)/(e‴): memory first, kernel ILP second, format last.**
+(0) Kit r3 probes (Tom, each env-gated, bit-identical): `GGML_Q3K_PF=1` (`prfm pldl1keep` of the next 4 rows'
+blocks inside the x4 loop); `GGML_EXPERT_ANON=<N>` (hottest N experts per layer `memcpy`'d into anon memory in the
+existing layout, pointer redirect in `MUL_MAT_ID`, window-LFU over 64 tokens with ≤ 4 promotions per token,
+fill allowed during prompt processing, cache persists across requests, `MADV_HUGEPAGE` if THP is on; log
+`anon=N/hit%/copies` in the `cpu-prof` line and `minflt`/`majflt` per token in the kit JSON; separate rows, not
+A/B); `GGML_Q3K_ILP=1` (`ggml_q3k_half` with two independent int32 accumulators per half and the 4 rows' chains
+interleaved, scale unpack vectorized: the int32 sub-block sums are exact in any order, the float step
+`sum += d · vaddvq(visum)` per block per row stays → bit-identical; verify chunks 1-3 at `-ub 1`/`-ub 32` and a
+72-token greedy generation byte-identical); kit A/B `knob:Q3K_VEC:0:1`. Predictions in (e‴) ¶3.
+(i) Microbench, host, no model: a 60-line `lab/relayout_bench.c` that takes one expert's gate matrix (512 × 1536
+Q3_K, 1.01 MB; dump it once from D6 with `gguf-py` into `lab/logs/r21/expert.bin`) and one Q8_K activation row,
+times 1,000 × the x4 dot over all 512 rows for: (a) rows at the real stride vs (b) the same rows packed
+contiguously (sizes S on the host), (c) the ILP variant, (d) a candidate re-laid format (4-row interleave as
+`Q3K_X4` walks it, 6-bit sub-block scales pre-expanded to int8, 2-bit and 1-bit planes de-interleaved per
+4-row group; same byte count), asserting every row bit-identical, printing µs per MB at 1 thread. Go for (ii)
+only if (d) beats (c) by ≥ 1.3× *and* (b) beats (a) by ≥ 1.2× — otherwise the format has no job the kernel and
+the anon copy do not already do. Log to `lab/logs/r21/relayout-bench.txt`.
 (ii) Only on a go: `GGML_EXPERT_RELAYOUT=<N>` (lab, default 0) in `ggml-cpu.c`: per layer a use counter over
 the routed ids (the `eid` log site, ≈ line 3673, already sees them), after `GGML_EXPERT_RELAYOUT_WARM=32`
 tokens re-lay the top-N experts' gate/up/down into anon buffers (3 × N × 40 × 0.34 MB), refresh the set every
@@ -304,8 +444,11 @@ Verify as in §1(e′) ¶4; then host A/B `GGML_CPU_AB=RELAYOUT:0:16` on the sto
 Within +0.5 %: the compute-less families buy ≈ 6-8 ms (one slot on ~15 % of tokens): 13-15 → 14.5-16.5 tok/s,
 estimated. 20 is reachable only as **raw levers to ~16 tok/s (the bounded re-laid expert cache of §1(e′),
 remaining waits) plus the router-weight rule at k̄ ≈ 3.5-4.5, which costs ≈ +1 to +5 % PPL on wikitext-2 (stays
-under the +10 % hard limit; the +0.5 % working tolerance does not survive).** The one combination whose
-estimated band contains 20 is N = 16 re-laid experts + k̄ 4.2 (+1.9 % screen): 17-22 tok/s at best-run scale. That is the number the owner has to
+under the +10 % hard limit; the +0.5 % working tolerance does not survive).** After (e″)/(e‴) the
+bounded expert cache is worth −3.5 to −12 ms at profile scale (median ≈ −6; memory term dominant and
+day-dependent), so N = 16 + k̄ 4.2 (+1.9 % screen) is **15.6-20.4 tok/s** at best-run scale — 20 only in the top
+corner — and reaching it needs k̄ ≈ 4.2 **plus two of** {anon expert cache, ILP Q3_K kernel (device-independent),
+the remaining raw waits}. Kit r3 (S5(0)) measures each term separately before anything larger is built. That is the number the owner has to
 decide with. The method itself — one threshold on the router's own softmax — is model- and
 device-independent; the price is model-dependent and must be measured per model the way it was today
 (two 3-minute curves).
