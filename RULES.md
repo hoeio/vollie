@@ -7,8 +7,13 @@ behind each lesson is in `reports/03_final.md` (R-numbers).
 ## 1. Goal and the one hard limit
 
 - **Goal:** ≥ 20 tok/s writing (decode) on a Snapdragon 888 phone (Galaxy Z Flip 3, 8 GB).
-- **Hard limit:** wikitext-2 perplexity at most **10% above the same model's F16 weights**
-  (F16 = 9.0438, so ≤ 9.948). It is never traded for speed, and never relaxed quietly.
+- **Hard limit:** wikitext-2 perplexity at most **20% above the same model's F16 weights**
+  (F16 = 9.0438, so ≤ 10.853). It is never traded for speed, and never relaxed quietly. *Owner's
+  amendment 2026-11-02: raised from 10 % (≤ 9.948) to 20 % after round 2 showed the compute-less route
+  needs a quality price; the served file's stock PPL is 9.6051.*
+- **Working budget for the speed rule: +2 % over the served file's stock PPL** (≤ 9.797 on wikitext-2;
+  en.txt reported as the sanity check). Owner's amendment 2026-11-02 for the router-weight adaptive expert
+  count (`reports/05_compute_less.md`). Anything beyond +2 % is proposed with numbers first.
 - **The quality test is fixed:** `llama-perplexity`, wikitext-2-raw test set, context 512, batch 512,
   all chunks (`tools/ppl.sh`). It does not change mid-project to make numbers look better.
 - `lab/text/en.txt` (English prose) is measured and reported with every result as a **sanity check**;
