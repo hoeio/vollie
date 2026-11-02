@@ -58,6 +58,17 @@ def main():
         for op in ('MUL_MAT_ID', 'MUL_MAT'):
             if op in oa and op in ob:
                 print(f"      {op}: compute {oa[op][1]/1000:.1f} → {ob[op][1]/1000:.1f} ms, wait {oa[op][2]/1000:.1f} → {ob[op][2]/1000:.1f} ms")
+    print('\n== r3 fields per run (last cpu-prof line; faults per generated token)')
+    for x in runs:
+        lines = [l for l in x.get('prof', []) if l.startswith('cpu-prof')]
+        if not lines: continue
+        tok = x.get('tokens') or 0
+        for line in lines[-2:] if x['phase'] == 'ab' else lines[-1:]:
+            d, o = prof_fields(line)
+            mmid = o.get('MUL_MAT_ID', (0, 0, 0))
+            print(f"  {x['phase']:8s} {x['name'][:30]:30s} {d.get('ab','  ')} anon={d.get('anon')} anon_mb={d.get('anon_mb')} kavg={d.get('kavg')} "
+                  f"ilp={d.get('ilp')} pf={d.get('pf')} us/token={d.get('us/token')} MUL_MAT_ID {mmid[1]/1000:.1f}+{mmid[2]/1000:.1f} ms  "
+                  f"majflt/tok={(x.get('majflt') or 0)/tok if tok else float('nan'):.1f} minflt/tok={(x.get('minflt') or 0)/tok if tok else float('nan'):.0f}")
     print('\n== best per setting (phases threads/baseline/release/spec)')
     best = {}
     for x in runs:

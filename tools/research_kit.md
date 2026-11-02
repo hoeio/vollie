@@ -1,26 +1,27 @@
-# Research kit (round 2) — what it runs, the result file, how to run it
+# Research kit (round 3) — what it runs, the result file, how to run it
 
-The kit is the **"Run research kit (~10 min)"** button in Vollie's Settings (app 2.2.7+30, kit `r2`;
-round 1 was 2.2.6+29 / `r1`, results in `reports/03_final.md` R18). It measures the round-2 build
-(`reports/04_campaign.md` §7) on the phone as it is, and puts one JSON report on the clipboard
+The kit is the **"Run research kit (~15 min)"** button in Vollie's Settings (app 2.2.8+31, kit `r3`; round 2 was
+2.2.7+30 / `r2`, results in `reports/03_final.md` R20). It measures the round-3 probes
+(`reports/05_compute_less.md` §3 S5(0)) on the phone as it is, and puts one JSON report on the clipboard
 ("Copy research results"). `tools/research_parse.py` turns that JSON into `results.csv` rows and R-log text.
 
-What changed in the round-2 build: the CPU module now defaults to `GGML_MMID=3` + `GGML_Q3K_X4=1`
-(R18: −8.3 %/token, bit-identical), and the app ships a rebuilt `libllama.so` (`lab/granite-rollback.patch`)
-so a Granite-H target can roll a rejected draft back — round 1's speculation runs all failed on that.
+What changed in the round-3 build (CPU module, every probe default off): `GGML_Q3K_ILP=1` (the Q3_K x4 expert
+dot with the 4 rows side by side and no serial accumulator chain; bit-identical), `GGML_Q3K_PF=1` (prefetch
+of the next 4 rows' block inside the x4 loop; bit-identical), `GGML_EXPERT_ANON=<N>` (the N most used experts
+of each expert tensor copied into anonymous memory, window-LFU over 64 tokens, ≤ 4 promotions per token, the
+prompt fills it, lives across requests; same bytes, so identical output). The speculation phase is gone
+(closed in R20) and `GGML_CPU_PROF=2` now counts only the main model's 2-8-token graphs.
 
-## What one run does (about 10 minutes, no settings to change)
+## What one run does (about 12 minutes, no settings to change)
 
 | phase | runs | what | knob |
 |---|---|---|---|
-| `baseline` | 2 | official benchmark prompt, 32 tokens, saved settings (3 threads, tiny-op, expert I/O) — now with the new defaults | — |
-| `ab` | 4 | in-generation A/B over a 72-token story: new defaults vs off (regression check), then tiny-op 65,536 vs 262,144 three times | `GGML_CPU_AB=knob:…` |
-| `spec` | 9 | reload with 4 recurrent rollback slots; warm-up on free text with 4 draft tokens (a rejection must occur — a note is added if not); official 32 without a draft, then with 1 / 2 / 3 / 4 draft tokens; story 64 without, then with 2 / 4. Draft = Granite 4.0 350M Q4_0 (downloaded once, 228 MB, SHA-256 checked). Draft runs set `GGML_CPU_PROF=2`: the profile line covers the 2-8-token verify graphs only (`us/token` there = µs per graph, `tokens` = tokens they covered) → batched-verify cost | `ModelParams.speculativeRollbackTokenMax`, `SpeculativeDecodingConfig.draftSimple`, `GGML_CPU_PROF=2` |
+| `baseline` | 2 | official benchmark prompt, 32 tokens, saved settings | — |
+| `ab` | 6 | in-generation A/B over a 72-token story: `Q3K_VEC:0:1`, `Q3K_ILP:0:1`, `Q3K_PF:0:1`, `Q3K_ILP:0:1`, `Q3K_PF:0:1`, `EXPERT_SKIP:0:<t>` (the threshold placed on the full wikitext-2 set, R23; not bit-exact) | `GGML_CPU_AB=knob:…` |
+| `anon` | 5 | separate rows (the cache is state): story 200 without the cache, story 200 with N = 16 cold (fills while it runs), story 200 warm (same prompt: best case), official 32 warm, then `EXPERT_ANON:0:16` A/B on the warm cache (one cache, filled on both sides; B reads the copies, A the file) | `GGML_EXPERT_ANON`, `GGML_CPU_AB` |
 
-Round-2 results: `reports/03_final.md` R20 (speculation measured and closed; tiny-op 262,144 default). Known r2 kit flaws: `GGML_CPU_PROF=2` lines also count the draft's 2-5-token catch-up graphs (and, with rollback slots, some 1-token target graphs), so the verify cost is read from `spec.eval_ms / attempts`; the saved knobs drifted between rounds (expert I/O 5 → 1) because the speed test re-ran — a kit should pin what it is not testing.
-
-`decode_tps` of a draft run is the **effective** rate (every accepted token counts; greedy, so the text is the
-model's own). Round 1's barrier, threads and release phases are gone: answered (`03_final.md` R18).
+Known r2 kit flaws, fixed: the `PROF=2` mix (phase dropped; the profiler now keys on the main model's token
+embedding); the saved knobs still come from the speed test's picks (`saved` in the JSON) — compare rows within one run.
 
 Every run waits for thermal headroom < 0.65 (≤ 90 s) like the speed test, and records the headroom
 it started at, core clocks before/after, `/proc/meminfo` + the process's RssAnon/RssFile, major/minor
@@ -28,8 +29,7 @@ page faults, bytes read from storage (`/proc/self/io`, absent where Android deni
 first token, duration, the module's `cpu-prof` lines, and the first 80 characters of the reply (same text
 for every bit-exact knob).
 
-The knobs are reset and the model reloaded normally afterwards. The draft model file stays next to
-the model (`granite-4.0-350m-Q4_0.gguf`, 228 MB); delete it from the app's files to reclaim space.
+The knobs are reset and the model reloaded normally afterwards (an empty `GGML_EXPERT_ANON` frees the cache).
 
 ## Result file (JSON, one object)
 
@@ -39,7 +39,7 @@ header        [str]  Vollie's test header (chip, RAM, context, CPU parts, clocks
 saved         {tiny, expert_io, write_threads, read_threads, context}   the speed test's picks the run started from
 kernel, thp   str    /proc/version, /sys/kernel/mm/transparent_hugepage/enabled
 mem_start, mem_end   str   DeviceProfile.memInfo(): avail= cached= swapfree= anon= file= swap= (MB)
-notes         [str]  e.g. "draft model unavailable: …", "aborted: …"
+notes         [str]  e.g. "aborted: …"
 runs          [run]
 run:
   phase, name, threads, env {VAR: value}          what was set (env values '' = off)
@@ -53,7 +53,6 @@ run:
   io_read_bytes        bytes read from storage during the run (process-wide)
   prof                 [str] cpu-prof / cpu-bench / repack-release lines the module printed during the run
   text                 first 80 chars of the reply
-  spec                 {draft_tokens, accepted, attempts, verify_tokens, replay_tokens, draft_ms, verify_ms, eval_tokens, eval_ms}  (speculation runs)
   mem_before_load      (release/after load) memInfo() before the reload
   error                exception text if the run failed
 ```
@@ -61,19 +60,22 @@ run:
 Reading a `cpu-prof` line: `… graphs=32 tokens=32 … us/token=98176 compute=74768 wait=23016 nodes=1963 barriers=818 mmid_thr=22387/23027/22477 | MUL_MAT_ID 120:34214+16861 …` —
 `mmid_thr` = µs each thread spent computing inside the expert mat-muls per token (spread = imbalance);
 after `|`, per op type: count : µs computing + µs waiting at the sync after it (thread 0). `skip=60/1%` =
-expert-skip threshold / share of routed experts skipped. `x4`, `mmid` = kernel and no-barrier knobs in effect.
-With `GGML_CPU_PROF=2` (draft runs) `graphs` counts verify graphs of 2-8 tokens, `tokens` their total, and `us/token` is µs per graph.
+expert-skip threshold / share of routed experts skipped, both on that side; `kavg` = experts kept per layer and token on that side.
+`x4`, `ilp`, `pf`, `mmid` = kernel and no-barrier knobs in effect. `anon=16/68%/11.2` = cache slots per expert
+tensor on that side (0 = not read) / routed experts of decode tokens found cached / tensor copies per decode token
+(Granite: 3 tensors per expert, ~0.34 MB each); `anon_mb` = anonymous memory the cache holds.
+`majflt`, `minflt` per run divided by `tokens` = faults per token (the parser prints both).
 
 ## 실행 안내 (한국어)
 
-**준비:** Vollie 2.2.7+30 설치(APK, `vollie-2.2.7+30-research-r2.apk`), 모델이 이미 받아져 있고 평소처럼 쓰는 상태면 됩니다. 전화기 설정은
-아무것도 바꾸지 마세요(다른 앱도 그대로). Wi-Fi 연결은 필요합니다(드래프트 모델 228 MB를 한 번 받습니다).
+**준비:** Vollie 2.2.8+31 설치(APK, `vollie-2.2.8+31-research-r3.apk`), 모델이 이미 받아져 있고 평소처럼 쓰는 상태면 됩니다. 전화기 설정은
+아무것도 바꾸지 마세요(다른 앱도 그대로). 이번 회차는 추가 다운로드가 없습니다.
 
-1. Vollie → 설정(Settings) → **"Run research kit (~10 min)"** 탭.
-2. 약 10분 동안 화면을 켠 채로 둡니다(앱이 켜둡니다). 진행 상황은 버튼 아래에 `Research · 분:초 · 단계`로 보입니다.
-   모델을 다시 읽는 구간(`reloading…`)이 1분 정도 걸립니다. 1회차에서 받은 드래프트 모델(228 MB)이 남아 있으면 다시 받지 않습니다.
+1. Vollie → 설정(Settings) → **"Run research kit (~15 min)"** 탭.
+2. 약 12분 동안 화면을 켠 채로 둡니다(앱이 켜둡니다). 진행 상황은 버튼 아래에 `Research · 분:초 · 단계`로 보입니다.
+   `anon` 단계에서 앱이 메모리를 약 650 MB 더 씁니다(끝나면 돌려줍니다).
 3. 끝나면 **"Copy research results"** 탭 → 클립보드에 JSON이 복사됩니다. 그대로 제게 붙여 보내 주세요
-   (길이 30-60 KB). 같은 내용이 앱 파일 폴더에 `research-r2-<시각>.json`으로도 저장됩니다.
+   (길이 30-60 KB). 같은 내용이 앱 파일 폴더에 `research-r3-<시각>.json`으로도 저장됩니다.
 4. 중간에 멈추려면 **"Stop research run"**. 그때까지의 결과도 복사할 수 있습니다.
 
 **보내 주실 것:** 붙여 넣은 JSON 한 개. 가능하면 실행 직전의 전화기 상태 한 줄(예: 충전 중 여부, 방금
