@@ -154,6 +154,14 @@ throttling), recorded from app 2.1.7 on.
 | the whole round | central sum −18 ms → 78 ms → **15.5-17.5 tok/s bench**; 20 tok/s (64-71 ms) needs two terms at the upper band: SKIP ≥ −12 **and** ILP ≥ −8 (with ANON ≥ −3), or SKIP ≥ −12 **and** ANON ≥ −7 (pressured day, ILP ≥ −4) | — |
 | `-fa off` host test | `-t 4` and `-t 6` identical to the last digit at `-ub 1`, both ≠ 5.4327 / 5.4397 | they still differ → the split lives elsewhere |
 
+**R23 — host part, measured 2026-11-02 evening (Tom; logs `lab/logs/r23/`, `lab/logs/p/ppl-skip115-*.log`). Tom's run was stopped by the owner before the kit/APK work finished; the worktree holds the three probes uncommitted.**
+
+- *Threshold curve, 60-chunk screen (base 9.8702, −t 6):* SKIP 100 / 105 / 110 / 115 / 120 / 130 / 140 → 9.9158 / 9.9247 / 9.9711 / 10.0136 / 10.0554 / 10.2071 / 10.4109, k̄ 4.71 / 4.50 / 4.29 / 4.08 / 3.86 / 3.44 / 3.06.
+- *Full set:* **SKIP 115 → wikitext-2 9.7771 (+1.79 % vs stock 9.6051, inside the +2 % budget), en.txt 11.4420, k̄ 4.11 / 4.13.** Screen under-read = 0.34 pt, exactly Bonnie's ≈ 0.35. The pre-registered "edge ≈ 115-118" holds; the 110 prediction (9.74) was not run at full set because 115 already passes — **round-3 threshold = 115 permille, k̄ ≈ 4.1 (wikitext)**. The r3-base and r3-skip100 full runs were cut at chunk 496 / ~18 by the stop and are not used.
+- *Identity (−t 6, chunks 1-3, −ub 1 / −ub 32 / −b 512):* `GGML_Q3K_ILP=1`, `GGML_Q3K_PF=1`, `GGML_EXPERT_ANON=16`, and all three together each reproduce off to the last digit (5.4733 / 7.3025 / 7.0285; 5.5121 / 7.3161 / 7.0267; 5.5137 / 7.3175 / 7.0292). Bit-identical as specified.
+- *Thread variance:* `-fa off -ub 1` gives **5.4696 at both −t 4 and −t 6**, ≠ 5.4397 (fa on, −t 6) → Bonnie's split-KV diagnosis confirmed; the −t 4 / −t 6 difference is upstream flash-attention's one-query partial merge, not the module.
+- Not yet done when stopped: host 1-thread `MUL_MAT_ID` µs/token for ILP / PF, ANON hit % on the story prompt, the kit A/B knobs and `minflt`/`majflt` fields in `research.dart`, the PROF=2 fix, patch regeneration, APK.
+
 **R20 — round-2 device results against the R19 predictions (2026-11-02 pm; kit r2 JSON, 15 runs, 23 min).**
 Phone state: swap 377 MB in use when the kit started (morning: 34), SwapFree 0 for most of the run, MemAvailable 1.0-2.2 GB. Between the rounds the owner's speed test had re-picked the saved settings — tiny-op 262,144, **expert I/O 1** (the next-layer guess off: every profile line says `pred=-1%`), 3 reading threads — so no row of r2 is a like-for-like of r1's baseline; the A/B deltas and the within-run no-draft comparisons are the results.
 
