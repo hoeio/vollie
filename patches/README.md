@@ -6,7 +6,7 @@ be rebased when upstream moves.
 ## llama.cpp — `llama.cpp/0001-cpu-runtime.patch` (base: `llama.cpp/BASE`)
 
 Touches only the CPU backend (`ggml/src/ggml-cpu/ggml-cpu.c`, `arch/arm/quants.c`, `repack.cpp`,
-`kleidiai.cpp`). Every feature is off unless its environment variable is set (read before each graph) —
+`kleidiai.cpp`, `quants.h`, and the new header `vollie-release.h`). Every feature is off unless its environment variable is set (read before each graph) —
 except `GGML_MMID` (default 3) and `GGML_Q3K_X4` (default 1) since round 2, both measured −8.3 %/token
 on the device by in-generation A/B (`reports/03_final.md` R18) — and none changes
 results: each was checked bit-identical with `llama-perplexity` at one-token, 32-token and
@@ -26,7 +26,7 @@ results: each was checked bit-identical with `llama-perplexity` at one-token, 32
 | prefetch in the Q3_K dot | `GGML_Q3K_PF` | software prefetch of the next block; bit-identical |
 | anon-memory hot-expert cache | `GGML_EXPERT_ANON=<N>` | window-LFU copy of the hottest experts into anonymous memory; same bytes |
 | more A/B sides | `GGML_CPU_AB=` `EXPERT_SKIP` / `Q3K_ILP` / `Q3K_PF` / `EXPERT_ANON` | the in-generation A/B now alternates these too |
-| release helper | `ggml/src/ggml-cpu/vollie-release.h` (new header) | source-page release code moved out of `ggml-cpu.c` |
+| release helper | `ggml/src/ggml-cpu/vollie-release.h` (new header) | the `GGML_REPACK_RELEASE=1` code: after a tensor is repacked, `madvise(MADV_PAGEOUT)` (fallbacks `MADV_COLD` / `MADV_DONTNEED`) on the mmap source pages so the page cache can hold experts instead; included by `ggml-cpu.c` and `repack.cpp`; data and results unchanged |
 | no barrier + dynamic chunks in `MUL_MAT_ID`, 4-row Q3_K, expert skip, helper affinity, source-page release, barrier bench, generic A/B | see `docs/runtime-knobs.md` (round 1, R17/R18) | the round-1 campaign knobs; `GGML_CPU_PROF=2` profiles 2-8-token graphs (speculative verify batches), now main-context only |
 
 `0001` is produced with `git -C lab/llama.cpp-tiny diff HEAD -- ggml/src/ggml-cpu` against base `620d2225c`.
