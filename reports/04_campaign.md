@@ -241,3 +241,34 @@ trip answers the unknowns and tests something:
 3. Pre-registered predictions per variant go into `03_final.md` before the build is frozen.
 
 Round 2 then depends on the owner's answer on D1 (second GGUF) and on round 1's numbers.
+
+## 7. Round 1 answers (R18, 2026-11-02; details in `03_final.md` R18)
+
+The three unknowns of §3, answered or not:
+
+1. **Flash bytes per token:** *not answered* — `/proc/self/io` is not readable from the app on this phone. Major faults ran 4-10 per token (one 270/token eviction storm). Round 2 tries `getrusage(RUSAGE_SELF).ru_inblock`.
+2. **Barrier cost vs imbalance:** **answered** — 0.17 / 0.30 / 2.0 µs per barrier at 2 / 3 / 4 threads, i.e. 0.25 ms of the ~20 ms wait. The wait is imbalance. Dynamic 32-row chunks in `MUL_MAT_ID` (B4) cut its wait 16.5 → 6.0 ms on the device.
+3. **4th thread with the helper on an A55:** **answered, negative** — 4t loses by 8-15 % with the helper gone and at equal clocks (2112 / 2035 MHz): Android's own threads take the 4th big core. And the helper on an A55 costs 13 % by itself (the guess arrives too late).
+
+Batched-verify cost (D1's input): *not measured* — every draft run failed on the first rejected draft because the phone's prebuilt `libllama.so` clamps `n_rs_seq` to 0 for Granite-H (the one-line arch-list fix exists only in the host build).
+
+Idea status after round 1:
+
+| idea | round-1 result | status |
+|---|---|---|
+| B2 no barrier in `MUL_MAT_ID` | −2.8 ms, but +2.9 ms of duplicated quantization | superseded by B4 |
+| **B4 dynamic expert chunks** | **−7.5 ms** (`MUL_MAT_ID` wait 16.5 → 6.0) | **default in the next build** |
+| **C1 multi-row Q3_K** | **−4.9 ms** end-to-end, compute itself only −2.4 % | **default**; the expert path is load/stall-bound on the phone, not arithmetic-bound |
+| B4 + C1 | **−8.4 ms (−8.3 %)**; ≈ 13.3 tok/s at R13 scale (estimated) | ship |
+| tiny-op 262144 | −4.3 ms in one A/B, against two separate-run sweeps saying the opposite | repeat ×3 |
+| E1 expert skip | −0.7 ms where PPL is safe; −9.1 ms only at +0.82 % wiki / +2.1 % en | dropped as a default |
+| B5 helper on an A55 | −13 % | dead |
+| B7 cheaper barrier | barrier is 0.3 µs | dead |
+| 4 compute threads | loses at equal clocks without the helper | dead |
+| A2 release repack source | within noise, no comparable `file=` row | inconclusive, low priority |
+| D1 draft-model speculation | build bug; draft costs 15 ms/token on the big cores, +265 MB anon costs the target nothing | **round 2, with a rebuilt `libllama.so`** |
+| A1 flash bytes/token | `/proc/self/io` denied | round 2 via `getrusage` |
+
+Remaining raw-decode gap with B4 + C1 on: 93 ms/token = `MUL_MAT_ID` 42.5 + 8.2 wait, `MUL_MAT` 26.0 + 2.2, `SSM_SCAN` 3.8, `CPY` 3.6, other ≈ 6, against a 46.8 ms roofline. The experts still move bytes ~4× slower than the dense stream (≈ 5.7 vs 21.5 GB/s-equivalent); that ~30 ms is the gap, and it is I/O-shaped, not kernel-shaped. Raw 20 stays out of reach on the CPU path; effective tok/s (D1) is the route, and round 1 showed the phone can afford the draft's memory.
+
+**Round 2, proposed order (for the owner's go-ahead):** (1) defaults `GGML_MMID=3`, `GGML_Q3K_X4=1`; (2) patched `libllama.so` (arch list) built in the `tool/build_cpu.sh` tree and handed to llamadart as a local bundle (`LLAMADART_ALLOW_LEGACY_LOCAL_BUNDLES=1`, `third_party/bin/android-arm64/`), kit r2 spec phase with a forced-rejection warm-up, batched-verify time for 1-4 tokens, effective tok/s at n = 2 / 4 on the official and story prompts; (3) A/B repeats: tiny-op 262144 ×3, 16-row chunks (B4 finer), B3 fused gate/up; (4) `getrusage` for flash bytes.
