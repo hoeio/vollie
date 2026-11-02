@@ -18,13 +18,15 @@ multiply-adds *after* the raw levers. In expert-slots: 2.5-4 of 6 per token. In 
 
 Quality budget: +0.5 % working tolerance (9.6531 on the full set), +10 % hard (9.948 vs F16 9.0438;
 stock D6 is already +6.2 % over F16, so the hard limit leaves **+3.6 % over stock** = 9.948/9.6051).
+(Corrected after R22 / owner's decision of 2026-11-02: hard limit raised to +20 % vs F16 = 10.853; the speed
+rule has its own approved budget of +2 % over stock = 9.797 full set. §5 uses these.)
 On the 60-chunk screen the baseline is 9.8702 (all three builds identical, so one reference serves).
 
 ## 1. Ranked families
 
 | # | family | lever on this testbed | gain at best-run scale (est.) | quality (host) | verdict |
 |---|---|---|---|---|---|
-| 1 | **(a) adaptive expert count by the router's own weight** | skip slot if normalized w < t (exists: `GGML_EXPERT_SKIP`) | −6 to −8 ms inside +0.5 %; **−12 to −17 ms at k̄ ≈ 4.2 for +1.9 %**; 20 tok/s needs k̄ ≈ 3-3.5 → ≈ +5-9 % | adaptive is **3× cheaper in PPL per expert saved than uniform k** (measured) | the only family with the magnitude; price is the owner's call |
+| 1 | **(a) adaptive expert count by the router's own weight** | skip slot if normalized w < t (exists: `GGML_EXPERT_SKIP`) | −6 to −8 ms inside +0.5 %; **−12 to −17 ms at k̄ ≈ 4.2 for +1.9 %** (corrected after R22: +1.88 % screen is k̄ 3.86; the +2 % *full-set* budget lands at t ≈ 110, k̄ ≈ 4.3, see §5); 20 tok/s needs k̄ ≈ 3-3.5 → ≈ +5-9 % | adaptive is **3× cheaper in PPL per expert saved than uniform k** (measured) | the only family with the magnitude; price is the owner's call |
 | 2 | (e′) **bounded cache of re-laid experts, bit-exact** (top-N per layer, adaptive per session; a full re-laid copy = 2.59 GB anon is impossible on this phone) | per-MAC gap Q3_K vs Q4_0 experts measured 1.58× on host; dense rate is the 4× ceiling | N = 16 (648 MB anon, memory-neutral if same-size): **−9 to −17 ms** at k̄ = 6, −19 to −29 ms **together with #1 at k̄ 4.2** (profile scale) | none if the kernel keeps Q3_K's int sub-block sums and float order | the multiplier for #1; §1(e′) has the per-N table; host microbench first (S5) |
 | 3 | (d) cheap-token paths (draft confidence, emit-without-verify) | 350M draft agrees with the target's argmax on 55.7 % of tokens; gate p ≥ 0.98 → 8 % of tokens at 99 % agreement | **negative on this phone**: the target still has to ingest every token (state), so an unverified emit saves only the lm_head (~6 ms) and pays 14-24 ms of draft (R20) | +0.85 % at 8 % coverage, +0.12 % at 6 % | dead here; generalizes only to a device with a free draft lane |
 | 4 | (b) adaptive depth / early exit | skip a layer ≈ −1.8 ms; need 9-14 layers/token | dropping even the cheapest single layer (4) *always* costs +2.5 %; layers 36-39 each +52 to +547 %; SSM state of a skipped Mamba layer is never updated | — | dead by arithmetic and by architecture; one cheap falsifier left (§3 S2) |
@@ -53,8 +55,8 @@ the PPL run itself does not print the share — Tom spec S1 fixes that):
 | 0.085 | ~7 % | 5.6 | 9.8707 | +0.005 % | — |
 | 0.090 | 10-12 % / 9-15 % | 5.3 | 9.8597 | −0.11 % | — |
 | 0.095 | ~15 % | 5.1 | 9.9021 | +0.32 % | — |
-| 0.100 | 15-18 % | 5.0 | 9.9158 | +0.46 % | **+0.82 %** (9.6834); en.txt +2.1 % |
-| 0.120 | ~30 % | 4.2 | 10.0554 | **+1.88 %** | — |
+| 0.100 | 15-18 % (wikitext 21.5 %, R22) | **4.71 measured** (corrected after R22; was est. 5.0) | 9.9158 | +0.46 % | **+0.82 %** (9.6834); en.txt +2.1 % |
+| 0.120 | ~30 % (wikitext 35.7 %, R22) | **3.86 measured** (corrected after R22; was est. 4.2) | 10.0554 | **+1.88 %** | — |
 
 Router-weight CDF (share of (token, slot) pairs whose normalized weight is below t; `lab/logs/r21/skipshare.txt`,
 greedy, 64 decoded tokens per prompt, bit-exact counter in the module): t = 0.03: 0 %, 0.05: 0-2 %, 0.07: 2-5 %,
@@ -64,9 +66,12 @@ within 1-6 points, so the rule's *coverage* is a property of the router, not the
 like the threshold rule; the cumulative-weight (top-p) form is the same ordering with a per-token budget.
 
 What the two curves say, machine-independently:
-- **At equal k̄ the router-adaptive rule costs ~3× less PPL than uniform k**: k̄ ≈ 5.0 adaptive +0.46 % (60 ch.)
-  / +0.82 % (full) vs uniform 5 +1.26 %; k̄ ≈ 4.2 adaptive +1.88 % vs uniform 4 +6.74 %. The router's weights do
-  know which experts matter — the signal the owner asked about works, and it is the model's own.
+- **At equal k̄ the router-adaptive rule costs ~3.5× less PPL than uniform k** (corrected after R22: the measured
+  k̄ are 4.71 / 3.86, so the rule saves *more* slots per PPL point than first estimated): k̄ 4.71 adaptive +0.46 %
+  (60 ch.) / +0.82 % (full) = 0.36 %/slot vs uniform 5 1.26 %/slot; k̄ 3.86 adaptive +1.88 % = 0.88 %/slot vs
+  uniform 4 3.37 %/slot. The router's weights do know which experts matter — the signal the owner asked about
+  works, and it is the model's own. Against the two other router-derived rules (R22, §5) the absolute threshold
+  is also the cheapest: 2.1-2.6× less PPL per slot than cumulative mass, 2.1-2.9× less than relative gap.
 - The screen under-reads the full set by ~0.35 point at t = 0.10 (+0.46 vs +0.82 %); treat 60-chunk deltas as
   optimistic by that much.
 - Extrapolating the adaptive curve (cost grows faster than linear: 1 slot → +0.8 %, 1.8 slots → +1.9 %):
@@ -441,6 +446,10 @@ Verify as in §1(e′) ¶4; then host A/B `GGML_CPU_AB=RELAYOUT:0:16` on the sto
 
 ## 4. Where this leaves 20 tok/s
 
+(Corrected after R22 and the owner's budget: the k̄ in this section were estimates; measured k̄ = 4.71 at
+t = 0.100 and 3.86 at 0.120, and the approved speed-rule budget is +2 % *full set* (≤ 9.797), which lands at
+t ≈ 0.110 and k̄ ≈ 4.3 on wikitext — see §5 for the re-stated band. The text below is kept as written.)
+
 Within +0.5 %: the compute-less families buy ≈ 6-8 ms (one slot on ~15 % of tokens): 13-15 → 14.5-16.5 tok/s,
 estimated. 20 is reachable only as **raw levers to ~16 tok/s (the bounded re-laid expert cache of §1(e′),
 remaining waits) plus the router-weight rule at k̄ ≈ 3.5-4.5, which costs ≈ +1 to +5 % PPL on wikitext-2 (stays
@@ -457,6 +466,102 @@ Round 3 proposal: ship `GGML_EXPERT_SKIP` as a user-visible "speed vs quality" k
 sets the budget; Tom's S1 sweep decides threshold vs top-p vs gap at k̄ 4.2 and 3.5 before any device run;
 pre-register the device prediction from R18's one skip data point (8 % skipped → −9.1 ms, better than
 proportional) against the proportional estimate above.
+
+## 5. R22 fold-in and kit r3 pre-registration (2026-11-02 evening)
+
+All numbers **host** (R22, `lab/logs/r22/`, 60 wikitext-2 chunks, base 9.8702, `-t 6`) unless marked
+*estimated* (device predictions). Nothing new was run for this section; the device predictions are
+pre-registered before kit r3.
+
+### 5.1 What R22 measured, per slot saved
+
+k̄ is now counted on the scored text itself (Tom's `expert-budget` counter), not inferred from a generation CDF.
+Wikitext drops more slots at a given threshold than the two prompts did (21.5 % vs 15-18 % at t = 0.100; 35.7 %
+vs ~30 % at 0.120): **the bench prompt will save fewer slots than wikitext at the same threshold** (§5.3(a)).
+
+| rule, setting | k̄ | slots saved | Δ PPL (screen) | **% per slot saved** |
+|---|---|---|---|---|
+| threshold SKIP 100 | 4.71 | 1.29 | +0.46 % | **0.36** |
+| threshold SKIP 120 | 3.86 | 2.14 | +1.88 % | **0.88** |
+| cumulative TOPP 850 / 800 / 750 | 4.80 / 4.42 / 3.94 | 1.20 / 1.58 / 2.06 | +0.92 / +1.10 / +2.33 % | 0.77 / 0.70 / 1.13 |
+| gap GAP 300 / 400 | 4.69 / 3.85 | 1.31 / 2.15 | +1.35 / +3.95 % | 1.03 / 1.84 |
+| uniform k = 5 / 4 (R21) | 5 / 4 | 1 / 2 | +1.26 / +6.74 % | 1.26 / 3.37 |
+
+Threshold is 2.1-2.6× cheaper per slot than top-p and 2.1-2.9× cheaper than gap at equal k̄, 3.5-3.8× cheaper than
+uniform. Why, mechanically: top-p and gap are *per-token relative* rules — on a token whose six weights are flat
+they drop slots that carry 0.15 of the mass; the absolute rule never drops a slot above t, whatever its
+neighbours look like. Flat-routing models (Granite) are exactly where that matters. SKIP 90 (−0.11 %) and TOPP 950
+(−0.14 %, k̄ 5.94) are inside paired-run noise: ~0.4-0.5 slot per token is free at any price. **Ranking unchanged**;
+the rule is fixed as Clyde stated it: one absolute weight threshold per model.
+
+### 5.2 Placing the threshold under the +2 % full-set budget (≤ 9.797)
+
+Only one screen→full pair exists (t = 0.100: +0.46 → +0.82 %); it can be read as **additive (+0.35 pt)** or
+**multiplicative (×1.78)**. Interpolating the screen curve between 100 and 120 permille (linear and exponential
+in t; k̄ linear: −0.0425 per permille):
+
+| t | screen Δ (lin / exp) | k̄ (wikitext) | full set, additive | full set, ×1.78 |
+|---|---|---|---|---|
+| 105 | +0.81 / +0.65 % | 4.50 | 9.717 / 9.702 | 9.744 / 9.717 |
+| **110** | +1.17 / +0.93 % | **4.29** | **9.751 / 9.728** | 9.805 / 9.764 |
+| 115 | +1.52 / +1.32 % | 4.07 | 9.785 / 9.766 | 9.866 / 9.831 |
+| 120 | +1.88 % (measured) | 3.86 | 9.819 | 9.927 |
+
+**Prediction (pre-registered, host):** SKIP 110 full set = **9.74 ± 0.04** (passes; fails only in the
+linear-screen × multiplicative corner at 9.805); SKIP 120 full set = **9.82-9.93 (fails)**; the budget edge is at
+t ≈ 115-118. Expected choice: **t = 110 permille, k̄ ≈ 4.3 on wikitext, ≈ 4.6-4.8 on the bench prompt** (R21
+generation CDF: 20-24 % of slots below 0.11). Falsifiers: SKIP 120 ≤ 9.797 → the under-read shrinks with t (not
+additive); SKIP 110 > 9.797 → the under-read is multiplicative or worse, fall back to 105 (k̄ 4.5). en.txt is not
+the gate; predicted +3.5-5 % at 110 (it was +2.1 % at 100), report it, do not act on it.
+
+### 5.3 Kit r3 device predictions (pre-registered; *estimated*)
+
+Units: the kit's own µs/token at 3 threads, best-run profile scale ≈ **96 ms/token** after R20's defaults, with
+`MUL_MAT_ID` compute ≈ **35 ms** (5.8 ms per routed slot at k̄ = 6) + wait ≈ 3 ms. Bench tok/s = kit ms × 0.70-0.80
+(the bench's 13-15 tok/s best run ↔ 67-77 ms). R18's one skip data point (8 % of slots → −9.1 ms of 101) was 1.9×
+proportional, but that excess came largely from `MUL_MAT_ID` wait that `MMID 3` has since removed (16.5 → 2.8 ms).
+
+| probe | prediction | falsified if |
+|---|---|---|
+| (a) `EXPERT_SKIP 110`, A/B on the official prompt | skipped share printed by the kit **20-24 %** (k̄ 4.6-4.8); proportional **−7 to −8 ms** (22 % of 35), R18-anchored ×1.9 → −14 to −15; **central −8 to −11 ms** (wait falls too: fewer slots → less imbalance) → 96 → 85-88 ms, **+9-13 % tok/s** (bench 14.2-17 from 13-15) | < −5 ms (fixed per-op cost dominates slots) or > −16; share outside 17-27 % (router CDF text-dependent after all) |
+| (b) `Q3K_ILP=1` | latency thesis: the ~4-deep `vmla` chain + `vpadd` tree is ≈ half of the 121 cycles/block; two accumulators + 4-row interleave remove ~⅓-½ of the stall → `MUL_MAT_ID` compute **−10 to −25 % = −3.5 to −9 ms** (central −6); host −15 to −30 % | **≤ −3 % (≤ −1 ms) on the device while the host shows ≥ −15 %** → the device stall is memory/stream-shape (Clyde's reading), build M/S, drop D; or host also ≤ −5 % → the chain was not the stall anywhere, the count in (e‴) ¶1 is wrong |
+| (c) `Q3K_PF=1` | warm, in-core-bound kernel: **−0.5 to −2 ms (≤ 2 ms)**, central −1 | > −3 ms → the stream-shape term S is real and the re-laid format regains its second reason; > +1 ms → prefetch pollutes L1, drop it |
+| (d) `EXPERT_ANON=16` (separate rows, 648 MB anon) | hit rate on the 84+32-token official run **35-45 %** (fill incomplete), steady ≈ 70 % on a ≥ 200-token run; memory term **−0.5 to −3.5 ms at h 0.35-0.45 (central −1.5)**, **−1 to −7 ms at h 0.70 (central −3)**; quiet day. `minflt` per token **−30 % (h 0.4) / −60 % (h 0.7)**, `majflt` −70 % steady; saved ms ≈ 1-2 µs × minor faults removed + 0.1-0.5 ms × major faults removed | confirms M only if **both** faults and ms fall together. Faults fall, ms does not → the term is not faults (TLB at most); neither falls → cache holds the wrong experts (check `hit%` in the prof line); tok/s *falls* → 648 MB too much for the day (R20 pattern: file cache 2.0 → 1.3 GB, faults ×14), retry N = 8 |
+| (e) combination for 20 | 20 tok/s bench = 50 ms bench = **≈ 64-71 ms kit scale = −25 to −32 ms of 96**. Central sum of (a)-(d): 9.5 + 6 + 1.5 + 1 = **−18 ms → 78 ms kit → 15.5-17.5 tok/s bench**. 20 needs **two of three at their upper band**: (a) ≥ −12 ms (the R18 better-than-proportional holds) **and** (b) ≥ −8 ms (latency thesis fully true), with (d) ≥ −3; or (a) ≥ −12 and (d) ≥ −7 (a pressured-day memory rescue, which is not a quiet-day win) with (b) ≥ −4 | if (b) ≤ −3 % and (d) ≤ −2 ms on a quiet day, the kit-r3 family tops out at 16-17 tok/s and only a larger PPL budget (t ≈ 130-140, k̄ 3-3.5, +5-9 %) or the remaining raw waits reach 20 |
+
+Honest band, restated: within the owner's +2 % budget the router rule buys **1.2-1.4 slots on the bench prompt**
+(1.7 on wikitext), ≈ −8 to −11 ms kit scale. It is the largest single term but not enough alone; §1(e‴) ¶2's
+"k̄ 4.2 plus two of {ILP kernel, hot cache, raw waits}" stands with k̄ = 4.3 and the sizes above.
+
+### 5.4 The −t 4 vs −t 6 difference at −ub 1: flash-attention split-KV, not MoE or MUL_MAT_ID
+
+Logs: `id-off-ub1.log` (−t 6) chunks 5.4397 / 7.2637 / 7.0036 vs `id-off-ub1-t4.log` 5.4327 (chunk 1); −ub 32
+is 5.5121 / 7.3161 / 7.0267 and was −t 6 = −t 8 per chunk in R21. So the thread dependence exists only on the
+one-query path. Code (`lab/llama.cpp-tiny/ggml/src/ggml-cpu/ops.cpp:9567`, read-only):
+
+```
+const bool use_split_kv_path = !use_ref && (neq1 == 1 && neq3 == 1) && kv_is_f32_or_f16
+                               && (k->type == v->type) && q->type == GGML_TYPE_F32 && nek1 >= 512;
+...
+const int64_t chunk_size = (nek1 + nth - 1) / nth;   // KV split by thread count
+...
+ggml_flash_attn_ext_reduce_partials(params, dst, nth, chunk_size);  // online-softmax merge of nth partials
+```
+
+With one query token and n_kv ≥ 512 (`llama-kv-cache.cpp:1287` pads n_kv to a multiple of 256, so in a
+`-c 512` perplexity run at −ub 1 the path is taken for the second half of every chunk — all 256 scored tokens),
+each thread computes an online softmax over its own KV chunk and the partials are merged in float — the chunk
+boundaries and the merge order depend on `nth`, so −t 4 ≠ −t 6 ≠ −t 8 at −ub 1, while −ub ≥ 2 takes the
+per-query tiled path and is thread-independent. Ruled out by reading: `ggml_cpu_moe_weights` only *locates* the
+weight tensor (no arithmetic); `RMS_NORM` / `SUM_ROWS` / softmax split by rows, one row per thread; `MUL_MAT_ID`
+with `GGML_MMID 3` splits rows, never a row's K dimension. Four of the 40 layers are attention, so the effect is
+small (±0.007 per chunk, well under the 0.35-pt screen→full shift) and irrelevant to generation benchmarks
+(72-token greedy runs have n_kv 256 < 512, path not taken).
+
+**1-line test for Tom:** `GGML_EXPERT_SKIP= lab/llama.cpp-tiny/build-888/bin/llama-perplexity -m lab/models/var/d6-q3k-e6.gguf -f lab/text/wikitext-2-raw/wiki.test.raw -c 512 --chunks 1 -ub 1 -fa off -t 4` vs the same at `-t 6` →
+prediction: identical to the last digit (and both differ from 5.4327 / 5.4397). Consequence for identity checks:
+pin `-t` (as R22 did) or add `-fa off`; the device (3 threads) will never byte-match a 6-thread host run at
+−ub 1 once n_kv ≥ 512, which is not a bug in our module.
 
 Sources consulted (direction only, no numbers borrowed): Lu et al., *Not All Experts are Equal* (2402.14800,
 ACL 2024: post-hoc dynamic expert skipping by routing weight, ~1.2× on Mixtral); *SimLens* (2507.17618) and
