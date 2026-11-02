@@ -2,6 +2,7 @@
 # Builds llama.cpp's CPU module for armv8.2-a+dotprod+fp16 phones (Snapdragon 888 class:
 # Cortex-X1/A78, no i8mm/SVE) as the runtime-selectable variant android_armv8.2_2, with
 # KleidiAI like the stock Android bundles. Use a checkout with patches/llama.cpp applied.
+# Also builds libllama.so (for patches/llama.cpp/0002-granite-rollback.patch; see README.md here).
 # usage: android/build_cpu.sh <llama.cpp checkout> [outdir]    env: ANDROID_NDK_HOME, KLEIDI=ON|OFF
 set -eu
 SRC=$(cd "$1" && pwd); OUT=${2:-out}; mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
@@ -18,8 +19,9 @@ cmake -S "$SRC" -B "$W/b" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$TC" -DANDROID_ABI=ar
   -DLLAMA_BUILD_SERVER=OFF -DLLAMA_CURL=OFF
 # The variant build (not a plain armv8.2 build) so the module carries ggml_backend_score:
 # ggml then loads it only on chips with dotprod+fp16 instead of dying with SIGILL elsewhere.
-cmake --build "$W/b" --target ggml-cpu-android_armv8.2_2
-"$(dirname "$TC")/../../toolchains/llvm/prebuilt/"*/bin/llvm-strip \
-  -o "$OUT/libggml-cpu-android_armv8.2_2.so" "$W/b/bin/libggml-cpu-android_armv8.2_2.so"
+cmake --build "$W/b" --target ggml-cpu-android_armv8.2_2 llama
+STRIP=$(ls "$(dirname "$TC")/../../toolchains/llvm/prebuilt/"*/bin/llvm-strip)
+"$STRIP" -o "$OUT/libggml-cpu-android_armv8.2_2.so" "$W/b/bin/libggml-cpu-android_armv8.2_2.so"
+"$STRIP" -o "$OUT/libllama.so" "$W/b/bin/libllama.so"
 rm -rf "$W"
-echo "wrote $OUT/libggml-cpu-android_armv8.2_2.so"
+echo "wrote $OUT/libggml-cpu-android_armv8.2_2.so and $OUT/libllama.so"

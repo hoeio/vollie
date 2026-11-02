@@ -43,7 +43,7 @@ diff -ruN lib/src/backends/llama_cpp/llama_cpp_backend.dart lib/src/backends/lla
    @override
 diff -ruN lib/src/backends/llama_cpp/llama_cpp_service.dart lib/src/backends/llama_cpp/llama_cpp_service.dart
 --- lib/src/backends/llama_cpp/llama_cpp_service.dart	2026-10-22 17:36:31
-+++ lib/src/backends/llama_cpp/llama_cpp_service.dart	2026-11-02 00:24:29
++++ lib/src/backends/llama_cpp/llama_cpp_service.dart	2026-11-02 11:09:17
 @@ -4246,6 +4246,15 @@
          (!isRecurrent && !isHybrid)) {
        return;
@@ -60,12 +60,10 @@ diff -ruN lib/src/backends/llama_cpp/llama_cpp_service.dart lib/src/backends/lla
      throw LlamaUnsupportedException(
        'Native llama.cpp recurrent/hybrid models cannot safely reserve '
        'speculativeRollbackTokenMax=${params.speculativeRollbackTokenMax}: '
-@@ -4414,6 +4423,16 @@
-   /// Frees the context associated with [contextHandle].
-   void freeContext(int contextHandle) {
+@@ -4416,6 +4425,16 @@
      _freeContext(contextHandle);
-+  }
-+
+   }
+ 
 +  /// Changes the CPU thread counts of a live context, keeping model and KV.
 +  void setThreads(int contextHandle, int threads, int threadsBatch) {
 +    final ctx = _contexts[contextHandle];
@@ -74,9 +72,33 @@ diff -ruN lib/src/backends/llama_cpp/llama_cpp_service.dart lib/src/backends/lla
 +    llama_set_n_threads(ctx.pointer, threads, threadsBatch);
 +    params.n_threads = threads;
 +    params.n_threads_batch = threadsBatch;
-   }
- 
++  }
++
    void _freeContext(int handle) {
+     _contextToModel.remove(handle);
+     _activeLoras.remove(handle);
+@@ -7043,6 +7062,21 @@
+         final remainingToGenerate = params.maxTokens - generatedTokens;
+         final batchCapacity = math.max(1, llama_n_batch(ctx.pointer));
+         final rollbackCapacity = llama_n_rs_seq(ctx.pointer);
++        // Vollie: a recurrent/hybrid target cannot roll a rejected draft back
++        // without n_rs_seq snapshots (llama-context.cpp clamps them to 0 for
++        // architectures missing from llm_arch_supports_rs_rollback); fail here,
++        // before the first draft, instead of on the first rejection.
++        if (hasDraftContext && rollbackCapacity == 0) {
++          final model = llama_get_model(ctx.pointer);
++          if (llama_model_is_hybrid(model) || llama_model_is_recurrent(model)) {
++            throw UnsupportedError(
++              'llama.cpp clamped speculativeRollbackTokenMax to 0 for this '
++              'model architecture; draft-model speculation on a recurrent or '
++              'hybrid target needs recurrent rollback snapshots '
++              '(llm_arch_supports_rs_rollback in libllama).',
++            );
++          }
++        }
+         final contextDraftCapacity = rollbackCapacity > 0
+             ? math.min(nCtx - currentPos - 2, rollbackCapacity)
+             : nCtx - currentPos - 2;
 diff -ruN lib/src/backends/llama_cpp/load_param_helpers.dart lib/src/backends/llama_cpp/load_param_helpers.dart
 --- lib/src/backends/llama_cpp/load_param_helpers.dart	2026-10-22 17:36:31
 +++ lib/src/backends/llama_cpp/load_param_helpers.dart	2026-10-31 18:12:38
@@ -213,3 +235,74 @@ diff -ruN lib/src/core/models/inference/model_params.dart lib/src/core/models/in
        flashAttention: flashAttention ?? this.flashAttention,
        cacheTypeK: cacheTypeK ?? this.cacheTypeK,
        cacheTypeV: cacheTypeV ?? this.cacheTypeV,
+diff -ruN hook/build.dart hook/build.dart
+--- hook/build.dart	2026-10-22 17:36:31
++++ hook/build.dart	2026-11-02 11:17:41
+@@ -2164,7 +2164,15 @@
+   required String bundle,
+   required Logger log,
+ }) async {
+-  final allowLegacyLocalBundles = _isLegacyLocalBundleEnabled();
++  // Vollie: a checked-in local bundle directory (third_party/bin/<bundle>) is
++  // opt-in enough; the env var does not reliably reach a hook run under the
++  // Gradle daemon, and the hook cache does not key on it.
++  final allowLegacyLocalBundles =
++      _isLegacyLocalBundleEnabled() ||
++      _localBundleCandidates(
++        packageRoot: packageRoot,
++        bundle: bundle,
++      ).any((p) => Directory(p).existsSync());
+   final archiveName = 'llamadart-native-$bundle-${nativeConfig.tag}.tar.gz';
+   final cacheDir = _bundleCacheDirectory(
+     packageRoot: packageRoot,
+@@ -2188,24 +2196,7 @@
+     );
+   }
+ 
+-  final cachedLibraryPaths = _collectDynamicLibraryPaths(extractedDir);
+-  if (cachedLibraryPaths.isNotEmpty &&
+-      _isBundleLayoutCompatible(
+-        bundle: bundle,
+-        libraryPaths: cachedLibraryPaths,
+-        log: log,
+-      )) {
+-    log.info('Using cached native bundle: ${extractedDir.path}');
+-    return extractedDir;
+-  }
+-
+-  if (cachedLibraryPaths.isNotEmpty) {
+-    log.warning('Cached native bundle appears stale; refreshing: $bundle');
+-    if (extractedDir.existsSync()) {
+-      await extractedDir.delete(recursive: true);
+-    }
+-  }
+-
++  // Vollie: checked before the cached-bundle return, which used to shadow it.
+   if (allowLegacyLocalBundles) {
+     final localCandidates = _localBundleCandidates(
+       packageRoot: packageRoot,
+@@ -2225,6 +2216,24 @@
+         );
+         return candidate;
+       }
++    }
++  }
++
++  final cachedLibraryPaths = _collectDynamicLibraryPaths(extractedDir);
++  if (cachedLibraryPaths.isNotEmpty &&
++      _isBundleLayoutCompatible(
++        bundle: bundle,
++        libraryPaths: cachedLibraryPaths,
++        log: log,
++      )) {
++    log.info('Using cached native bundle: ${extractedDir.path}');
++    return extractedDir;
++  }
++
++  if (cachedLibraryPaths.isNotEmpty) {
++    log.warning('Cached native bundle appears stale; refreshing: $bundle');
++    if (extractedDir.existsSync()) {
++      await extractedDir.delete(recursive: true);
+     }
+   }
+ 

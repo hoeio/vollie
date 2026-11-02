@@ -307,7 +307,7 @@ index cfbbf6617..4f495eb68 100644
  static inline svuint32_t ggml_decode_q4scales_and_mins_for_mmla(const uint32_t * vx_scales) {
      const svbool_t pg_all   = svptrue_pat_b32(SV_VL4);
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index ab82e3d6c..2c76e0a3a 100644
+index ab82e3d6c..1dd287a2d 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -197,6 +197,7 @@ typedef void * thread_ret_t;
@@ -584,7 +584,7 @@ index ab82e3d6c..2c76e0a3a 100644
                          // matrix_row_counts
                          cur += n_as * sizeof(int64_t) + sizeof(int64_t);
                          // matrix_rows
-@@ -3064,40 +3249,582 @@ struct ggml_cplan ggml_graph_plan(
+@@ -3064,40 +3249,584 @@ struct ggml_cplan ggml_graph_plan(
  // Returns the number of nodes skipped by fusion (>=1), or 0 if no fusion was applied.
  static bool ggml_cpu_disable_fusion = false;  // initialized once in ggml_cpu_init(), read-only afterwards
  
@@ -661,7 +661,7 @@ index ab82e3d6c..2c76e0a3a 100644
 +static int     ggml_cpu_ab_mode = 0, ggml_cpu_ab_var = 0, ggml_cpu_ab_count = 0;
 +static int64_t ggml_cpu_ab_tiny = 0;
 +static int64_t ggml_cpu_prof_comp[2][GGML_OP_COUNT], ggml_cpu_prof_wait[2][GGML_OP_COUNT];
-+static int     ggml_cpu_prof_cnt[2][GGML_OP_COUNT], ggml_cpu_prof_graphs[2], ggml_cpu_prof_nodes[2], ggml_cpu_prof_barriers[2];
++static int     ggml_cpu_prof_cnt[2][GGML_OP_COUNT], ggml_cpu_prof_graphs[2], ggml_cpu_prof_tokens[2], ggml_cpu_prof_nodes[2], ggml_cpu_prof_barriers[2];
 +static int64_t ggml_cpu_prof_total[2];
 +
 +// Vollie: env GGML_EXPERT_IO, bit mask (0 = off, stock). MoE expert weights are the
@@ -679,7 +679,8 @@ index ab82e3d6c..2c76e0a3a 100644
 +// one-token graphs (needs GGML_EXPERT_IO != 0), to measure expert overlap across tokens.
 +static bool ggml_cpu_expert_log = false;
 +
-+// Vollie: env GGML_MMID, bit mask for one-token MUL_MAT_ID (0 = stock path):
++// Vollie: env GGML_MMID, bit mask for one-token MUL_MAT_ID (0 = stock path; default 3 since
++// R18: -7.5 ms/token on the SD888, bit-identical; "" counts as unset):
 +//   1: no barrier inside the op. Stock quantizes the activation across threads and has
 +//      thread 0 build the expert -> row map, then syncs (120 extra barriers per token on
 +//      Granite). Here every thread quantizes the one activation row itself (~1.7 KB) and
@@ -690,8 +691,8 @@ index ab82e3d6c..2c76e0a3a 100644
 +//   Without 2, chunks are assigned round-robin (thread i takes chunks i, i+nth, ...).
 +static int ggml_cpu_mmid = 0;
 +
-+// Vollie: env GGML_Q3K_X4=1: Q3_K expert rows four at a time, sharing the activation loads
-+// (bit-identical: each row's integer sum and float accumulation order are unchanged).
++// Vollie: env GGML_Q3K_X4=1 (default since R18): Q3_K expert rows four at a time, sharing the
++// activation loads (bit-identical: each row's integer sum and float accumulation order are unchanged).
 +static int ggml_cpu_q3k_x4 = 0;
 +
 +// Vollie: env GGML_EXPERT_SKIP=<permille> (0 = off; NOT bit-exact, see 04_campaign.md E1):
@@ -1084,8 +1085,8 @@ index ab82e3d6c..2c76e0a3a 100644
 +    for (int i = 0; i < n; i++) { comp += ggml_cpu_prof_comp[v][idx[i]]; wait += ggml_cpu_prof_wait[v][idx[i]]; }
 +    char line[2048];
 +    const char * ab = ggml_cpu_ab_mode ? (v ? " ab=B" : " ab=A") : "";
-+    int len = snprintf(line, sizeof line, "cpu-prof%s graphs=%d threads=%d tiny=%lld eio=%d q3k=%d x4=%d mmid=%d skip=%d/%lld%% pred=%lld%% us/token=%lld compute=%lld wait=%lld nodes=%d barriers=%d mmid_thr=",
-+        ab, g, n_threads,
++    int len = snprintf(line, sizeof line, "cpu-prof%s graphs=%d tokens=%d threads=%d tiny=%lld eio=%d q3k=%d x4=%d mmid=%d skip=%d/%lld%% pred=%lld%% us/token=%lld compute=%lld wait=%lld nodes=%d barriers=%d mmid_thr=",
++        ab, g, ggml_cpu_prof_tokens[v], n_threads,
 +        (long long) (ggml_cpu_ab_mode == 2 && v ? ggml_cpu_ab_tiny : ggml_cpu_tiny_thresh), ggml_cpu_expert_io,
 +        ggml_cpu_ab_mode == 1 ? (v ? 0 : 1) : ggml_cpu_q3k_vec, ggml_cpu_q3k_x4, ggml_cpu_mmid,
 +        ggml_cpu_expert_skip, (long long) (ggml_cpu_skip_total ? 100*ggml_cpu_skip_cnt/ggml_cpu_skip_total : 0),
@@ -1117,6 +1118,7 @@ index ab82e3d6c..2c76e0a3a 100644
 +    memset(ggml_cpu_prof_wait, 0, sizeof ggml_cpu_prof_wait);
 +    memset(ggml_cpu_prof_cnt, 0, sizeof ggml_cpu_prof_cnt);
 +    memset(ggml_cpu_prof_graphs, 0, sizeof ggml_cpu_prof_graphs);
++    memset(ggml_cpu_prof_tokens, 0, sizeof ggml_cpu_prof_tokens);
 +    memset(ggml_cpu_prof_nodes, 0, sizeof ggml_cpu_prof_nodes);
 +    memset(ggml_cpu_prof_barriers, 0, sizeof ggml_cpu_prof_barriers);
 +    memset(ggml_cpu_prof_total, 0, sizeof ggml_cpu_prof_total);
@@ -1186,7 +1188,7 @@ index ab82e3d6c..2c76e0a3a 100644
  static thread_ret_t ggml_graph_compute_thread(void * data) {
      struct ggml_compute_state * state = (struct ggml_compute_state *) data;
      struct ggml_threadpool    * tp    = state->threadpool;
-@@ -3126,6 +3853,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3126,6 +3855,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
      GGML_PRINT_DEBUG("thread #%d compute-start cplan %p last-graph %d\n", state->ith, (const void *)cplan, state->last_graph);
  #endif
  
@@ -1209,7 +1211,7 @@ index ab82e3d6c..2c76e0a3a 100644
      for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
          struct ggml_tensor * node = cgraph->nodes[node_n];
  
-@@ -3139,12 +3882,46 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3139,12 +3884,46 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
          }
  
          // TODO: move fused-op detection into ggml_graph_plan so fusion decisions are made once at planning time
@@ -1261,7 +1263,7 @@ index ab82e3d6c..2c76e0a3a 100644
          }
  
          if (state->ith == 0 && cplan->abort_callback &&
-@@ -3153,9 +3930,31 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3153,9 +3932,31 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
              tp->ec    = GGML_STATUS_ABORTED;
          }
  
@@ -1294,7 +1296,7 @@ index ab82e3d6c..2c76e0a3a 100644
      }
  
  #ifdef GGML_USE_OPENMP
-@@ -3398,6 +4197,82 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3398,6 +4199,85 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
      int n_threads                               = cplan->n_threads;
      struct ggml_threadpool * threadpool = cplan->threadpool;
  
@@ -1313,16 +1315,19 @@ index ab82e3d6c..2c76e0a3a 100644
 +        ggml_cpu_random_n = 0;
 +    }
 +    const char * prof = getenv("GGML_CPU_PROF");
-+    ggml_cpu_prof_on = prof && atoi(prof) == 1;
++    // 1: one-token decode graphs; 2: 2-8 token graphs (speculative verify batches; us/token is then per graph)
++    const int prof_mode = prof ? atoi(prof) : 0;
++    ggml_cpu_prof_on = prof_mode == 1 || prof_mode == 2;
 +    // One token: the first node is the embedding lookup, {n_embd, n_tokens}.
-+    const bool decode = cgraph->n_nodes > 0 && cgraph->nodes[0]->ne[1] == 1;
-+    ggml_cpu_prof_this = ggml_cpu_prof_on && decode;
++    const int64_t n_tok = cgraph->n_nodes > 0 ? cgraph->nodes[0]->ne[1] : 0;
++    const bool decode = n_tok == 1;
++    ggml_cpu_prof_this = prof_mode == 1 ? decode : prof_mode == 2 && n_tok >= 2 && n_tok <= 8;
 +    const char * q3k = getenv("GGML_Q3K_VEC");
 +    ggml_cpu_q3k_vec = q3k ? atoi(q3k) != 0 : 1;
 +    const char * q3kx = getenv("GGML_Q3K_X4");
-+    ggml_cpu_q3k_x4 = q3kx ? atoi(q3kx) != 0 : 0;
++    ggml_cpu_q3k_x4 = q3kx && *q3kx ? atoi(q3kx) != 0 : 1;
 +    const char * mmid = getenv("GGML_MMID");
-+    ggml_cpu_mmid = mmid ? atoi(mmid) : 0;
++    ggml_cpu_mmid = mmid && *mmid ? atoi(mmid) : 3;
 +    const char * skip = getenv("GGML_EXPERT_SKIP");
 +    ggml_cpu_expert_skip = skip ? atoi(skip) : 0;
 +    const char * renorm = getenv("GGML_EXPERT_SKIP_RENORM");
@@ -1377,7 +1382,7 @@ index ab82e3d6c..2c76e0a3a 100644
      bool disposable_threadpool = false;
  
      if (threadpool == NULL) {
-@@ -3455,6 +4330,17 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3455,6 +4335,18 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
  
      // don't leave affinity set on the main thread
      clear_numa_thread_affinity();
@@ -1388,7 +1393,8 @@ index ab82e3d6c..2c76e0a3a 100644
 +    if (ggml_cpu_prof_this) {
 +        ggml_cpu_prof_total[ggml_cpu_ab_var] += ggml_time_us() - prof_t0;
 +        ggml_cpu_prof_graphs[ggml_cpu_ab_var]++;
-+        if (ggml_cpu_prof_graphs[0] + ggml_cpu_prof_graphs[1] == (ggml_cpu_ab_mode ? 64 : 32)) {
++        ggml_cpu_prof_tokens[ggml_cpu_ab_var] += (int) n_tok;
++        if (ggml_cpu_prof_tokens[0] + ggml_cpu_prof_tokens[1] >= (ggml_cpu_ab_mode ? 64 : 32)) {
 +            ggml_cpu_prof_dump(n_threads);
 +        }
 +    }

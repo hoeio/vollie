@@ -10,7 +10,7 @@ means stock behaviour. None changes results; each was checked bit-identical with
 | `GGML_TINY_OP` | elements, e.g. `65536` | ops with at most this many elements (in output and inputs; GET_ROWS by output) run on thread 0 alone; syncs between consecutive such ops are skipped. Mat-muls, SSM scan, flash attention and ops with internal syncs never count as small | SD888 2 threads: 0 → 3.2, 65536 → 7.0 tok/s |
 | `GGML_EXPERT_IO` | bit mask | MoE expert reads through mmap: **1** `MADV_WILLNEED` the routed experts of a layer (gate/up/down together) when its first `MUL_MAT_ID` runs; **2** `MADV_RANDOM` on expert tensors (no read-around); **4** helper thread guesses the next layer's experts (its router on this layer's FFN input) and prefetches them; **8** guess 2 more than the model routes to | SD888 3 threads: 0 → 6.1, 1 → 11.8 tok/s; 5 → 12.0 vs 1 → 10.6 in another run; 2 lost; 8 inconclusive |
 | `GGML_Q3K_VEC` | `1` (default) / `0` | NEON Q3_K dot with vectorized sub-block sums / upstream loop | M4 A/B: expert mat-muls −4..−8% |
-| `GGML_CPU_PROF` | `1` | thread 0 times every op of one-token graphs: per op type, count, µs computing, µs waiting at the sync after it; one `cpu-prof` line per 32 graphs on stderr, with `pred=` (share of real experts that were guessed) | |
+| `GGML_CPU_PROF` | `1` / `2` | **1**: thread 0 times every op of one-token graphs (**2**: of 2-8-token graphs, i.e. speculative verify batches; `us/token` is then µs per graph and `tokens=` their total): per op type, count, µs computing, µs waiting at the sync after it; one `cpu-prof` line per 32 graphs on stderr, with `pred=` (share of real experts that were guessed) | |
 | `GGML_CPU_AB` | `q3k`, `tiny:<n>` | alternates the setting every one-token graph (A = normal, B = upstream Q3_K loop / threshold `<n>`); with `GGML_CPU_PROF` the stats are split into `ab=A` and `ab=B` lines over the same 64 tokens. Not for `GGML_EXPERT_IO`: one token's prefetch warms the cache for the next | |
 
 Reading a `cpu-prof` line:
@@ -30,8 +30,8 @@ All off unless set; checked bit-identical at `-ub 1`, `-ub 32`, `-b 512` unless 
 
 | variable | values | effect | status |
 |---|---|---|---|
-| `GGML_MMID` | bit mask | one-token `MUL_MAT_ID`: **1** no barrier inside the op (each thread quantizes the activation row and builds the expert map itself); **2** 32-row chunks claimed dynamically through per-expert counters that thread 0 resets before the preceding barrier (needs 1) | bit-identical; device pending |
-| `GGML_Q3K_X4` | `1` | Q3_K expert rows four at a time sharing the activation loads (`ggml_vec_dot_q3_K_q8_K_x4`) | bit-identical; device pending |
+| `GGML_MMID` | bit mask, **default 3** (`''` = unset) | one-token `MUL_MAT_ID`: **1** no barrier inside the op (each thread quantizes the activation row and builds the expert map itself); **2** 32-row chunks claimed dynamically through per-expert counters that thread 0 resets before the preceding barrier (needs 1) | bit-identical; device pending |
+| `GGML_Q3K_X4` | `1` (**default**), `0` | Q3_K expert rows four at a time sharing the activation loads (`ggml_vec_dot_q3_K_q8_K_x4`) | bit-identical; device pending |
 | `GGML_EXPERT_SKIP` | permille | an expert whose normalized routing weight is below this is not computed (its rows are zero); `GGML_EXPERT_SKIP_RENORM=1` rescales the remaining weights | **not bit-exact**; host wikitext-2 60 chunks: stock 9.870, 30 → 9.874, 60 → 9.845, 100 → 9.916, 150 (renorm) → 13.63; only ~1% of routed experts fall under 0.06 |
 | `GGML_HELPER_CPUS` | `0-3`, `0,1,2,3` | cores for the next-layer expert-guess helper thread (re-read per job; `''` = every core) | device pending |
 | `GGML_REPACK_RELEASE` | `1` (at load) | after a tensor is repacked, `MADV_PAGEOUT` (fallback `MADV_COLD`/`DONTNEED`) its memory-mapped source pages so the page cache can hold experts instead | device pending (RssFile after load) |

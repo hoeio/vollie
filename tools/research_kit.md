@@ -1,26 +1,30 @@
-# Research kit (round 1) — what it runs, the result file, how to run it
+# Research kit (round 2) — what it runs, the result file, how to run it
 
-The kit is the **"Run research kit (~15 min)"** button in Vollie's Settings (app 2.2.6+29, kit `r1`).
-It measures the round-1 CPU-module knobs (`reports/04_campaign.md` §6) on the phone as it is, and
-puts one JSON report on the clipboard ("Copy research results"). `tools/research_parse.py` turns
-that JSON into `results.csv` rows and R-log text.
+The kit is the **"Run research kit (~10 min)"** button in Vollie's Settings (app 2.2.7+30, kit `r2`;
+round 1 was 2.2.6+29 / `r1`, results in `reports/03_final.md` R18). It measures the round-2 build
+(`reports/04_campaign.md` §7) on the phone as it is, and puts one JSON report on the clipboard
+("Copy research results"). `tools/research_parse.py` turns that JSON into `results.csv` rows and R-log text.
 
-## What one run does (about 15 minutes, no settings to change)
+What changed in the round-2 build: the CPU module now defaults to `GGML_MMID=3` + `GGML_Q3K_X4=1`
+(R18: −8.3 %/token, bit-identical), and the app ships a rebuilt `libllama.so` (`lab/granite-rollback.patch`)
+so a Granite-H target can roll a rejected draft back — round 1's speculation runs all failed on that.
+
+## What one run does (about 10 minutes, no settings to change)
 
 | phase | runs | what | knob |
 |---|---|---|---|
-| `baseline` | 2 | official benchmark prompt, 32 tokens, saved settings (3 threads, tiny-op, expert I/O) | — |
-| `barrier` | 3 | 10,000 empty thread syncs before a 4-token reply, at 2 / 3 / 4 threads → µs per sync | `GGML_BARRIER_BENCH` |
-| `ab` | 7 | in-generation A/B (setting alternates every token) over a 72-token story; the profile line pair `ab=A` / `ab=B` splits µs per op and per thread | `GGML_CPU_AB=knob:…` |
-| `threads` | 8 | official prompt, best of 2: 3 vs 4 threads, helper thread on big cores (inherit) vs little cores 0-3 | `GGML_HELPER_CPUS` |
-| `spec` | 7 | reload with 4 recurrent rollback slots; draft-model speculation (Granite 4.0 350M Q4_0, downloaded once, 228 MB, SHA-256 checked) with 2 and 4 draft tokens vs none, on the official prompt (64 tokens) and the story | `ModelParams.speculativeRollbackTokenMax`, `SpeculativeDecodingConfig.draftSimple` |
-| `release` | 3 | reload with the repacked tensors' source pages released; resident file pages after load; official prompt twice | `GGML_REPACK_RELEASE` |
+| `baseline` | 2 | official benchmark prompt, 32 tokens, saved settings (3 threads, tiny-op, expert I/O) — now with the new defaults | — |
+| `ab` | 4 | in-generation A/B over a 72-token story: new defaults vs off (regression check), then tiny-op 65,536 vs 262,144 three times | `GGML_CPU_AB=knob:…` |
+| `spec` | 9 | reload with 4 recurrent rollback slots; warm-up on free text with 4 draft tokens (a rejection must occur — a note is added if not); official 32 without a draft, then with 1 / 2 / 3 / 4 draft tokens; story 64 without, then with 2 / 4. Draft = Granite 4.0 350M Q4_0 (downloaded once, 228 MB, SHA-256 checked). Draft runs set `GGML_CPU_PROF=2`: the profile line covers the 2-8-token verify graphs only (`us/token` there = µs per graph, `tokens` = tokens they covered) → batched-verify cost | `ModelParams.speculativeRollbackTokenMax`, `SpeculativeDecodingConfig.draftSimple`, `GGML_CPU_PROF=2` |
+
+`decode_tps` of a draft run is the **effective** rate (every accepted token counts; greedy, so the text is the
+model's own). Round 1's barrier, threads and release phases are gone: answered (`03_final.md` R18).
 
 Every run waits for thermal headroom < 0.65 (≤ 90 s) like the speed test, and records the headroom
 it started at, core clocks before/after, `/proc/meminfo` + the process's RssAnon/RssFile, major/minor
-page faults, bytes read from storage (`/proc/self/io`), token counts, time to first token, duration,
-the module's `cpu-prof` / `cpu-bench` lines, and the first 80 characters of the reply (same text for
-every bit-exact knob).
+page faults, bytes read from storage (`/proc/self/io`, absent where Android denies it), token counts, time to
+first token, duration, the module's `cpu-prof` lines, and the first 80 characters of the reply (same text
+for every bit-exact knob).
 
 The knobs are reset and the model reloaded normally afterwards. The draft model file stays next to
 the model (`granite-4.0-350m-Q4_0.gguf`, 228 MB); delete it from the app's files to reclaim space.
@@ -52,21 +56,22 @@ run:
   error                exception text if the run failed
 ```
 
-Reading a `cpu-prof` line: `… us/token=98176 compute=74768 wait=23016 nodes=1963 barriers=818 mmid_thr=22387/23027/22477 | MUL_MAT_ID 120:34214+16861 …` —
+Reading a `cpu-prof` line: `… graphs=32 tokens=32 … us/token=98176 compute=74768 wait=23016 nodes=1963 barriers=818 mmid_thr=22387/23027/22477 | MUL_MAT_ID 120:34214+16861 …` —
 `mmid_thr` = µs each thread spent computing inside the expert mat-muls per token (spread = imbalance);
 after `|`, per op type: count : µs computing + µs waiting at the sync after it (thread 0). `skip=60/1%` =
 expert-skip threshold / share of routed experts skipped. `x4`, `mmid` = kernel and no-barrier knobs in effect.
+With `GGML_CPU_PROF=2` (draft runs) `graphs` counts verify graphs of 2-8 tokens, `tokens` their total, and `us/token` is µs per graph.
 
 ## 실행 안내 (한국어)
 
-**준비:** Vollie 2.2.6+29 설치(APK), 모델이 이미 받아져 있고 평소처럼 쓰는 상태면 됩니다. 전화기 설정은
+**준비:** Vollie 2.2.7+30 설치(APK, `vollie-2.2.7+30-research-r2.apk`), 모델이 이미 받아져 있고 평소처럼 쓰는 상태면 됩니다. 전화기 설정은
 아무것도 바꾸지 마세요(다른 앱도 그대로). Wi-Fi 연결은 필요합니다(드래프트 모델 228 MB를 한 번 받습니다).
 
-1. Vollie → 설정(Settings) → **"Run research kit (~15 min)"** 탭.
-2. 약 15분 동안 화면을 켠 채로 둡니다(앱이 켜둡니다). 진행 상황은 버튼 아래에 `Research · 분:초 · 단계`로 보입니다.
-   모델을 두 번 다시 읽는 구간(`reloading…`)이 각 1분 정도 걸립니다.
+1. Vollie → 설정(Settings) → **"Run research kit (~10 min)"** 탭.
+2. 약 10분 동안 화면을 켠 채로 둡니다(앱이 켜둡니다). 진행 상황은 버튼 아래에 `Research · 분:초 · 단계`로 보입니다.
+   모델을 다시 읽는 구간(`reloading…`)이 1분 정도 걸립니다. 1회차에서 받은 드래프트 모델(228 MB)이 남아 있으면 다시 받지 않습니다.
 3. 끝나면 **"Copy research results"** 탭 → 클립보드에 JSON이 복사됩니다. 그대로 제게 붙여 보내 주세요
-   (길이 30-60 KB). 같은 내용이 앱 파일 폴더에 `research-r1-<시각>.json`으로도 저장됩니다.
+   (길이 30-60 KB). 같은 내용이 앱 파일 폴더에 `research-r2-<시각>.json`으로도 저장됩니다.
 4. 중간에 멈추려면 **"Stop research run"**. 그때까지의 결과도 복사할 수 있습니다.
 
 **보내 주실 것:** 붙여 넣은 JSON 한 개. 가능하면 실행 직전의 전화기 상태 한 줄(예: 충전 중 여부, 방금

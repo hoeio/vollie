@@ -1,0 +1,12 @@
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index d1dd4cbae..2e1e4b582 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -1240,6 +1240,7 @@ bool llm_arch_supports_rs_rollback(const llm_arch & arch) {
+         case LLM_ARCH_GLM5_NEXT:
+         case LLM_ARCH_NEMOTRON_H:
+         case LLM_ARCH_NEMOTRON_H_MOE:
++        case LLM_ARCH_GRANITE_HYBRID: // Vollie: same Mamba2 layer as Nemotron-H
+         case LLM_ARCH_LFM2:
+         case LLM_ARCH_LFM2MOE:
+         case LLM_ARCH_BAILINGMOE3:

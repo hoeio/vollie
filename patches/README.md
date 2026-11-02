@@ -5,8 +5,10 @@ be rebased when upstream moves.
 
 ## llama.cpp — `llama.cpp/0001-cpu-runtime.patch` (base: `llama.cpp/BASE`)
 
-Touches only the CPU backend (`ggml/src/ggml-cpu/ggml-cpu.c`, `arch/arm/quants.c`). Every feature
-is off unless its environment variable is set (read before each graph), and none changes
+Touches only the CPU backend (`ggml/src/ggml-cpu/ggml-cpu.c`, `arch/arm/quants.c`, `repack.cpp`,
+`kleidiai.cpp`). Every feature is off unless its environment variable is set (read before each graph) —
+except `GGML_MMID` (default 3) and `GGML_Q3K_X4` (default 1) since round 2, both measured −8.3 %/token
+on the device by in-generation A/B (`reports/03_final.md` R18) — and none changes
 results: each was checked bit-identical with `llama-perplexity` at one-token, 32-token and
 512-token batches. See `docs/runtime-knobs.md` for the knobs.
 
@@ -19,9 +21,19 @@ results: each was checked bit-identical with `llama-perplexity` at one-token, 32
 | vectorized Q3_K dot (NEON) | `GGML_Q3K_VEC` (default on) | sub-block sums kept in vectors instead of 16 serial horizontal adds per block |
 | per-op profiler | `GGML_CPU_PROF=1` | µs computing and waiting per op type, one stderr line per 32 decode tokens |
 | in-generation A/B | `GGML_CPU_AB=q3k` or `tiny:<n>` | alternates a compute setting every token so heat and clocks hit both sides alike |
+| no barrier + dynamic chunks in `MUL_MAT_ID`, 4-row Q3_K, expert skip, helper affinity, source-page release, barrier bench, generic A/B | see `docs/runtime-knobs.md` (round 1, R17/R18) | the round-1 campaign knobs; `GGML_CPU_PROF=2` profiles 2-8-token graphs (speculative verify batches) |
 
 A race in an earlier version (a skipped sync before a fused RMS_NORM+MUL) produced garbage for
 prompt batches under ~42 tokens; it is fixed here, and `-ub 32` is now part of every check.
+
+## llama.cpp — `llama.cpp/0002-granite-rollback.patch` (base: `llama.cpp/BASE`)
+
+One line in `src/llama-arch.cpp`: `LLM_ARCH_GRANITE_HYBRID` joins `llm_arch_supports_rs_rollback()`
+(it has the same Mamba-2 layer as Nemotron-H, which is listed). Without it `llama_context` clamps
+`n_rs_seq` to 0, no recurrent-state snapshots are reserved, and a hybrid target cannot roll a rejected
+draft back — draft-model speculation fails on the first rejection (round 1, R18). This patch lives in
+`libllama.so`, not the CPU module, so an app on a prebuilt llama.cpp bundle has to rebuild that library
+(`android/README.md`).
 
 ## llamadart — `llamadart/0001-setthreads-extra-buffers.patch` (base: `llamadart/BASE`)
 
@@ -30,6 +42,12 @@ For apps using the [llamadart](https://pub.dev/packages/llamadart) Flutter bindi
   weight repacking off on phones where the repacked copy doesn't fit in RAM.
 - `LlamaEngine.setThreads(threads, threadsBatch)` → `llama_set_n_threads`: change threads on a loaded
   model instead of reloading it (used for heat throttling and fast thread sweeps).
+- `ModelParams.speculativeRollbackTokenMax` accepted on recurrent/hybrid models (→ `n_rs_seq`), and a
+  draft-model run on such a model throws before the first draft when `llama_n_rs_seq` is 0 (the
+  library lacks `0002-granite-rollback.patch`) instead of failing on the first rejected draft.
+- `hook/build.dart`: a present `third_party/bin/<bundle>/` directory is used as the native bundle, and
+  it is checked before the cached-bundle return (upstream only honours it behind an env var that does
+  not reach a hook run under the Gradle daemon). That is how the rebuilt `libllama.so` ships.
 
 ## Experiments only — `llama.cpp/experiments/lab-v0.8.0.patch` (base: `experiments/BASE`, v0.8.0)
 

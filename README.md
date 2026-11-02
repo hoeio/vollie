@@ -22,6 +22,7 @@ test; *host* = Apple M4 Pro, CPU only, relative only.
 | + sync skipping around small ops | 7.5 | 18 | device |
 | + expert prefetch (page-cache aware) | 10.7 | 19 | device |
 | + next-layer expert guessing | **12.2** | **25** | device |
+| + dynamic expert chunks + 4-row Q3_K (round 1) | −8.3 % per token by in-generation A/B (same-day absolute 8.4 → est. 13.3 at the row above's conditions) | | device |
 | quality of the served file | wikitext-2 PPL +6.2% vs F16, en +7.0% | | host |
 
 What limited the phone, in the order it was found (details in [docs/findings.md](docs/findings.md)):
@@ -33,9 +34,17 @@ What limited the phone, in the order it was found (details in [docs/findings.md]
    ~2 GB of cache on a busy 8 GB phone, every token re-read hundreds of pages from flash, one
    synchronous fault at a time. Prefetching exactly the routed experts per layer, and guessing the
    next layer's experts a layer early (85% right on the device), took writing to 10.7-12.2 tok/s.
-3. **Now: expert compute and measurement noise.** The 3-bit expert kernel is compute-bound on the
-   A78, and single runs on a warm phone vary ±20%. A faster Q3_K kernel and an in-generation A/B
-   (the setting alternates every token) are the current work.
+3. **Thread imbalance, not sync latency.** A barrier costs 0.3 µs on this SoC (round 1); the ~20 ms of
+   per-token waiting is one core finishing late. Dynamic 32-row chunks in the expert mat-mul and a
+   4-row Q3_K kernel took 8.3 % off a token (bit-identical, by in-generation A/B). A 4th compute
+   thread loses to Android's own threads even at equal clocks; the expert-guess helper on an A55 is
+   too slow to lead the flash.
+4. **Now: effective tokens per second.** The experts still move bytes ~4× slower than the dense
+   stream, which is the whole remaining gap to the 47 ms DRAM roofline, so raw 20 tok/s is out of
+   reach on the CPU path. Draft-model speculation (a 350M draft, same tokenizer; output unchanged
+   under greedy) is the route with the numbers; round 1 could not run it because the phone's prebuilt
+   `libllama.so` lacked Granite-H in its rollback list — round 2 ships a rebuilt one
+   (`patches/llama.cpp/0002-granite-rollback.patch`).
 
 The goal is 20 tok/s. On this phone the dense weights alone take ~25 ms per token (near the
 SoC's bandwidth), so 50 ms/token is the realistic ceiling; it is not reached yet.

@@ -15,5 +15,17 @@ can keep its prebuilt `libllama.so` / `libggml-base.so` and replace one file:
 Every library in the output is 16 KB page aligned (`ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES`), as
 Google Play requires for apps targeting Android 15+.
 
+## Rebuilding `libllama.so` (for `patches/llama.cpp/0002-granite-rollback.patch`)
+
+The rollback-slot fix is in `src/llama-arch.cpp`, so it needs a rebuilt `libllama.so`, not just the
+module. `android/build_cpu.sh` writes one next to the module (same commit as the bundle's
+`libggml-base.so`, so the ABI matches; same SONAME/NEEDED; 16 KB aligned). With llamadart, deliver it
+as a local bundle: copy the extracted upstream bundle (`.dart_tool/llamadart/native_bundles/<tag>/android-arm64/extracted/`)
+to `third_party/bin/android-arm64/` inside the llamadart package, overwrite `libllama.so`, and apply
+`patches/llamadart/0001-setthreads-extra-buffers.patch` (its hook change makes that directory take
+precedence over the cached bundle). Clear `.dart_tool/hooks_runner/shared/llamadart` before the
+next `flutter build`: the hook cache does not key on the bundle files. Verify with
+`unzip -l app-release.apk | grep libllama` — the size must be the rebuilt file's, not the bundle's.
+
 Phones with i8mm or SVE load other variants (`armv8.6_1`, `armv9.2_1`), which this patch also
 compiles into but which Vollie still ships stock; only `armv8.2_2` was measured.
