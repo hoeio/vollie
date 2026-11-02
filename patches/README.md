@@ -21,7 +21,15 @@ results: each was checked bit-identical with `llama-perplexity` at one-token, 32
 | vectorized Q3_K dot (NEON) | `GGML_Q3K_VEC` (default on) | sub-block sums kept in vectors instead of 16 serial horizontal adds per block |
 | per-op profiler | `GGML_CPU_PROF=1` | µs computing and waiting per op type, one stderr line per 32 decode tokens |
 | in-generation A/B | `GGML_CPU_AB=q3k` or `tiny:<n>` | alternates a compute setting every token so heat and clocks hit both sides alike |
-| no barrier + dynamic chunks in `MUL_MAT_ID`, 4-row Q3_K, expert skip, helper affinity, source-page release, barrier bench, generic A/B | see `docs/runtime-knobs.md` (round 1, R17/R18) | the round-1 campaign knobs; `GGML_CPU_PROF=2` profiles 2-8-token graphs (speculative verify batches) |
+| expert-budget rules (R22) | `GGML_EXPERT_TOPP` / `GGML_EXPERT_GAP` / `GGML_EXPERT_MINK` | router-weight adaptive expert count (cumulative-mass, gap, floor); a `k_avg` exit counter reports the mean experts used |
+| independent-chain Q3_K x4 dot | `GGML_Q3K_ILP` | several accumulator chains in the 4-row Q3_K dot; bit-identical |
+| prefetch in the Q3_K dot | `GGML_Q3K_PF` | software prefetch of the next block; bit-identical |
+| anon-memory hot-expert cache | `GGML_EXPERT_ANON=<N>` | window-LFU copy of the hottest experts into anonymous memory; same bytes |
+| more A/B sides | `GGML_CPU_AB=` `EXPERT_SKIP` / `Q3K_ILP` / `Q3K_PF` / `EXPERT_ANON` | the in-generation A/B now alternates these too |
+| release helper | `ggml/src/ggml-cpu/vollie-release.h` (new header) | source-page release code moved out of `ggml-cpu.c` |
+| no barrier + dynamic chunks in `MUL_MAT_ID`, 4-row Q3_K, expert skip, helper affinity, source-page release, barrier bench, generic A/B | see `docs/runtime-knobs.md` (round 1, R17/R18) | the round-1 campaign knobs; `GGML_CPU_PROF=2` profiles 2-8-token graphs (speculative verify batches), now main-context only |
+
+`0001` is produced with `git -C lab/llama.cpp-tiny diff HEAD -- ggml/src/ggml-cpu` against base `620d2225c`.
 
 A race in an earlier version (a skipped sync before a fused RMS_NORM+MUL) produced garbage for
 prompt batches under ~42 tokens; it is fixed here, and `-ub 32` is now part of every check.
