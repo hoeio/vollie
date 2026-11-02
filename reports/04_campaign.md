@@ -306,3 +306,30 @@ skip at a safe threshold, barrier latency.
 
 Team standard from here on (`CLAUDE.md` §2): Clyde leads, Bonnie researches with Clyde, Tom codes,
 Annie keeps git and the books.
+
+## 10. Round 3 answers (R22-R23, 2026-11-02 evening; details `03_final.md` R22-R23, memo `05_compute_less.md` §5-6)
+
+Budget set by the owner the same day: hard limit +20 % vs F16, speed rule (router-weight expert threshold) +2 %
+over stock 9.6051 full set (≤ 9.797).
+
+- **Which expert-budget rule (R22, host):** the absolute weight threshold beats cumulative-mass and gap rules
+  2-3× in PPL per expert saved. One number per model. **Placed on the full set at 115 permille: PPL 9.7771
+  (+1.79 %), k̄ 4.11** — inside the budget.
+- **The expert kernel (R23, device):** the Q3_K x4 dot with independent accumulator chains (`GGML_Q3K_ILP`,
+  bit-identical) cuts `MUL_MAT_ID` compute −13 to −18 % on the A78 (−9 to −14 ms/token in fault-heavy runs,
+  −4 to −6 ms expected clean) while the M4 host showed +1.3 %: the A78 stalls on dependency-chain latency
+  at 2 NEON pipes, the M4's wider core already hides it. **Default from round 4.** Bonnie's reading was right,
+  Clyde's memory reading wrong: an anon-memory cache of the 16 hottest experts per layer reached 75-78 % hit
+  as predicted and saved ≈ 1 ms, then its 618 MB evicted the file cache and cost 20 %. Prefetch: nothing.
+  **Memory and prefetch terms of the expert path: closed.**
+- **The skip rule on the device:** always-on at 115, `MUL_MAT_ID` −27 % (proportional to the 27 % of slots
+  skipped), ≈ −7.5 to −8 ms/token. (A profiling bug — the per-run window carried over graphs from the previous
+  run — made the A/B look weak; found, fixed, host-reproduced.)
+- **Where it leaves 20 (Bonnie §6.6):** exact levers + the +2 % skip sum to −12 to −18 ms of the −15 needed →
+  **17-18.5 tok/s story-scale, 19.5 in the top corner**; the official 32-token bench reads the page cache more
+  than the runtime on a swapping day (5.4 / 11.2 in r3). **20 at the centre of the band needs SKIP 130
+  (≈ +4 % PPL est.) → 18.5-19.6 or SKIP 140 (≈ +6 % est.) → ≈ 20.0** — inside the hard limit, beyond the +2 %
+  budget: the owner's decision, with round-4 device A/Bs for 130/140 and full-set PPL for both.
+- **Round 4 (kit r4, pre-registered in `03_final.md` R24):** ILP default; A/Bs ILP, skip 115 ×2, 130, 140;
+  always-on ILP + skip 115 story 200 (predicted 54-58 ms → 17-18.5 tok/s) and official 32; SSM state
+  round-trip probe (−1.5 to −2.5 ms, bit-exact) if Tom gets it identical in time.
