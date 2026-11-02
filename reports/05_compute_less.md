@@ -566,3 +566,117 @@ pin `-t` (as R22 did) or add `-fa off`; the device (3 threads) will never byte-m
 Sources consulted (direction only, no numbers borrowed): Lu et al., *Not All Experts are Equal* (2402.14800,
 ACL 2024: post-hoc dynamic expert skipping by routing weight, ~1.2× on Mixtral); *SimLens* (2507.17618) and
 *The Diminishing Returns of Early-Exit Decoding in Modern LLMs* (2603.23701) on training-free early exit.
+
+## 6. R23 device results: what survived, round-4 costing (2026-11-02 night)
+
+Inputs: `reports/device/r3_2026-11-02.json` (device, 3 threads, kit profile scale), Clyde's R23 block in
+`03_final.md`, Tom's correction (the cpu-prof window was never reset at a run boundary, so every r3 A/B window
+after the first carried leftover graphs of the previous run), and two host runs of mine logged under
+`lab/logs/r24/`. Labels: *device* / *host* / *estimated*.
+
+### 6.1 Scorecard of the §5.3 pre-registration
+
+| prediction (§5.3, estimated) | measured (device) | score |
+|---|---|---|
+| threshold for +2 % full set = 110; edge 115-118 | SKIP 115 → 9.7771 (+1.79 %), k̄ 4.11 (host) | **hit** on the edge, 110 unneeded |
+| (a) SKIP A/B −8 to −11 ms, share 20-27 % | the one uncontaminated skip window (run 7's own B tail, 24 graphs): share 27 %, k̄ 4.36, `MUL_MAT_ID` 29.8 → 21.8 (−27 %, exactly proportional to the slots), token 68.5 → 60.0 (−8.5 ms); at clean 27.4-29.5 ms → **−7.4 to −8.0 ms** | **hit, low edge**; the R18 "1.9× proportional" did not recur (its excess was wait, since removed) |
+| (b) ILP device `MUL_MAT_ID` −10 to −25 %; host −15 to −30 % | device −18.0 % (ILP#1, near-clean window, but 1,210 majflt/token) and −13.3 % (ILP#2, B diluted 12/32 → true effect larger); **host +1.3 % (M4), +1.5 % cache-hot** | **device hit, host miss** (mine). The thesis "chain latency" was right about the A78 and wrong about the M4, see §6.2 |
+| (c) PF −0.5 to −2 ms | +0.6 ms clean; the −3.8 was ILP leakage (16 B graphs ran ilp=1) → PF ≈ 0 or worse | **miss on the mechanism, right on the size**: the stream-shape term S is dead |
+| (d) ANON 16: hit 35-45 % at 84+32 tokens, 70 % steady; −0.5 to −3.5 / −1 to −7 ms | hit 62 % in 32 tokens, 75-78 % steady (my replay exact); **−0.7 ms** at h 0.78; warm run −20 % (618 MB evicted the file cache) | **hit on the curve, miss on the value**: the memory term M is dead on this phone, as the "faults down, ms flat" branch said |
+| (e) round: −18 ms → 15.5-17.5 tok/s bench; 20 needs two upper-band terms | surviving sum ILP + SKIP ≈ −11 to −12.5 ms at clean scale (not yet measured together); bench 5.4 / 11.2 on a swapping phone | **unresolved** on the bench, **miss** on the 20 condition (ANON gave 0) |
+| `-fa off`: −t 4 = −t 6 at −ub 1 | 5.4696 both (host) | hit |
+
+Honest tally: 4 hits, 2 misses (host ILP, ANON value), PF a mechanism miss, (e) unresolved. The two misses
+share one cause: I priced in-core terms by op counts without pricing the issue width of each core.
+
+### 6.2 Why the M4 saw nothing and the A78 saw −15 %: both are now at their NEON issue floor
+
+Per-token work at k̄ = 6: 6 × 40 × 3 × (1536·512/256) = **2.21 M Q3_K row-blocks**. Clean `MUL_MAT_ID` 27.9 ms
+wall with per-thread 26.3-26.5 ms (`mmid_thr`) at 2.112 GHz (the A78 clock the kit read all session) =
+**75.7 cycles per row-block** (device, pre-ILP); after ILP (−15.5 %) ≈ **64**. Op count of the ILP kernel
+(`arch/arm/quants.c` `ggml_q3k_half_ilp`, read): per row-block ≈ 84 unpack/mask/`sdot` + 12 `vpadd` + 4 `mul` + 8
+widen + 2 `add` + ~10 scale-vector + 3 float ≈ **120 NEON-ALU ops** (loads excluded). The Cortex-A78 has **2
+NEON pipes → floor ≈ 60 cycles**; the x4 kernel sat at 75.7 (stall 20 %), ILP took it to 64 (**≈ 94 % of the
+floor**). The M4 P-core (4 NEON pipes, floor ≈ 30-34): the cache-hot check gives 24.5 µs per 512 × 1536 = 3,072
+row-blocks → 8.0 ns = **36 cycles at 4.5 GHz** (host, `lab/logs/r24/q3k_check_pcore.txt`) — already at its
+floor, which is why ILP measured +1.5 %/−0.2 % there. The (e‴) ¶1 count "~1 NEON op per cycle on both" was
+right; what differed was the floor (2 vs 4 pipes), not the stall.
+
+Consequence for a second ILP step (8 rows, gate+up interleave, split half-chains): the remaining stall is
+64 − 60 ≈ 4 cycles ≈ **≤ −5 % of `MUL_MAT_ID` ≈ ≤ −1.2 ms** (estimated, clean 24 ms post-ILP); 8 rows also
+doubles live registers (4 × (acc + 2 hmask + scales) = 16 of 32 vregs already) and would spill. **Predict
+−0 to −5 %; not worth building.** Instruction cuts in the unpack are a wash (folding the hmask into a second
+`sdot` saves 1 op/vector but adds a `vpadd` tree: 5.5 → 5.8 ops per 16 weights, counted). The Q3_K dot is
+closed at ≈ 94 % of what this core can issue; the lever is now fewer blocks (k̄), not faster blocks.
+
+Host proxy for the A78: **none usable.** `taskpolicy -c background` does land the check on the M4 E-cores
+(3.8-5.9× slower, 30.5 ns/row-block) but the two runs differ by 1.5× (94 vs 145 µs: background QoS also
+changes the clock) and ILP reads ×1.025 and ×0.95 — noise, `lab/logs/r24/q3k_check_ecore_bg.txt`. No
+cycle counters on the phone; the kit A/B at clean memory state is the only test.
+
+**Disagreement with R23's decision text:** "ILP −9 to −14 % per token" is the fault-heavy number
+(`MUL_MAT_ID` 52-58 ms, 1,000-1,200 majflt/token). At clean state the in-core gain is bounded by the floor:
+75.7 → 60-64 cycles = **−15 to −20 % of 27.4-29.5 ms = −4.1 to −5.9 ms, i.e. −6 to −9 % per token**
+(estimated). Still the largest bit-exact gain, but 2-4 ms smaller than the R23 text implies.
+
+### 6.3 Task item 3 (A/B under-application) — withdrawn
+
+Tom's host reproduction explains the k̄ 5.33 / share 29 % / −11 % row entirely: 20 of 32 B-side graphs were
+leftover unmasked graphs of run 6 (my own arithmetic had the unmasked fraction at 62 % = 20/32 before the
+cause was known). There was no knob leak and no under-application; the A/B path and the always-on path give
+the same k̄ (host 4.51 vs 4.49, −23 % both). Nothing for Tom here beyond the window reset he already made.
+
+### 6.4 Round-4 costing (profile scale, 3 threads, clean memory state)
+
+Clean baseline: 64.4-68.9 ms per token (story windows 3-8, k̄ 6, ilp 0), of which `MUL_MAT_ID` 27.4-30.8 +
+0.4-0.8 wait, dense `MUL_MAT` 23.5-24.2 + 1.5-1.9, `SSM_SCAN` 3.5 + 0.1, `CPY` 2.0-2.3 + 0.7-0.9, the rest ≈ 4.5,
+total wait 3.0-4.9. Kit wall = profile + ≈ 1.5 ms (15.03 tok/s = 66.5 ms vs 65.0 profiled). Compounding on
+`MUL_MAT_ID` only (the skip removes blocks, ILP speeds the remaining ones):
+
+| from 65.0 / 68.0 ms | ILP (−9 / −12.5 / −16 %) | + SKIP 115 (share 25 / 28 / 30 %) | token (profile) | wall | **tok/s, story** |
+|---|---|---|---|---|---|
+| low | 27.9 → 25.4 | → 19.0 | 56.1 | 57.6 | 17.3 (16.7 from 68) |
+| central | 27.9 → 24.4 | → 17.6 | 54.7 | 56.2 | **17.8** (17.2) |
+| high | 27.9 → 23.4 | → 16.4 | 53.5 | 55.0 | 18.2 (17.6) |
+
+(ILP band here is the conservative −9 to −16 %; the §6.2 floor argument allows up to −20 %, which adds ≈ 1 ms.)
+
+**Pre-registered round-4 predictions (estimated):**
+- *ILP alone, A/B at clean state (both sides ≤ 20 majflt/token):* `MUL_MAT_ID` −12 to −20 %, token **−3.5 to
+  −6 ms** (−5.5 to −9 %). Falsified below −2.5 ms (then the device gain was a fault-state artefact: keep the
+  default, it is bit-exact, but drop the kernel from the 20-tok/s arithmetic) or above −7 ms (then the floor
+  model is wrong and the second ILP step is live after all).
+- *ILP + SKIP 115 vs ILP alone, A/B:* share 25-30 % on the story prompt, k̄ = 6 × (1 − share) ± 0.05 (the
+  reset fixed), `MUL_MAT_ID` −(share ± 3 pt) %, token **−5.5 to −7.5 ms**. Falsified below −4.5 with share ≥ 25 %.
+- *Combined always-on row (ILP=1, SKIP=115, story 200, windows 2+):* **54-58 ms profile → 17.0-18.5 tok/s**
+  story (central 17.8); `MUL_MAT_ID` 16.5-19.5 ms. Falsified outside 52-60 ms.
+- *Official 32:* the r2/r3 official-to-story ratio was 0.37-0.78 (5.4 and 11.2 vs 14.4-15.0 on the same
+  phone): the 155-token prompt is prefilled with no cached prefix and touches ~all 64 experts of every layer
+  (≈ 2.6 GB) while MemAvailable was 1.5-2.8 GB, so decode starts with the cache half-evicted (250-1,200
+  majflt/token). Prediction: official **7-14 tok/s on an r3-like day, 15.5-18 on an R13-like day**; it will
+  not read 20 even when the story does. "What the user sees" in that bench is the phone's page cache more
+  than the runtime; the only runtime lever on it is fewer bytes per token (SKIP cuts expert bytes 28 % →
+  fewer re-faults), and the honest fix is to report both the story and the official number.
+
+### 6.5 What else is left, ranked (clean scale, per printed token)
+
+| # | lever | ms (estimated) | quality | cheapest falsifier |
+|---|---|---|---|---|
+| 1 | SKIP 115 always-on (k̄ ≈ 4.3 on prompts) | **−6 to −8** | +1.79 % full set (approved) | round-4 A/B above |
+| 2 | ILP default | −3.5 to −6 | bit-exact | round-4 clean A/B |
+| 3 | SSM state round trip: `SSM_SCAN` 3.5 + `CPY` 2.0 + 0.8 wait ≈ 113 MB r/w of F32 state per token (36 × 3072 × 128 × 4 B × 2) + conv/state copies; write the scan output in place and drop the state `CPY` nodes (graph change in the runtime, same float ops) | **−1.5 to −2.5** | bit-exact if the op order is kept | host: `GGML_CPU_PROF` CPY count 144 → ≤ 72, PPL identity |
+| 4 | dense `MUL_MAT` waits 1.5-1.9 (265 ops, X1/A78 tail) + CPY/RMS waits ≈ 1 | −0.8 to −1.5 | bit-exact | prof `wait` per op |
+| 5 | second ILP step (8 rows / gate+up / half-chains) | −0 to −1.2 | bit-exact | §6.2: kernel at 94 % of the 2-pipe floor; skip it |
+| 6 | dense `MUL_MAT` 23.6 ms: 559 MB/token (Q4_0 412 — `ssm_in`/`ssm_out` alone 296 MB = 12.5 ms —, Q6_K lm head 126 MB via the tied `token_embd` ≈ 5.3 ms, Q4_1 5, F32 routers 16) = **23.7 GB/s = the bandwidth ridge** (device). No ILP lever; bytes can only fall by changing numerics (lm-head vocabulary subset, F16 SSM state, re-quantized head at load) | 0 within the rules as a runtime-only, exact change | — | gguf-py dump above; `MUL_MAT` wait 1.6 confirms memory-bound |
+| — | expert bytes 243 MB/token at 8.7 GB/s: compute-bound, as established | | | |
+
+### 6.6 Verdict on 20 tok/s printed
+
+With everything that survives (1 + 2 + 3 + 4) the clean-state story band is **55-58 ms profile → 17-18.5
+tok/s central, 19.5 at the top corner** (estimated); 20 tok/s needs ≤ 50 ms profile = −15 ms from 65, and the
+ranked sum is −12 to −18 with the central at −13.5. **20 printed is at the edge of the band inside the +2 %
+budget, not its centre; it is not reachable on the official 32-token bench on an r2/r3-like day at all.**
+Moving it to the centre needs the owner's say: SKIP 130 (k̄ 3.44 wikitext, screen +3.4 %, full set ≈ +3.8 to
++4.5 % estimated, inside the +20 % hard limit) adds ≈ −3 ms → 51-54 ms → 18.5-19.6; SKIP 140 (k̄ 3.06, ≈ +5.5 to
++6.5 %) → ≈ 50 ms → 20.0. Those two are the only numbers on the table that reach 20 from here; everything
+exact is now priced and short by ≈ 3 ms.

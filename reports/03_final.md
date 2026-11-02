@@ -142,6 +142,20 @@ throttling), recorded from app 2.1.7 on.
 | spec: effective tok/s, story 64 | n = 2: 1.25-1.45×; n = 4: 1.05-1.35× (host tokens/eval 1.88 / 2.0 on free text) | ≤ no-draft at both |
 | 20 tok/s this round | **not expected**: needs tokens/eval ≥ 2.5 *and* verify ≤ 1.3× together; round 2 measures both halves so round 3 can pick D5 (draft on the A55s) / C3 (multi-column Q3_K) with numbers | — |
 
+**R24 — round 4, pre-registered 2026-11-02 night (Bonnie, `05_compute_less.md` §6; build pending). Scorecard of R23: 4 hits (threshold edge, skip −27 % of `MUL_MAT_ID` ∝ 27 % of slots, ILP on device, ANON hit-rate curve), 2 misses (ILP on the host, ANON value), both from pricing op counts without pricing issue width. Why ILP split host/device: 2.21 M Q3_K row-blocks per token; the A78 runs 75.7 cycles per row-block clean (device, 2.112 GHz) against a 2-NEON-pipe floor of ≈ 60 for the ≈ 120 ALU ops of the kernel; after ILP ≈ 64 = 94 % of the floor; the M4 P-core was already at its 4-pipe floor (36 cycles, host). So the clean-state ILP gain is bounded at −15 to −20 % of `MUL_MAT_ID` = −4.1 to −5.9 ms (the fault-heavy r3 runs showed more). A second ILP step (8 rows, gate+up, half-chains) is worth ≤ −1.2 ms with likely spills → not built.**
+
+| round-4 item | prediction (estimated, clean state, 3 threads) | falsified if |
+|---|---|---|
+| `Q3K_ILP` as **default**; A/B `Q3K_ILP:0:1` | `MUL_MAT_ID` −12 to −20 %, token **−3.5 to −6 ms** | < −2.5 or > −7 ms |
+| A/B `EXPERT_SKIP:0:115` on top of ILP | **−5.5 to −7.5 ms** at share 25-30 %; k̄ = 6·(1 − share) ± 0.05 | < −4.5 ms with share ≥ 25 %; k̄ off by > 0.05 |
+| A/B `EXPERT_SKIP:0:130` and `0:140` (measurement only, for the owner's budget decision) | proportional: share ≈ 43 / 49 % → −9.5 to −12 / −11 to −14 ms | not proportional to share ± 20 % |
+| always-on ILP + SKIP 115, story 200 | **54-58 ms/token → 17.0-18.5 tok/s** (central 17.8) | outside 52-60 ms |
+| official 32 bench, ILP + SKIP 115 | 7-14 tok/s on an r3-like day (swapping), 15.5-18 on an R13-like day: the 155-token prefill touches ~2.6 GB against 1.5-2.8 GB available, so this bench reads the page cache more than the runtime — report both | — |
+| SSM state round trip (`SSM_SCAN` 3.5 + `CPY` 2.0 + 0.8 wait; ~113 MB of F32 state read and written per token): scan in place, drop the state copies — bit-exact, env-gated, **only if Tom can make it identical in time** | −1.5 to −2.5 ms | < −0.8 ms |
+| remaining waits | −0.8 to −1.5 ms, no new lever in round 4 | — |
+
+Bonnie's verdict for the owner (§6.6): exact + approved levers sum **−12 to −18 ms of the −15 needed** (65 → 50 ms profile scale) → **17-18.5 tok/s story, 19.5 in the top corner; 20 printed is at the edge of the +2 % band, not its centre, and unreachable on the official bench on an r2/r3-like day**. Only a larger skip moves it to the centre: SKIP 130 (k̄ 3.44, ≈ +3.8 to +4.5 % full set, estimated from the screen) → 18.5-19.6; SKIP 140 (k̄ 3.06, ≈ +5.5 to +6.5 %) → ≈ 20.0. Both inside the +20 % hard limit, both beyond the +2 % speed-rule budget → **the owner decides, with round-4 device numbers and full-set PPL for 130/140 (Tom, host, round 4)**. Dense `MUL_MAT` (559 MB/token at 23.7 GB/s) sits at the bandwidth ridge: no exact runtime lever.
+
 **R23 pre-registered predictions (written 2026-11-02 evening before the host threshold runs finished and before any phone run; "estimated"; kit scale = R20 best run, 96 ms/token, 3 threads, `MUL_MAT_ID` compute ≈ 35 ms; full detail and reasoning in `05_compute_less.md` §5.2-5.3).**
 
 | item | prediction | falsified if |
