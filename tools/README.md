@@ -16,3 +16,5 @@ Scripts that produced every number in `reports/`. They expect the lab workspace 
 
 On a phone, Vollie's in-app speed test (`docs/tuning.md`) replaced the adb kit, since no device
 was attached to the lab machine.
+
+Host checks (bit-identity and kit-bug regressions) are in `tools/checks/`: `kit_runs.sh`/`.cpp` (cpu-prof/A-B window carry-over between kit runs), `ab_skip_id.sh` (no-op skip A/B equals off), `q3k_x4_check.sh`/`.c` (Q3_K x4 repack bit-identical). They expect the lab layout (`lab/checks/`).
