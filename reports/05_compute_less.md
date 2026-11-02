@@ -25,7 +25,7 @@ On the 60-chunk screen the baseline is 9.8702 (all three builds identical, so on
 | # | family | lever on this testbed | gain at best-run scale (est.) | quality (host) | verdict |
 |---|---|---|---|---|---|
 | 1 | **(a) adaptive expert count by the router's own weight** | skip slot if normalized w < t (exists: `GGML_EXPERT_SKIP`) | −6 to −8 ms inside +0.5 %; **−12 to −17 ms at k̄ ≈ 4.2 for +1.9 %**; 20 tok/s needs k̄ ≈ 3-3.5 → ≈ +5-9 % | adaptive is **3× cheaper in PPL per expert saved than uniform k** (measured) | the only family with the magnitude; price is the owner's call |
-| 2 | (e) **in-memory re-layout of the experts, bit-exact** (cheaper unpack of the same 3-bit values) | experts run at 5.7 GB/s-eq vs dense 21.5: floor 11 ms for 243 MB | up to −25 ms at profile scale, −20 at best-run; multiplies with #1 (expert time = k̄ × per-slot cost) | none (same values) | raw-path lever, Tom's; not "compute less" but the thing #1 multiplies with |
+| 2 | (e′) **bounded cache of re-laid experts, bit-exact** (top-N per layer, adaptive per session; a full re-laid copy = 2.59 GB anon is impossible on this phone) | per-MAC gap Q3_K vs Q4_0 experts measured 1.58× on host; dense rate is the 4× ceiling | N = 16 (648 MB anon, memory-neutral if same-size): **−9 to −17 ms** at k̄ = 6, −19 to −29 ms **together with #1 at k̄ 4.2** (profile scale) | none if the kernel keeps Q3_K's int sub-block sums and float order | the multiplier for #1; §1(e′) has the per-N table; host microbench first (S5) |
 | 3 | (d) cheap-token paths (draft confidence, emit-without-verify) | 350M draft agrees with the target's argmax on 55.7 % of tokens; gate p ≥ 0.98 → 8 % of tokens at 99 % agreement | **negative on this phone**: the target still has to ingest every token (state), so an unverified emit saves only the lm_head (~6 ms) and pays 14-24 ms of draft (R20) | +0.85 % at 8 % coverage, +0.12 % at 6 % | dead here; generalizes only to a device with a free draft lane |
 | 4 | (b) adaptive depth / early exit | skip a layer ≈ −1.8 ms; need 9-14 layers/token | dropping even the cheapest single layer (4) *always* costs +2.5 %; layers 36-39 each +52 to +547 %; SSM state of a skipped Mamba layer is never updated | — | dead by arithmetic and by architecture; one cheap falsifier left (§3 S2) |
 | 5 | (c) reuse across tokens | 45-50 % of experts repeat (R16) but with a *new input*; output reuse = wrong output | no arithmetic without a near-identical input; prefix/state reuse saves prompt time, not decode MACs | expected far over the gate | dead; falsifier is a 10-line cosine dump (§3 S4) |
@@ -133,10 +133,7 @@ state reuse (prompt cache, repeated contexts) saves prompt time, not decode MACs
 
 ### (e) Everything else that cuts arithmetic per printed token
 
-- **Bit-exact expert re-layout** (ranked #2): the expert path moves 243 MB in 42.5 ms while the dense stream
-  moves 560 MB in 26 ms; the gap is unpacking instructions, not MACs. A layout of the same Q3_K values that
-  unpacks like Q4_0 (owner's "in-memory re-layout" amendment) is the biggest single lever on the board
-  (−20 to −25 ms at profile scale if the per-byte rate matched the dense one) and it multiplies with #1.
+- **Bit-exact expert re-layout**: see (e′) below — only a *bounded* cache is feasible on this phone.
   Lossy re-layout (Q3_K → Q4_0 values) is out: 64 experts × 40 layers at 4.5 bits = 3.4 GB of anon memory on a
   phone killed at 3.6 GB.
 - **Candidate-set lm_head** (E2): −3 to −5 ms, but a miss is silent (you cannot know the argmax left the set
@@ -144,6 +141,78 @@ state reuse (prompt cache, repeated contexts) saves prompt time, not decode MACs
 - **Skipping the shared expert / dense FFN per token**: 107 MB of Q4_0 at bandwidth ≈ 5 ms; no per-token
   signal exists for it (it has no router). Not pursued.
 - MTP heads, trained exits, distilled drafts: training — out.
+
+### (e′) Bounded cache of re-laid experts — costed (Clyde's correction: a full re-laid copy cannot exist here)
+
+**Why bounded.** One expert = gate + up + down = 3 × 20.62 MiB / 64 = **1.013 MB at Q3_K** (quant log,
+`blk.*.ffn_*_exps` 20.62 MiB each); 64 × 40 = 2,560 experts = **2.59 GB** (2.42 GiB). Anon today ≈ 0.65 GB
+(R20); the app died at 3.6 GB; and the page cache would lose the same bytes. So: re-lay only each layer's
+hot experts into anon memory, keep the rest mmapped Q3_K.
+
+**1. Coverage (host, `lab/logs/r21/hotset.txt`, from the r16 `GGML_EXPERT_LOG` runs; decode tokens only).**
+Share of (token, slot) uses covered by each layer's N most-used experts, mean over 40 layers:
+
+| N | story (199 tok) | official (84) | code (199) | list (199) | **pooled, 681 tok** | anon MB (same-size layout) |
+|---|---|---|---|---|---|---|
+| 4 | 36.9 % | 39.7 % | 30.7 % | 33.5 % | 21.5 % | 162 |
+| 8 | 55.9 % | 58.9 % | 49.1 % | 50.0 % | 34.8 % | 324 |
+| 12 | 68.2 % | 71.2 % | 61.9 % | 61.5 % | 45.5 % | 486 |
+| 16 | 77.2 % | 80.0 % | 71.3 % | 70.4 % | **54.5 %** | **648** |
+| 24 | 88.6 % | 90.7 % | 83.4 % | 83.2 % | 69.3 % | 972 |
+| 32 | 94.6 % | 95.9 % | 90.8 % | 91.3 % | 80.5 % | 1,297 |
+
+**The hot set is not text-independent.** Per-layer top-16 sets overlap 50-59 % between the prose texts but only
+9-18 % between code and prose; a top-16 learned on one text covers 11-62 % of another's uses (code ↔ story 11-14 %).
+The within-text 70-80 % of R16 is partly a short-sample artefact (1,200 uses per layer over 64 experts): pooled
+over all four texts top-16 covers 54.5 %. So the cache must be **adaptive** (per-session frequency or LRU over
+the last few hundred tokens), and its steady-state hit rate is the within-conversation coverage: **55-75 % at
+N = 16**, 70-90 % at N = 24. Layers 10-19 are the most concentrated (top-16 = 0.65-0.74), layers 0-9 and 26-31
+the least (0.37-0.48; `hotset.txt` last line) — N could be set per layer, but the pooled curve is what to plan with.
+
+**2. Memory.** Anon bytes = 40 × N × 1.013 MB (column above). If the re-laid format keeps Q3_K's 3.44 bits per
+weight (a reordering, like the dense repack copy), the original file pages of cached experts go cold and the
+page cache need drops by the same amount: **total memory neutral, but 648 MB (N = 16) moves from evictable to
+unevictable** — the same anon size the speculation run added (R20, 1.19-1.27 GB total), and that run lost 24 %
+to faults because it did *not* free file pages. A Q4_0-sized layout (+31 %) costs a net +200 MB at N = 16. Rule:
+N ≤ 16 on this phone, drop the cache on `onTrimMemory`, re-fill lazily.
+
+**3. Gain (estimated, R20 profile scale: `MUL_MAT_ID` compute 42.5 ms = 240 slot-ops × 0.177 ms, wait 8.2 held
+constant).** The assumption: the gap is layout/unpacking, not MACs. **Host falsifier run today** (1 thread, M4,
+story 64 tokens, `cpu-prof`, `lab/logs/r21/fmt-*-t1.log`): D6 Q3_K experts 48.8 ms per token for 240 slot-ops
+(0.203 ms each, 5.0 GB/s-eq); the old Q4_0-expert file (4 routed) 20.6 ms for 160 slot-ops (**0.129 ms each**,
+10.3 GB/s-eq): same MACs per slot, 31 % more bytes, **1.58× less time** → the Q3_K unpack is the cost, not the
+arithmetic. But Q4_0 experts still run at half the host's dense rate (23.4 GB/s-eq), so part of the expert gap
+is the `MUL_MAT_ID` shape (one activation row per expert, 512-wide), which a layout cannot remove. Band used:
+re-laid slot-op at **1.6× faster (measured, conservative) … 3.8× (dense per-byte rate, ceiling)**, i.e. 0.111 … 0.047 ms.
+Expert compute = k̄ × 40 × [c · t_fast + (1 − c) · 0.177], c = pooled coverage (steady-state) … within-text (best):
+
+| N | c | k̄ = 6, conservative | k̄ = 6, ceiling | k̄ = 4.2 (+1.9 % PPL), conservative | k̄ = 4.2, ceiling |
+|---|---|---|---|---|---|
+| 0 (today) | — | 42.5 | 42.5 | 29.8 | 29.8 |
+| 8 | 0.35-0.55 | 36.9-33.8 (−6 to −9) | 31.6-25.3 (−11 to −17) | 25.8-23.7 | 22.1-17.7 |
+| 16 | 0.55-0.75 | 33.8-30.6 (**−9 to −12**) | 25.5-19.1 (**−17 to −23**) | 23.7-21.4 (**−19 to −21 vs today**) | 17.9-13.4 (**−25 to −29**) |
+| 24 | 0.69-0.87 | 31.6-28.7 (−11 to −14) | 21.0-15.3 (−21 to −27) | 22.1-20.1 | 14.7-10.7 |
+| 32 | 0.80-0.93 | 29.7-27.7 (−13 to −15) | 17.4-13.5 (−25 to −29) | 20.8-19.4 | 12.2-9.5 |
+| 64 (impossible) | 1 | 26.6 (−16) | 11.3 (−31) | 18.6 | 7.9 |
+
+At best-run scale (×0.84) N = 16 alone is −8 to −19 ms; **N = 16 + k̄ 4.2 is −16 to −24 ms, i.e. 67-77 → 45-60 ms =
+17-22 tok/s (estimated)** — the first combination on the board whose band contains 20, at +1.9 % PPL (60-chunk
+screen; ≈ +2.3 % full-set by the screen's bias) and 648 MB of anon memory.
+
+**4. Quality.** None if the new kernel reproduces `ggml_vec_dot_q3_K_q8_K` exactly: per 256-block, the int32
+sum of each 16-weight sub-block × its 6-bit scale is order-free (integers), but the per-block float
+accumulation `sumf += d_block · d_act · isum` must run in the same block order per row (that is how `Q3K_X4`
+stayed bit-identical). Tom checks: `GGML_EXPERT_RELAYOUT=64` (every expert re-laid) vs `0`, per-chunk PPL on
+chunks 1-3 at `-ub 1` and `-ub 32`, must match to the last digit (5.5137 / 7.3175 / 7.0292), plus one 72-token
+greedy generation byte-identical. Fallback if the fast layout needs a different float order (e.g. two
+half-rows summed): declared numerics behind the env var, full-set wikitext-2 PPL within noise of 9.6051
+(≤ +0.05 %) and en.txt 11.1001, and the owner told — it is then a non-exact change under the +0.5 % rule.
+
+**5. Rerank.** #1 adaptive k and #2 the bounded re-laid cache stay in that order — #1 is a 20-line knob with the
+PPL curve already measured; #2 is a kernel + cache + memory-pressure path — but they are one plan, not two:
+the cache multiplies #1's saving, and only together do they put 20 in the band. The cheapest step is the
+microbench (S5), which can kill the whole family in an hour if the re-laid dot is not ≥ 1.5× faster per MAC on
+the M4.
 
 ## 2. What was measured today (host, raw in `lab/logs/r21/`)
 
@@ -211,12 +280,32 @@ gate op of each layer (keep the previous token's quantized/raw `src1` row per la
 1536 floats × 40). Run the story prompt 72 tokens; report the per-layer median. Prediction: < 0.8 in every
 layer → expert-output reuse is closed without a PPL run.
 
+**S5 — re-laid expert microbench, then the bounded cache (build in this order; stop at the first failure).**
+(i) Microbench, host, no model: a 60-line `lab/relayout_bench.c` (or a `test-backend-ops`-style case) that takes
+one expert's gate matrix (512 × 1536 Q3_K, 1.01 MB; dump it once from D6 with `gguf-py` into
+`lab/logs/r21/expert.bin`) and one Q8_K activation row, times 1,000 × `ggml_vec_dot_q3_K_q8_K` over all 512 rows
+vs the same values in a candidate layout with its own dot (first candidate: 4-row interleave as `Q3K_X4` already
+walks it, 6-bit sub-block scales pre-expanded to int8, 2-bit and 1-bit planes de-interleaved per 4-row group;
+same byte count), asserts every row's result bit-identical, prints µs per MB for both at 1 thread. Go/no-go:
+≥ 1.5× faster per MAC (the host Q3_K→Q4_0 gap measured today); log to `lab/logs/r21/relayout-bench.txt`.
+(ii) Only on a go: `GGML_EXPERT_RELAYOUT=<N>` (lab, default 0) in `ggml-cpu.c`: per layer a use counter over
+the routed ids (the `eid` log site, ≈ line 3673, already sees them), after `GGML_EXPERT_RELAYOUT_WARM=32`
+tokens re-lay the top-N experts' gate/up/down into anon buffers (3 × N × 40 × 0.34 MB), refresh the set every
+256 tokens (evict the coldest, re-lay the hottest; one expert per token at most so the copy cost stays
+≤ 1 ms); `MUL_MAT_ID` dispatch per expert through a `(layer, expert) → ptr` table: re-laid → new dot,
+else stock. Log in the `cpu-prof` line: `relay=N/hit%` (hits over routed slots) and the anon bytes.
+Verify as in §1(e′) ¶4; then host A/B `GGML_CPU_AB=RELAYOUT:0:16` on the story and `-t 1` `cpu-prof` to report
+`MUL_MAT_ID` µs/token vs today's 48.8 ms (prediction from the microbench ratio × hit rate). Device: kit r3
+`RELAYOUT:0:16` A/B with `relay=` and `anon` in the JSON; pre-registered prediction from the §1(e′) table
+(conservative column) before the run.
+
 ## 4. Where this leaves 20 tok/s
 
 Within +0.5 %: the compute-less families buy ≈ 6-8 ms (one slot on ~15 % of tokens): 13-15 → 14.5-16.5 tok/s,
-estimated. 20 is reachable only as **raw levers to ~16 tok/s (bit-exact expert re-layout, remaining waits)
-plus the router-weight rule at k̄ ≈ 3.5-4.5, which costs ≈ +1 to +5 % PPL on wikitext-2 (stays under the
-+10 % hard limit; the +0.5 % working tolerance does not survive).** That is the number the owner has to
+estimated. 20 is reachable only as **raw levers to ~16 tok/s (the bounded re-laid expert cache of §1(e′),
+remaining waits) plus the router-weight rule at k̄ ≈ 3.5-4.5, which costs ≈ +1 to +5 % PPL on wikitext-2 (stays
+under the +10 % hard limit; the +0.5 % working tolerance does not survive).** The one combination whose
+estimated band contains 20 is N = 16 re-laid experts + k̄ 4.2 (+1.9 % screen): 17-22 tok/s at best-run scale. That is the number the owner has to
 decide with. The method itself — one threshold on the router's own softmax — is model- and
 device-independent; the price is model-dependent and must be measured per model the way it was today
 (two 3-minute curves).
