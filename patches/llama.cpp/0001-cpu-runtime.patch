@@ -307,7 +307,7 @@ index cfbbf6617..4f495eb68 100644
  static inline svuint32_t ggml_decode_q4scales_and_mins_for_mmla(const uint32_t * vx_scales) {
      const svbool_t pg_all   = svptrue_pat_b32(SV_VL4);
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index ab82e3d6c..1dd287a2d 100644
+index ab82e3d6c..dc438c334 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -197,6 +197,7 @@ typedef void * thread_ret_t;
@@ -344,7 +344,7 @@ index ab82e3d6c..1dd287a2d 100644
                      vec_dot(ne00, &tmp[ir0 - iir0], 0, src0_cur + ir0*nb01, 0, src1_col, 0, 1);
                  }
  
-@@ -1551,6 +1562,180 @@ static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
+@@ -1551,6 +1562,199 @@ static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
      return ptr;
  }
  
@@ -352,6 +352,7 @@ index ab82e3d6c..1dd287a2d 100644
 +static int ggml_cpu_mmid;
 +static int ggml_cpu_q3k_x4;
 +static int ggml_cpu_expert_skip, ggml_cpu_expert_skip_renorm;
++static int ggml_cpu_expert_topp, ggml_cpu_expert_gap, ggml_cpu_expert_mink;
 +static int64_t ggml_cpu_skip_cnt, ggml_cpu_skip_total;
 +#define GGML_CPU_SKIP_MAX 4096
 +#define GGML_CPU_MMID_MAX_AS 512
@@ -375,19 +376,37 @@ index ab82e3d6c..1dd287a2d 100644
 +    const int     n_ids = ids->ne[0];
 +    const int64_t n_tok = ids->ne[1];
 +    ggml_cpu_skip_on_tl = false;
-+    if (!ggml_cpu_expert_skip || !w || n_ids*n_tok > GGML_CPU_SKIP_MAX ||
++    if (!(ggml_cpu_expert_skip || ggml_cpu_expert_topp || ggml_cpu_expert_gap) || !w || n_ids > 64 || n_ids*n_tok > GGML_CPU_SKIP_MAX ||
 +        w->type != GGML_TYPE_F32 || w->ne[0] != 1 || w->ne[1] != n_ids || w->ne[2] != n_tok) {
 +        return false;
 +    }
 +    const float t = ggml_cpu_expert_skip / 1000.0f;
++    const float p = ggml_cpu_expert_topp ? ggml_cpu_expert_topp / 1000.0f : 2.0f; // 2: never reached
++    const float g = ggml_cpu_expert_gap / 1000.0f;
++    const bool  ranked = ggml_cpu_expert_topp || ggml_cpu_expert_gap;
 +    for (int64_t tok = 0; tok < n_tok; tok++) {
-+        float dropped = 0.0f;
++        float v[64];
++        int   ord[64]; // slots by weight, descending (insertion sort: stable, same on every thread)
 +        for (int s = 0; s < n_ids; s++) {
-+            const float v = *(const float *) ((const char *) w->data + tok*w->nb[2] + s*w->nb[1]);
-+            const bool skip = v < t;
++            v[s] = *(const float *) ((const char *) w->data + tok*w->nb[2] + s*w->nb[1]);
++            int j = s;
++            for (; j > 0 && v[ord[j - 1]] < v[s]; j--) {
++                ord[j] = ord[j - 1];
++            }
++            ord[j] = s;
++        }
++        float dropped = 0.0f, cum = 0.0f; // cum: weight of the higher-ranked slots
++        for (int r = 0; r < n_ids; r++) {
++            const int s = ord[r];
++            // SKIP: plain threshold (unchanged); TOPP: past the shortest prefix reaching mass p;
++            // GAP: under g x the top weight. The two ranked rules keep at least MINK slots.
++            const bool skip = v[s] < t || (ranked && r >= ggml_cpu_expert_mink && (cum >= p || v[s] < g*v[ord[0]]));
++            cum += v[s];
 +            ggml_cpu_skip_mask_tl[tok*n_ids + s] = skip;
-+            if (skip) {
-+                dropped += v;
++        }
++        for (int s = 0; s < n_ids; s++) { // slot order, as before (renorm stays bit-identical)
++            if (ggml_cpu_skip_mask_tl[tok*n_ids + s]) {
++                dropped += v[s];
 +            }
 +        }
 +        ggml_cpu_skip_scale_tl[tok] = (ggml_cpu_expert_skip_renorm && dropped > 0.0f && dropped < 1.0f) ? 1.0f/(1.0f - dropped) : 1.0f;
@@ -525,7 +544,7 @@ index ab82e3d6c..1dd287a2d 100644
  static void ggml_compute_forward_mul_mat_id(
          const struct ggml_compute_params * params,
                struct ggml_tensor * dst) {
-@@ -1571,6 +1756,13 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1571,6 +1775,13 @@ static void ggml_compute_forward_mul_mat_id(
      enum ggml_type    const vec_dot_type    = type_traits_cpu[type].vec_dot_type;
      ggml_from_float_t const from_float      = type_traits_cpu[vec_dot_type].from_float;
  
@@ -539,7 +558,7 @@ index ab82e3d6c..1dd287a2d 100644
      // we don't support permuted src0 or src1
      GGML_ASSERT(nb00 == ggml_type_size(type));
      GGML_ASSERT(nb10 == ggml_type_size(src1->type));
-@@ -1644,21 +1836,10 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1644,21 +1855,10 @@ static void ggml_compute_forward_mul_mat_id(
      }
  
      if (ith == 0) {
@@ -564,7 +583,7 @@ index ab82e3d6c..1dd287a2d 100644
  
      // reset current_chunk
      for (int cur_a = ith; cur_a < n_as; cur_a += nth) {
-@@ -1720,7 +1901,7 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1720,7 +1920,7 @@ static void ggml_compute_forward_mul_mat_id(
              const int64_t ir1_start = dr1 * ith1;
              const int64_t ir1_end = MIN(ir1_start + dr1, nr1);
  
@@ -573,7 +592,7 @@ index ab82e3d6c..1dd287a2d 100644
                  dst, src0, src1, ids, cur_a,
                  ir0_start, ir0_end, ir1_start, ir1_end,
                  src0_cur, matrix_rows, row_size, src1_cont, wdata
-@@ -2902,6 +3083,10 @@ struct ggml_cplan ggml_graph_plan(
+@@ -2902,6 +3102,10 @@ struct ggml_cplan ggml_graph_plan(
                          if (src1->type != vec_dot_type) {
                              cur += ggml_row_size(vec_dot_type, ggml_nelements(src1)) + sizeof(int64_t);
                          }
@@ -584,7 +603,7 @@ index ab82e3d6c..1dd287a2d 100644
                          // matrix_row_counts
                          cur += n_as * sizeof(int64_t) + sizeof(int64_t);
                          // matrix_rows
-@@ -3064,40 +3249,584 @@ struct ggml_cplan ggml_graph_plan(
+@@ -3064,40 +3268,600 @@ struct ggml_cplan ggml_graph_plan(
  // Returns the number of nodes skipped by fusion (>=1), or 0 if no fusion was applied.
  static bool ggml_cpu_disable_fusion = false;  // initialized once in ggml_cpu_init(), read-only afterwards
  
@@ -704,6 +723,22 @@ index ab82e3d6c..1dd287a2d 100644
 +static int ggml_cpu_expert_skip = 0, ggml_cpu_expert_skip_renorm = 0;
 +static int64_t ggml_cpu_skip_cnt = 0, ggml_cpu_skip_total = 0; // (token, slot) pairs skipped / routed, thread 0
 +
++// Vollie: per-token expert budget from the router's own weights (NOT bit-exact; 05_compute_less.md S1),
++// decided in the same place as GGML_EXPERT_SKIP and combined with it (a slot is skipped if any rule says so):
++// GGML_EXPERT_TOPP=<permille>: keep the fewest top-weighted slots whose cumulative weight reaches p/1000;
++// GGML_EXPERT_GAP=<permille>: skip a slot under g/1000 of the top slot's weight;
++// GGML_EXPERT_MINK=<n> (default 1): TOPP and GAP never keep fewer than n slots. No renormalization (R17).
++// When any skip knob is on, the run's totals (down projections: one per layer and token) print at exit:
++// "expert-budget routed=<slots> skipped=<slots> kavg=<kept slots per layer and token>".
++static int ggml_cpu_expert_topp = 0, ggml_cpu_expert_gap = 0, ggml_cpu_expert_mink = 1;
++static int64_t ggml_cpu_budget_routed = 0, ggml_cpu_budget_skipped = 0, ggml_cpu_budget_tok = 0;
++static bool ggml_cpu_budget_atexit = false;
++static void ggml_cpu_budget_print(void) {
++    fprintf(stderr, "expert-budget routed=%lld skipped=%lld kavg=%.2f\n", (long long) ggml_cpu_budget_routed,
++            (long long) ggml_cpu_budget_skipped,
++            ggml_cpu_budget_tok ? (double) (ggml_cpu_budget_routed - ggml_cpu_budget_skipped) / ggml_cpu_budget_tok : 0.0);
++}
++
 +// Finds the mixture weights a layer's MUL_MAT_ID ops are combined with: src[1] of the MUL
 +// named ffn_moe_weighted that follows (llama.cpp's build_moe_ffn), [1, n_ids, n_tokens] F32.
 +static const struct ggml_tensor * ggml_cpu_moe_weights(const struct ggml_cgraph * cgraph, int node_n) {
@@ -715,7 +750,7 @@ index ab82e3d6c..1dd287a2d 100644
      }
 +    return NULL;
 +}
-+
+ 
 +// Vollie: env GGML_BARRIER_BENCH=<n>: once per process, before the first graph's first op,
 +// all threads run n empty barriers and thread 0 prints the cost per barrier.
 +static int  ggml_cpu_bbench_n = 0; // last value run
@@ -728,7 +763,7 @@ index ab82e3d6c..1dd287a2d 100644
 +
 +// Per-thread compute time inside MUL_MAT_ID (GGML_CPU_PROF): shows imbalance between cores.
 +static struct { int64_t us; char pad[56]; } ggml_cpu_prof_mmid_thr[GGML_MAX_N_THREADS];
- 
++
 +#define GGML_CPU_RANDOM_MAX 1024
 +static struct { const void * data; size_t size; } ggml_cpu_random_done[GGML_CPU_RANDOM_MAX];
 +static int ggml_cpu_random_n = 0;
@@ -1188,7 +1223,7 @@ index ab82e3d6c..1dd287a2d 100644
  static thread_ret_t ggml_graph_compute_thread(void * data) {
      struct ggml_compute_state * state = (struct ggml_compute_state *) data;
      struct ggml_threadpool    * tp    = state->threadpool;
-@@ -3126,6 +3855,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3126,6 +3890,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
      GGML_PRINT_DEBUG("thread #%d compute-start cplan %p last-graph %d\n", state->ith, (const void *)cplan, state->last_graph);
  #endif
  
@@ -1211,7 +1246,7 @@ index ab82e3d6c..1dd287a2d 100644
      for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
          struct ggml_tensor * node = cgraph->nodes[node_n];
  
-@@ -3139,12 +3884,46 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3139,12 +3919,53 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
          }
  
          // TODO: move fused-op detection into ggml_graph_plan so fusion decisions are made once at planning time
@@ -1230,7 +1265,7 @@ index ab82e3d6c..1dd287a2d 100644
 +        }
 +#endif
 +        if (mmid) {
-+            ggml_cpu_skip_weights_tl = ggml_cpu_expert_skip ? ggml_cpu_moe_weights(cgraph, node_n) : NULL;
++            ggml_cpu_skip_weights_tl = ggml_cpu_expert_skip || ggml_cpu_expert_topp || ggml_cpu_expert_gap ? ggml_cpu_moe_weights(cgraph, node_n) : NULL;
 +        }
 +        if (tiny && state->ith != 0) {
 +            // thread 0 does it alone
@@ -1254,16 +1289,23 @@ index ab82e3d6c..1dd287a2d 100644
 +            }
 +            if (state->ith == 0 && ggml_cpu_skip_on_tl) {
 +                const struct ggml_tensor * ids = node->src[2];
++                int64_t cnt = 0;
 +                for (int64_t i = 0; i < ids->ne[0]*ids->ne[1]; i++) {
-+                    ggml_cpu_skip_cnt += ggml_cpu_skip_mask_tl[i];
++                    cnt += ggml_cpu_skip_mask_tl[i];
 +                }
++                ggml_cpu_skip_cnt   += cnt;
 +                ggml_cpu_skip_total += ids->ne[0]*ids->ne[1];
++                if (ggml_cpu_skip_down_tl) {
++                    ggml_cpu_budget_skipped += cnt;
++                    ggml_cpu_budget_routed  += ids->ne[0]*ids->ne[1];
++                    ggml_cpu_budget_tok     += ids->ne[1];
++                }
 +            }
 +            ggml_cpu_mmid_seq_tl++;
          }
  
          if (state->ith == 0 && cplan->abort_callback &&
-@@ -3153,9 +3932,31 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3153,9 +3974,31 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
              tp->ec    = GGML_STATUS_ABORTED;
          }
  
@@ -1296,7 +1338,7 @@ index ab82e3d6c..1dd287a2d 100644
      }
  
  #ifdef GGML_USE_OPENMP
-@@ -3398,6 +4199,85 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3398,6 +4241,95 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
      int n_threads                               = cplan->n_threads;
      struct ggml_threadpool * threadpool = cplan->threadpool;
  
@@ -1332,6 +1374,16 @@ index ab82e3d6c..1dd287a2d 100644
 +    ggml_cpu_expert_skip = skip ? atoi(skip) : 0;
 +    const char * renorm = getenv("GGML_EXPERT_SKIP_RENORM");
 +    ggml_cpu_expert_skip_renorm = renorm ? atoi(renorm) : 0;
++    const char * topp = getenv("GGML_EXPERT_TOPP");
++    ggml_cpu_expert_topp = topp && *topp ? atoi(topp) : 0;
++    const char * gap = getenv("GGML_EXPERT_GAP");
++    ggml_cpu_expert_gap = gap && *gap ? atoi(gap) : 0;
++    const char * mink = getenv("GGML_EXPERT_MINK");
++    ggml_cpu_expert_mink = mink && *mink ? atoi(mink) : 1;
++    if ((ggml_cpu_expert_skip || ggml_cpu_expert_topp || ggml_cpu_expert_gap) && !ggml_cpu_budget_atexit) {
++        ggml_cpu_budget_atexit = true;
++        atexit(ggml_cpu_budget_print);
++    }
 +    const char * bbench = getenv("GGML_BARRIER_BENCH");
 +    const int bbench_n = bbench ? atoi(bbench) : 0;
 +    // runs once per distinct value, so an app can re-arm it (e.g. 10000, 10001) per thread count
@@ -1382,7 +1434,7 @@ index ab82e3d6c..1dd287a2d 100644
      bool disposable_threadpool = false;
  
      if (threadpool == NULL) {
-@@ -3455,6 +4335,18 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3455,6 +4387,18 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
  
      // don't leave affinity set on the main thread
      clear_numa_thread_affinity();
