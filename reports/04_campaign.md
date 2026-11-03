@@ -333,3 +333,26 @@ over stock 9.6051 full set (≤ 9.797).
 - **Round 4 (kit r4, pre-registered in `03_final.md` R24):** ILP default; A/Bs ILP, skip 115 ×2, 130, 140;
   always-on ILP + skip 115 story 200 (predicted 54-58 ms → 17-18.5 tok/s) and official 32; SSM state
   round-trip probe (−1.5 to −2.5 ms, bit-exact) if Tom gets it identical in time.
+
+## 11. Round 4 answers (R24, 2026-11-03; details `03_final.md` "R24 — round-4 device results", JSON `reports/device/r4_2026-11-03.json`)
+
+Swapping day again (swapfree 0-351 MB, 18-1,390 majflt per token); official baselines 7.1 / 5.3 tok/s.
+
+- **The skip rule, three thresholds on the device:** `MUL_MAT_ID` falls by 0.87 × the skipped share at every
+  threshold — 115: −25 to −32 % at share 27 % (k̄ 4.33); 130: −34 % at 39 % (k̄ 3.61); 140: −40 % at 46 %
+  (k̄ 3.20). Always-on 115 over a 200-token story: **14.2 tok/s printed vs 10.2 control (×1.40)**, steady
+  profile 60.8 ms (16.4 tok/s) vs 79-86. Official 32 with skip: 11.3 vs 7.1 / 5.3. The 54-58 ms band was
+  missed narrowly (60-62) on a day that fails its clean precondition.
+- **SSM state round trip (`GGML_SSM_INPLACE`, bit-exact): −4.5 ms** in its own ops (`CPY` −3.3, `SSM_SCAN`
+  −1.2, 72 fewer barriers), twice the predicted band. **Default on from round 5.**
+- **ILP corrected:** the r4 A/B ran ILP first and showed "off" 2.6 ms faster. Solving r3 (`0:1`) and r4
+  (`1:0`) together separates the knob from the order: **ILP ≈ −6 % of `MUL_MAT_ID` (≈ −2 ms), window-2
+  advantage ≈ 10 %**. R23's −18 % was two-thirds order bias. ILP stays default (exact) but is no longer in
+  the 20 tok/s sum.
+- **Method finding (generalizes):** side A of the kit's A/B is tokens 1-32, side B 33-64; window 1 of every
+  run is 25-60 % slower (page-cache fill + DVFS from 710 MHz). Any one-order on-device A/B is biased by
+  about that; round 5 alternates sides per 8-token window after a warm-up and scores steady windows only.
+- **Where 20 stands (steady profile, estimated from the measured pieces):** 115 + SSM ≈ 56 ms (17.8); 130 +
+  SSM ≈ 53 (19); 140 + SSM ≈ 50.5 (19.8). Printed over 200 tokens is ≈ 2 tok/s under steady profile on a
+  swapping day. **Owner's threshold decision still open: 115 (+1.79 %, approved) / 130 (+3.60 %) / 140
+  (+5.20 %).** Exact levers left: waits −0.8 to −1.5 ms.
