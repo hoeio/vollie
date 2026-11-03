@@ -18,17 +18,20 @@ results: each was checked bit-identical with `llama-perplexity` at one-token, 32
 | expert prefetch | `GGML_EXPERT_IO` bit 1 | MoE experts read through mmap fault in one page at a time on compute threads; the routed experts' slices are requested together instead |
 | no read-around on expert tensors | `GGML_EXPERT_IO` bit 2 | measured worse on the SD888 (more, smaller faults); kept for other devices |
 | next-layer expert guess | `GGML_EXPERT_IO` bit 4 (+8: two more) | a helper thread applies the next layer's router to this layer's input and prefetches a layer early; 82-85% right |
-| vectorized Q3_K dot (NEON) | `GGML_Q3K_VEC` (default on) | sub-block sums kept in vectors instead of 16 serial horizontal adds per block |
+| vectorized Q3_K dot (NEON) | `GGML_Q3K_VEC` (default on; empty value = on since round 5, was read as 0; harmless, the x4 kernel bypasses it) | sub-block sums kept in vectors instead of 16 serial horizontal adds per block |
 | per-op profiler | `GGML_CPU_PROF=1` | µs computing and waiting per op type, one stderr line per 32 decode tokens; the profile window now resets at every prompt (> 8 tokens), so per-run windows no longer inherit the previous run's graphs |
 | in-generation A/B | `GGML_CPU_AB=q3k` or `tiny:<n>` | alternates a compute setting every token so heat and clocks hit both sides alike |
 | expert-budget rules (R22) | `GGML_EXPERT_TOPP` / `GGML_EXPERT_GAP` / `GGML_EXPERT_MINK` | router-weight adaptive expert count (cumulative-mass, gap, floor); a `k_avg` exit counter reports the mean experts used |
 | independent-chain Q3_K x4 dot | `GGML_Q3K_ILP` (default on since round 4: empty = unset = on, `0` = off) | several accumulator chains in the 4-row Q3_K dot; bit-identical |
 | prefetch in the Q3_K dot | `GGML_Q3K_PF` | software prefetch of the next block; bit-identical (measured on device R23: no gain; kept in the patch, closed) |
 | anon-memory hot-expert cache | `GGML_EXPERT_ANON=<N>` | window-LFU copy of the hottest experts into anonymous memory; same bytes (measured on device R23: no gain; kept in the patch, closed) |
-| in-place SSM state | `GGML_SSM_INPLACE` (default off; bit-identical) | for single-sequence decode the SSM_SCAN writes its new state straight into the recurrent-cache slot and the state CPY node is dropped from compute; matched per graph only when sizes/offsets match exactly and nothing else touches the cache between scan and copy; 36 Mamba layers |
-| more A/B sides | `GGML_CPU_AB=` `EXPERT_SKIP` / `Q3K_ILP` / `Q3K_PF` / `EXPERT_ANON` / `SSM_INPLACE` | the in-generation A/B now alternates these too |
+| in-place SSM state | `GGML_SSM_INPLACE` (default **on** since round 5: empty = unset = on, `0` = off; bit-identical) | for single-sequence decode the SSM_SCAN writes its new state straight into the recurrent-cache slot and the state CPY node is dropped from compute; matched per graph only when sizes/offsets match exactly and nothing else touches the cache between scan and copy; 36 Mamba layers |
+| conv state in place | `GGML_CONV_RING` (default off; bit-identical) | the one-token `SSM_CONV` reads the old conv state and x where they already are and shifts the state into the cache itself; the 36 `CONCAT` and 36 conv `CPY` ops are dropped (nodes 1911 → 1839); single sequence, K = 1, d_conv = 4 only, else stock path | host −1.2 ms/token on its own ops (noisy) |
+| more A/B sides | `GGML_CPU_AB=` `EXPERT_SKIP` / `Q3K_ILP` / `Q3K_PF` / `EXPERT_ANON` / `SSM_INPLACE` / `CONV_RING` | the in-generation A/B now alternates these too. **ABBA since round 5**: `GGML_CPU_AB_WARM` (default 16) warm-up tokens, then `GGML_CPU_AB_BLOCK` (default 8)-token blocks in A B B A order, one `cpu-prof ab= blk=` line per block; `knob:` mode only; the parser reports B − A ± 1σ over post-warm-up blocks |
 | release helper | `ggml/src/ggml-cpu/vollie-release.h` (new header) | the `GGML_REPACK_RELEASE=1` code: after a tensor is repacked, `madvise(MADV_PAGEOUT)` (fallbacks `MADV_COLD` / `MADV_DONTNEED`) on the mmap source pages so the page cache can hold experts instead; included by `ggml-cpu.c` and `repack.cpp`; data and results unchanged |
 | no barrier + dynamic chunks in `MUL_MAT_ID`, 4-row Q3_K, expert skip, helper affinity, source-page release, barrier bench, generic A/B | see `docs/runtime-knobs.md` (round 1, R17/R18) | the round-1 campaign knobs; `GGML_CPU_PROF=2` profiles 2-8-token graphs (speculative verify batches), now main-context only |
+
+Expert-skip threshold edge under the +2 % budget: 118 permille (full-set wikitext-2 9.7952, +1.98 %; 119 fails) — round 5.
 
 `0001` is produced with `git -C lab/llama.cpp-tiny diff HEAD -- ggml/src/ggml-cpu` against base `620d2225c`.
 
