@@ -1,5 +1,11 @@
 # Vollie — serving a MoE LLM fast on a phone CPU
 
+**What / why / result:** Runtime patches for llama.cpp that make a 7B mixture-of-experts model (Granite-4.0-H-Tiny) write at 14.2 tok/s on a 2021 Android phone (Snapdragon 888, 8 GB) where stock settings gave 3.4: same model file, output bit-identical except for one expert-skip rule that costs +1.79 % perplexity (budget +2 %); every number is measured on the phone and logged round by round (table below).
+
+**Reproduce (the patched CPU module, needs the Android NDK):** `git clone https://github.com/hoeio/vollie && git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp && git checkout $(cat ../vollie/patches/llama.cpp/BASE) && git apply ../vollie/patches/llama.cpp/0001-cpu-runtime.patch && ../vollie/android/build_cpu.sh . out/`. The model file is on [Hugging Face](https://huggingface.co/HoeioUser/vollie-qwen3.5-4b); the perplexity gate `tools/ppl.sh <tag> <model.gguf>` needs a llama.cpp build and the wikitext-2 file (`LLAMA_BIN`, see its header). Every phone number comes from the device JSONs, which need the phone.
+
+**Here / not here:** Here: CPU-module patches, build script, on-device research kit and parser, perplexity gate, the full log with raw device JSON (`reports/device/`). Not here: the Flutter app, CI, releases. The evidence is the device JSONs and the pre-registered predictions scored against them.
+
 Research and runtime code for running an LLM well on an 8 GB Android phone with llama.cpp. It
 comes from [Vollie](https://huggingface.co/HoeioUser/vollie-qwen3.5-4b), an on-device assistant;
 this repository holds only the serving side: the CPU-module patches, the app-side tuning code, the
