@@ -13,6 +13,50 @@ def prof_fields(line):
         ops[name] = (int(cnt), int(comp), int(wait))
     return d, ops
 
+def abba_blocks(x):
+    """(side, blk, fields, ops) of every post-warm-up block line of an ABBA run."""
+    out = []
+    for line in x.get('prof', []):
+        m = re.search(r' ab=([AB]) blk=(\d+)', line)
+        if not m or m.group(2) == '0': continue
+        d, o = prof_fields(line)
+        out.append((m.group(1), int(m.group(2)), d, o))
+    return out
+
+def mean_sd(v):
+    return (statistics.mean(v), statistics.stdev(v) if len(v) > 1 else float('nan'))
+
+def abba_summary(runs):
+    """Per side mean ± sd over blocks, B − A ± 1σ (blocks iid), per ABBA group (B̄ − Ā) mean ± sd; ms/token."""
+    metrics = [('us/token', lambda d, o: int(d['us/token'])), ('wait', lambda d, o: int(d['wait'])),
+               ('MUL_MAT_ID', lambda d, o: sum(o.get('MUL_MAT_ID', (0, 0, 0))[1:])),
+               ('MUL_MAT', lambda d, o: sum(o.get('MUL_MAT', (0, 0, 0))[1:]))] + \
+              [(op, (lambda op: lambda d, o: sum(o.get(op, (0, 0, 0))[1:]))(op)) for op in ('SSM_SCAN', 'CPY', 'CONCAT', 'SSM_CONV')]
+    rows = []
+    blocks = [(ri, b) for ri, x in enumerate(runs) for b in abba_blocks(x)]
+    for label, f in metrics:
+        side = {'A': [], 'B': []}
+        groups = {}
+        for ri, (sd_, blk, d, o) in blocks:
+            v = f(d, o) / 1000
+            side[sd_].append(v)
+            groups.setdefault((ri, (blk - 1) // 4), {'A': [], 'B': []})[sd_].append(v)
+        if len(side['A']) < 1 or len(side['B']) < 1:
+            rows.append((label, 'no blocks')); continue
+        (ma, sa), (mb, sb) = mean_sd(side['A']), mean_sd(side['B'])
+        se = (sa**2 / len(side['A']) + sb**2 / len(side['B'])) ** 0.5
+        gd = [statistics.mean(g['B']) - statistics.mean(g['A']) for g in groups.values() if g['A'] and g['B']]
+        gm, gs = mean_sd(gd) if gd else (float('nan'), float('nan'))
+        rows.append((label, f"A {ma:6.2f} ± {sa:4.2f} (n {len(side['A'])})  B {mb:6.2f} ± {sb:4.2f} (n {len(side['B'])})  "
+                            f"Δ {mb - ma:+6.2f} ± {se:4.2f}  groups {len(gd)}: Δ {gm:+6.2f} sd {gs:4.2f}"))
+    nodes = {sd_: sorted({(d.get('nodes'), d.get('barriers')) for _, (s2, _, d, _) in blocks if s2 == sd_}) for sd_ in 'AB'}
+    rows.append(('nodes/bar', f"A {' '.join(f'{n}/{b}' for n, b in nodes['A'])}  B {' '.join(f'{n}/{b}' for n, b in nodes['B'])}"))
+    ka = [float(d['kavg']) for _, (s_, _, d, _) in blocks if s_ == 'A']
+    kb = [float(d['kavg']) for _, (s_, _, d, _) in blocks if s_ == 'B']
+    if ka and kb:
+        rows.append(('kavg', f"A {statistics.mean(ka):.2f}  B {statistics.mean(kb):.2f} (min {min(kb):.2f} max {max(kb):.2f})"))
+    return rows
+
 def main():
     path = sys.argv[1]; want_csv = '--csv' in sys.argv
     r = json.load(open(path))
@@ -43,8 +87,11 @@ def main():
         if tps is not None and not x.get('error'):
             rows.append((x['phase'], x['name'], x.get('threads'), x.get('heat'), tps, pp, x.get('majflt'), x.get('minflt'), io))
     print('\n== A/B pairs (per-token profile, µs; B − A)')
+    abba = {}
     for x in runs:
         if x['phase'] != 'ab': continue
+        if any(' blk=' in l for l in x.get('prof', [])):
+            abba.setdefault(x['name'], []).append(x); continue
         a = b = None
         for line in x.get('prof', []):
             if 'ab=A' in line: a = line
@@ -58,6 +105,16 @@ def main():
         for op in ('MUL_MAT_ID', 'MUL_MAT'):
             if op in oa and op in ob:
                 print(f"      {op}: compute {oa[op][1]/1000:.1f} → {ob[op][1]/1000:.1f} ms, wait {oa[op][2]/1000:.1f} → {ob[op][2]/1000:.1f} ms")
+    if abba:
+        print('\n== ABBA A/Bs (r5: per-block lines, warm-up blk=0 dropped; ms/token; Δ = B − A ± 1σ; runs of one name pooled)')
+        for name, xs in abba.items():
+            print(f"  {name}  ({len(xs)} run{'s' if len(xs) > 1 else ''})")
+            for title, rs in ([(f'run {i+1}', [x]) for i, x in enumerate(xs)] if len(xs) > 1 else []) + [('pooled' if len(xs) > 1 else 'run', xs)]:
+                for label, line in abba_summary(rs):
+                    print(f"    {title:7s} {label:12s} {line}")
+            for x in xs:
+                mb = x.get('mhz_blocks')
+                if mb: print(f"    mhz cpu4/cpu7 every 8 tokens: {' '.join(f'{a}/{b}' for a, b in mb)}")
     print('\n== r3 fields per run (last cpu-prof line; faults per generated token)')
     for x in runs:
         lines = [l for l in x.get('prof', []) if l.startswith('cpu-prof')]

@@ -354,5 +354,5 @@ Swapping day again (swapfree 0-351 MB, 18-1,390 majflt per token); official base
   about that; round 5 alternates sides per 8-token window after a warm-up and scores steady windows only.
 - **Where 20 stands (steady profile, estimated from the measured pieces):** 115 + SSM ≈ 56 ms (17.8); 130 +
   SSM ≈ 53 (19); 140 + SSM ≈ 50.5 (19.8). Printed over 200 tokens is ≈ 2 tok/s under steady profile on a
-  swapping day. **Owner's threshold decision still open: 115 (+1.79 %, approved) / 130 (+3.60 %) / 140
-  (+5.20 %).** Exact levers left: waits −0.8 to −1.5 ms.
+  swapping day. **Owner's threshold decision still open: 115 (+1.79 %, approved) / 130 (+3.67 %) / 140
+  (+5.25 %).** (Decided the same evening: the +2 % budget is final; edge found at 118 = +1.98 %, R25.) Exact levers left: waits −0.8 to −1.5 ms.

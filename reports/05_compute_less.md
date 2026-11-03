@@ -851,3 +851,52 @@ official 32 with skip 115. If Tom ships lever 3 (waits) behind an env var: ABBA 
 Verdict for the owner, unchanged in direction and sharper in number: with everything exact in, **115 prints
 17.5-18.5 on a clean day and ≈ 15 on a swapping day; 20 printed needs 140 + a clean day + the last exact
 millisecond**. The threshold is the owner's decision; the day is the phone's.
+
+### 7.7 Round-5 pre-registration, final (kit r5 as built; 2026-11-03 night, before the phone run; all *estimated*)
+
+Supersedes §7.6 where they differ. The +2 % budget is final (owner): 130/140 closed; the edge is **118** (host full
+set 9.7952, +1.98 %, k̄ 3.98 wikitext vs 4.11 at 115 → ratio 0.968; `lab/logs/r25/threshold.txt`). Device story
+k̄ at 115 was 4.09-4.35, so 118 should read **3.95-4.25 → share 29-34 %**; 118 − 115 is ≈ 0.12 in k̄ ≈ 0.6-1.0 ms —
+inside the ±1.3 ms 1σ, so the two skip A/Bs are a consistency pair, not a resolvable difference. Kit ABBA WARM 16
+/ BLOCK 8 is what §7.5 asked for (the "32/32" was the env default that keeps r4 lines reproducible, not the kit
+setting); 22 blocks instead of 23 → 88/side, 1σ ±1.3 → ±1.35 ms: nothing lost. `CONV_RING` is A/B-only in r5, so
+the always-on rows do not contain it. `GGML_Q3K_VEC` "" → 0 in r3/r4 lines changed nothing (x4 bypasses it); no
+re-scoring. Vanilla rows are priced from logged device pieces only: R20 `MMID 3 + X4` −10.7, R20 tiny 65,536 →
+262,144 −9 to −14.5 (×3), R12 near-vanilla profile 80 ms at tiny 65,536 / eio 1 on a good day, R10 149 ms (5.5
+tok/s printed) at tiny 0 / eio 0 on a swapping day, ILP −1 to −5, `SSM_INPLACE` −3.6/−4.5; 1,910 vs 818 barriers
+at 0.3 µs is only 0.3 ms — the tiny-op cost is the per-op imbalance on 1,092 extra syncs, not latency.
+
+| item (B − A as the parser prints it) | prediction | falsified if |
+|---|---|---|
+| ABBA `SSM_INPLACE:1:0` (A = on) | **+3.4 to +5.0 ms**; `CPY` 108 vs 144, barriers 746 vs 818 | < +2.5 or > +6 |
+| ABBA `Q3K_ILP:1:0` ×2 pooled (A = on) | **+1.0 to +5.0 ms**, central +2.5; `MUL_MAT_ID` +4 to +18 % | ≤ 0 (ILP is 0, §6.2 floor over-counted) or > +6 (R23's −18 % was honest) |
+| ABBA `EXPERT_SKIP:0:115` | share 27-31 %, k̄ 4.1-4.4; token **−6.5 to −8.5 clean, −7 to −12 r4-like**; `MUL_MAT_ID` −(0.9-1.0 × share) | coefficient < 0.8 clean (≤ 100 minflt/token) → F > 15 % |
+| ABBA `EXPERT_SKIP:0:118` | share **29-34 %, k̄ 3.95-4.25**; `MUL_MAT_ID` 26.7 → 18.8-19.4 (**−7.3 to −7.9**); token **−7 to −9 clean, −7.5 to −12.5 r4-like**; 118 − 115 = −0.4 to −1.2 | share < 27 or > 37 %; token Δ outside −5.5…−10.5 clean |
+| ABBA `CONV_RING:0:1` (B = on) | **−0.6 to −1.2 ms** (`CONCAT` 0.45-0.6 → 0, conv `CPY` −0.3 to −0.5, `SSM_CONV` −0.1); nodes 1911 vs 1839, barriers equal | > −0.2 (then the host −1.18 was M4 memory latency, not work) or < −2 |
+| story 200, skip 118, r5 defaults, steady | clean **52.5-55 → printed 54-56.5 = 17.7-18.5**; r4-like 54.5-57.5 → printed 63-66.5 = **15.0-16.0** | clean steady > 57 at ≤ 50 minflt/token |
+| story 200 control (k 6, r5 defaults) | clean 60-63 steady → printed 15.6-16.3; r4-like 75-82 → 10.2-11.5 | — |
+| official 32, skip 118 | r4-like 9-13 (page-cache bound, TTFT tells the day); clean 16-18.5 | — |
+| **vanilla story 200** (stock knobs) | clean steady **85-100 → printed 87-103 = 9.7-11.5**; r4-like steady 125-155 (eio 0 → ≈ 3× the majflt, R12), warm-up excess 20-30 → printed 150-185 = **5.4-6.7** (R10 5.5 anchor). Ratio control/vanilla **1.5-1.65 clean, 1.8-2.2 r4-like** | ratio < 1.35 clean → the exact stack (tiny/mmid/x4/ILP/SSM) is over-priced by ≥ 10 ms somewhere; ratio > 2.5 clean → tiny-op 0 costs more than the sync model allows |
+| **vanilla official 32** | r4-like **3.5-5.5** (prefill is fault-bound either way; decode all in the warm-up regime); clean 8-10.5. R7's 3.4 (D1, 4t, tiny 0) is the only vanilla-ish device anchor and is consistent | — |
+| warm-up (window 1 − steady, skip 118) | clean ≤ 3 ms (≤ 0.5/token over 200); r4-like 18-28 ms (5.5-8.5/token); 118's fewer bytes → ≈ 7 % less than 115 | clean penalty > 5 ms with ≤ 100 minflt/token → DVFS term exists, lever 7 reopens |
+| `mhz_blocks` | cpu4 2,112 / cpu7 2,035 from block 1 on, block 0 at most lower | lower clocks persisting into block ≥ 2 → lever 7 live |
+
+**`EXPERT_IO` thread-0 madvise (next exact lever, cannot be A/B'd in one run).** Host: with eio 1 thread 0's
+`mmid_thr` is +10 % (7724 vs 6890-7081 µs); device triples show thread 0 +6-10 % in every run (eio 1 saved). With
+`MMID` bit-2 stealing the other two threads absorb most of it, so the cost per token is ≈ (thread-0 excess)/3 +
+the end-of-op tail: 0.06-0.10 × 19-27 ms → 1.2-2.7 ms of syscall time → **−0.4 to −1.0 ms clean** if the calls
+leave the compute threads; more on a swapping day (the readahead walk is longer). The catch: a sleeping helper
+woken per layer costs ≈ 40 futex wakes × 20-50 µs = 0.8-2 ms, i.e. the whole gain — so the viable forms are (i)
+fewer, larger calls (one range per tensor per layer instead of 3 × k̄), or (ii) issuing from whichever thread
+finished its last chunk first, both bit-identical. Falsifier before any build: a round-6 always-on `story 200 ·
+eio 0` row on a **clean** day (file cache ≥ 2.5 GB at start, ≤ 50 majflt/token both runs): if eio 0 is not faster
+than control by ≥ 0.4 ms steady, or the eio-0 `mmid_thr` triple still shows thread 0 ≥ 3 % slow, the madvise costs
+nothing worth moving. On a swapping day eio 0 loses by 10-40 ms and the row says nothing about this lever.
+
+**Where 20 stands with 118 (printed, 200-token story).** Clean steady 53.8 (ILP + `SSM_INPLACE` + 118) → printed
+55.2 = **18.1**; with `CONV_RING` as a round-6 default 53.2 → **18.3**; best corner (waits −1.0, madvise −0.7, F = 0)
+50.9 → 52.3 = **19.1**. r4-like day: **15.5 ± 0.5**. 20 printed needs 48.6 ms steady; 118 sits 3.8-5.2 ms above
+it on a clean day, and the exact levers left (CONV_RING 0.6-1.2, waits 0.8-1.5, madvise 0.4-1.0) sum to 1.8-3.7.
+So **under the +2 % budget this lever set tops out at ≈ 18.5-19 clean; 20 needs a new MAC-cutting lever outside
+k̄** — the dense `MUL_MAT` (24 ms, 45 % of the token at 118) is the only block big enough, and it is at the
+bandwidth ridge (R24). That is the round-6 research question, not a threshold question.
