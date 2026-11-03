@@ -7,64 +7,61 @@ evaluation tools, and the full research log. The app itself is not part of it.
 
 Test device: Samsung Galaxy Z Flip 3 (Snapdragon 888: 1x Cortex-X1 + 3x A78 + 4x A55, 8 GB LPDDR5).
 Model: Granite-4.0-H-Tiny abliterated (7B mixture-of-experts, 64 experts, Mamba-2 hybrid), one fixed
-GGUF ([recipe](models/granite-4.0-h-tiny-d6-e6.md)). The constraint throughout: wikitext-2 perplexity
-at most 10% above the same model's F16 weights. All conditions a change must meet are in
-[RULES.md](RULES.md).
+GGUF ([recipe](models/granite-4.0-h-tiny-d6-e6.md)). Goal: 20 tok/s printed. The one hard limit:
+wikitext-2 perplexity at most 20 % above the same model's F16 weights; the working budget for the
+speed rule is +2 % over the served file. All conditions are in [RULES.md](RULES.md).
 
-## Results so far
+## Vanilla llama.cpp vs Vollie, same phone
 
-Every number is labelled: *device* = measured on the phone by its owner through the app's speed
-test; *host* = Apple M4 Pro, CPU only, relative only.
+| | vanilla llama.cpp | Vollie | label | where logged |
+|---|---|---|---|---|
+| Fits in 8 GB | no: default settings (repack on) were OOM-killed, 3,931 MB footprint | yes: 659 MB footprint (D1 file); served D6 file at 674 MB anon + ~2 GB file cache | device | `results.csv` lines 4, 9, 27; `03_final.md` |
+| Writing speed (decode) | 3.4 tok/s (stock settings, warm phone, 32 tokens) | **14.2 tok/s** over a 200-token story with expert skip 115; **10.2 tok/s** with the bit-identical runtime alone; 11.3 tok/s on the official 32-token bench (swapping day, page-cache-bound) | device | vanilla: `results.csv` line 16 (app 2.1.7+19); Vollie: `03_final.md` "R24 — round-4 device results" |
+| Reading speed (prefill) | 16 tok/s | 20-25 tok/s (20.1 in round 4; 25 in round 3) | device | `results.csv` lines 16, 29, 84; `03_final.md` R24 |
+| Output identical to stock | (reference) | yes for every default knob (bit-identical at `-ub 1/32/512`); not for expert skip | host | `RULES.md` §4; `results.csv` lines 17, 49, 82 |
+| Quality, wikitext-2 PPL | F16 9.0438; served file 9.6051 (+6.21 %) | 9.6051 (+6.21 %) bit-identical runtime; with expert skip 115: 9.7771 (+1.79 % over stock, budget +2 %, limit 10.853) | host | `results.csv` lines 21, 71; `RULES.md` §1 |
 
-| | writing (decode) | reading (prefill) | how |
-|---|---|---|---|
-| stock llama.cpp settings, warm phone | 3.4 tok/s | 16 tok/s | device |
-| + sync skipping around small ops | 7.5 | 18 | device |
-| + expert prefetch (page-cache aware) | 10.7 | 19 | device |
-| + next-layer expert guessing | **12.2** | **25** | device |
-| + dynamic expert chunks + 4-row Q3_K (round 1) | −8.3 % per token by in-generation A/B (same-day absolute 8.4 → est. 13.3 at the row above's conditions) | | device |
-| quality of the served file | wikitext-2 PPL +6.2% vs F16, en +7.0% | | host |
+*Footnote.* The vanilla row is from an earlier app build (2.1.7+19, D1 file, 4 threads) on a
+different day; the OOM row is the earlier i1-Q4_0 file with repack on. Round 5 will re-measure vanilla
+and Vollie in the same run on the same day (kit r5 has a "vanilla" row), and this table will be
+updated then. *Device* = measured on the phone by its owner through the app; *host* = Apple M4 Pro,
+CPU only, relative or machine-independent only. Decode numbers vary by day with page-cache state
+(round 4: swapping day, 18-1,390 major faults per token).
 
-What limited the phone, in the order it was found (details in [docs/findings.md](docs/findings.md)):
+## What Vollie's runtime does differently
 
-1. **Thread syncs, not bandwidth.** ~2,000 compute ops per token, each followed by a sync of all
-   threads; on the SD888 that was about half of every token. Small ops now run on one thread
-   without syncing: 3.2 → 7.0 tok/s at fixed threads, output bit-identical.
-2. **The experts don't fit in the page cache.** 3 GB of MoE experts are read through mmap; with
-   ~2 GB of cache on a busy 8 GB phone, every token re-read hundreds of pages from flash, one
-   synchronous fault at a time. Prefetching exactly the routed experts per layer, and guessing the
-   next layer's experts a layer early (85% right on the device), took writing to 10.7-12.2 tok/s.
-3. **Thread imbalance, not sync latency.** A barrier costs 0.3 µs on this SoC (round 1); the ~20 ms of
-   per-token waiting is one core finishing late. Dynamic 32-row chunks in the expert mat-mul and a
-   4-row Q3_K kernel took 8.3 % off a token (bit-identical, by in-generation A/B). A 4th compute
-   thread loses to Android's own threads even at equal clocks; the expert-guess helper on an A55 is
-   too slow to lead the flash.
-4. **Speculation does not pay on this CPU (round 2).** With the rebuilt `libllama.so` the draft-model
-   path ran: acceptance was as predicted (2.5-2.9 tokens per evaluation), but verifying k tokens costs
-   about k times one token — the dense mat-mul is at the bandwidth/compute ridge at one token and goes
-   linear with rows, the 3-bit expert kernel is compute-bound, and the slots + draft (+530 MB) cost a
-   quarter of the plain rate on an 8 GB phone. Effective rate 0.48-0.76× the plain one at every
-   setting; closed. A larger small-op threshold (262,144) gave another −8 to −12 % per token.
+Sync-skipping around small ops: tiny ops run on one thread without a sync of all threads (R5-R6,
+R20). Page-cache-aware expert prefetch of exactly the routed experts, plus next-layer expert guessing
+a layer early (R10-R13; 85 % right on the device). Dynamic 32-row expert chunks and a 4-row Q3_K
+kernel (R17-R18). SSM state updated in place instead of copied (R24, bit-identical). Router-weight
+expert skip: experts with a small normalised router weight are not computed, under the +2 % PPL budget
+(R21-R24; threshold 115). What was tried and closed (4 compute threads, helper on an A55, n-gram and
+draft-model speculation, early exit, hot-expert cache) is in the log with numbers. Findings in the
+order they were made: [docs/findings.md](docs/findings.md).
 
-The goal was 20 tok/s. On this phone the dense weights alone take ~25 ms per token (at the SoC's
-bandwidth and, at one token, already at its compute), so 50 ms/token is a roofline, 60-65 ms the
-realistic ceiling (15-17 tok/s, estimated), and the output-identical route past it (speculation) is
-closed here. The current defaults measure about 13-15 tok/s (estimated from A/B deltas). Whether the
-target or the rules move is the owner's call (`reports/04_campaign.md` §8).
+## How it is measured
 
-## Layout
+On the real phone, by its owner, through the app's own speed test and a research kit that returns one
+JSON per round. Every number is labelled *device*, *host* or *estimated*. Predictions are written down
+before each round (`reports/03_final.md`, "pre-registered") and scored against the result, misses
+included. Small differences are scored by in-generation A/B (the setting alternates inside one
+generation); the parser is `tools/research_parse.py`. Work goes round by round; every result is one
+row in `reports/results.csv` and one entry in the R-log, appended, never rewritten.
+
+## Where to look
 
 | path | what |
 |---|---|
-| [patches/llama.cpp/](patches/llama.cpp/) | the CPU-module patch (against a pinned llama.cpp commit): small-op sync skipping, expert I/O, next-layer expert guessing, Q3_K kernel, per-op profiler, in-generation A/B |
-| [patches/llamadart/](patches/llamadart/) | small patch to the Dart bindings: change threads without reloading, extra-buffer switch |
-| [android/](android/) | build the patched CPU module for Android and drop it into an app |
-| [runtime/dart/](runtime/dart/) | app-side helpers: set the knobs, pin threads to big cores, read page faults / memory / clocks, pick the best setting |
-| [docs/](docs/) | findings, runtime knobs, the on-device tuning procedure |
-| [reports/](reports/) | the research log: model choice, Vollie vs llama.cpp, methods survey, final report, `results.csv` |
-| [tools/](tools/) | perplexity gate, host benchmarks, quantization recipes, on-device benchmark kit |
-| [RULES.md](RULES.md) | the conditions every change must meet: quality gate, frozen model file, real-phone conditions, correctness checks, how to measure and record |
-| [models/](models/) | how the served GGUF was made, with checksums (weights are on Hugging Face) |
+| [RULES.md](RULES.md) | the conditions every change must meet |
+| [reports/03_final.md](reports/03_final.md) | the living log, R1, R2, ... with verdicts |
+| [reports/04_campaign.md](reports/04_campaign.md) | the 20 tok/s campaign plan and round results |
+| [reports/05_compute_less.md](reports/05_compute_less.md) | the compute-less-per-token memo and predictions |
+| [reports/results.csv](reports/results.csv), [reports/device/](reports/device/) | one row per measurement; raw device JSON |
+| [patches/llama.cpp/](patches/llama.cpp/) | CPU-module patches against a pinned llama.cpp commit (`BASE`) |
+| [patches/llamadart/](patches/llamadart/) | Dart-binding patch: change threads without reload, extra-buffer switch |
+| [tools/](tools/) | perplexity gate, host benchmarks, on-device research kit and parser |
+| [android/](android/), [runtime/dart/](runtime/dart/) | build the module for Android; app-side helpers |
+| [docs/](docs/), [models/](models/) | findings, runtime knobs, tuning; how the served GGUF was made (weights on Hugging Face) |
 
 ## Quick start
 
@@ -75,22 +72,12 @@ git apply ../vollie/patches/llama.cpp/0001-cpu-runtime.patch
 ../vollie/android/build_cpu.sh . out/        # libggml-cpu-android_armv8.2_2.so
 ```
 
-Every knob is off unless set, so the module behaves like stock until the app turns things on
-([docs/runtime-knobs.md](docs/runtime-knobs.md)), for example:
+Knobs are environment variables ([docs/runtime-knobs.md](docs/runtime-knobs.md)); the app sets them
+on the phone, and `GGML_EXPERT_SKIP` stays off unless set. Example:
 
 ```sh
-GGML_TINY_OP=65536 GGML_EXPERT_IO=5 llama-cli -m model.gguf -t 3 ...
+GGML_TINY_OP=262144 GGML_EXPERT_IO=5 llama-cli -m model.gguf -t 3 ...
 ```
-
-Each change in the patch was checked bit-identical against stock kernels with
-`llama-perplexity` (one-token, 32-token and 512-token batches) before it shipped.
-
-## How the research is recorded
-
-[reports/03_final.md](reports/03_final.md) is the living log: one row per experiment (R1, R2, …)
-with what changed, what was measured where, and the verdict, including what failed and a race
-bug found on the way. [reports/results.csv](reports/results.csv) has one line per measurement.
-New results are appended there, never rewritten.
 
 ## License
 
