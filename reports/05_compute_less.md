@@ -680,3 +680,174 @@ Moving it to the centre needs the owner's say: SKIP 130 (k̄ 3.44 wikitext, scre
 +4.5 % estimated, inside the +20 % hard limit) adds ≈ −3 ms → 51-54 ms → 18.5-19.6; SKIP 140 (k̄ 3.06, ≈ +5.5 to
 +6.5 %) → ≈ 50 ms → 20.0. Those two are the only numbers on the table that reach 20 from here; everything
 exact is now priced and short by ≈ 3 ms.
+
+## 7. Round-4 scorecard and round-5 costing (2026-11-03)
+
+Inputs: `reports/device/r4_2026-11-03.json` (device, 3 threads, kit profile scale, swapping day: 18-1,390 majflt
+and 390-1,410 minflt per token), `reports/device/r3_2026-11-02.json` run 8 ("story 200 · anon 0": 8 majflt / 67
+minflt per token, file cache 1.97 GB — the one clean-day story we own), Clyde's "R24 — round-4 device results",
+and my re-analysis log `lab/logs/r25/bonnie_r4_reanalysis.txt` (all arithmetic below is reproducible from it).
+Labels: *device* / *host* / *estimated*.
+
+### 7.1 Scorecard of the §6.4 pre-registration
+
+| §6.4 item (estimated, clean state) | measured (device) | score | what the miss teaches |
+|---|---|---|---|
+| ILP A/B at clean state: `MUL_MAT_ID` −12 to −20 %, token −3.5 to −6 | A 107.0 → B 104.4 with ILP *off* on B; 1,388 majflt/token, file cache 23 MB at start (the day's dirtiest run) | **unscoreable**: the clean precondition (≤ 20 majflt/token both sides) failed by 70×, and the design is order-biased (§7.2) | the kit cannot test a −2 to −5 ms knob with one order on a swapping day; the cost model was not falsified, the instrument was |
+| ILP + SKIP 115 vs ILP, A/B: share 25-30 %, k̄ = 6(1 − share) ± 0.05, token −5.5 to −7.5 | share 27 %, k̄ 4.33 (6 × 0.73 = 4.38 ✓); token −15.9 / −20.4; `MUL_MAT_ID` −25.5 / −31.5 % | **hit on routing** (share, k̄), **unscoreable on ms**: the band assumed `MUL_MAT_ID` 28 ms on side A, it was 56-60 (fault-inflated ×2) | the skip's saving is proportional to the *whole* A-side `MUL_MAT_ID`, faults included — the lever is larger on bad days, not smaller (§7.2) |
+| 130 / 140 ∝ share ± 20 pt (43 / 49 %) | share 39 / 46 %, k̄ 3.61 / 3.20 (6(1−s) = 3.66 / 3.24 ✓); `MUL_MAT_ID` −33.6 / −39.8 % | **hit** (shares 4 and 3 pt under my screen numbers: prompts route flatter than wikitext, §5.1) | — |
+| always-on story 200: 54-58 ms profile, 17-18.5 tok/s (falsified outside 52-60) | steady windows 5-6 **60.8**, printed **14.2** | **miss**, narrow on profile, wide on printed: the pre-registration priced the steady profile and said nothing about warm-up or the kit's own 1.4 ms/token | printed ≠ steady: on this day 7.9 ms/token of warm-up + 1.4 ms/token non-graph overhead sit between them (§7.3) |
+| official 32: 7-14 on an r3-like day | 11.3 (baselines 7.1 / 5.3) | hit | — |
+| SSM round trip −1.5 to −2.5 (falsified < −0.8) | own ops −4.5 (`CPY` −3.3, `SSM_SCAN` −1.2) | **hit, under-priced ×2**: I priced 113 MB of state traffic at the dense-weight bandwidth; the state `CPY` was running at ≈ 1/3 of that (2.85 + 1.03 wait for 57 MB = 15 GB/s with 3 threads and a barrier per layer) | small strided copies pay per-op cost, not bandwidth; price them from the profile, not from bytes |
+| waits −0.8 to −1.5, no new lever | not attempted in round 4 | open | — |
+
+Tally: 3 hits, 1 miss (story band), 2 unscoreable (ILP, skip ms), 1 open. The one real miss is a
+printed-vs-profile accounting gap, now closed in §7.3.
+
+### 7.2 Where I disagree with R24: the 0.87 coefficient and the order-bias solve
+
+**The "0.87 × share" is a mixture, not a coefficient.** The four skip pairs do not share one ratio: 0.95, 1.17,
+0.86, 0.86 (115#1, 115#2, 130, 140). A two-term model fits all five A/B pairs (four skip + the SSM pair, whose
+knob never touches `MUL_MAT_ID`) within 1-2 ms:
+
+    MUL_MAT_ID(side A, window 1) = C + g₁          MUL_MAT_ID(side B, window 2) = (1 − share)·C + r·g₁
+
+with C = compute at k = 6 and g = the day's fault/mapping term, which *does not scale with k̄* within a run (it is
+the stream of pages the kernel re-faults as the story moves on). Least squares (*device*, log): **C = 30.0 ms,
+r = 0.71**, predicted B = 40.1 / 43.4 / 37.3 / 25.1 / 49.5 against 41.4 / 41.3 / 37.7 / 25.6 / 49.9. With C forced
+to the clean value 26.5-27.5 the fit is barely worse (rss 7.5-8.3 vs 6.8) and r stays 0.71. So: the compute cut is
+**1.0 × share of C** (as the slots say it must be), and every pair also carries a bias g₁ − g₂ = 0.29 g₁ ≈ 7-9 ms
+(3.6 in the warm 140 run). Dividing (share·C + 0.29 g₁) by (C + g₁) is what produces "0.87". Clean-state
+coefficient from the only order-free measurement we have: **0.92 on the host** (§6.3: −23 % at share 25 %), i.e. a
+fixed per-op part F ≈ 8 % ≈ 2.2 ms at k = 6 (dispatch, Q8 quantisation of the 1536-wide activation, chunk tail
+with 13-18 chunks over 3 threads). I use 0.92 (F = 2.2) as central and 1.0 as the low edge in §7.4; the
+difference is worth 0.3-1.0 ms depending on threshold, and the ABBA kit (§7.5) measures it directly.
+
+**Clyde's bias solve: right size, wrong confidence.** The solve assumes the same bias b in R23's two `0:1` runs
+(1,015-1,210 majflt/token) and R24's `1:0` run (1,388 majflt/token, model fully uncached at start). The pair model
+gives b for the R24 run as 7.8 ms = 13.7 % of side A, not 9.7 %; putting 13.7 into the two equations gives x = −10 %
+(R24) and −1.9 % (R23) — the two days do not agree on b, so x is known only to **−2 to −19 % of C** (the fit with
+C = 27.5 says ILP off cost +6.4 ms on B after bias removal = −23 % of C, which would make R23's −18 % honest, but
+that is one filthy run). My position: ILP is **−1 to −5 ms clean, central −2.5 (−9 % of 27.5)**, bit-exact, stays
+default, and is the first thing the ABBA kit must settle. On the "two-thirds bias" reading of R23: possible, not
+established — the bias in the near-clean r3 PF runs (34-250 majflt/token, 167 minflt/token) was 3-11 % of
+`MUL_MAT_ID`, so the bias is set by *minor* faults (pages in cache but unmapped) more than by major ones.
+
+**What the window-1 penalty is made of** (*device*, story-200 skip run, window 1 vs steady, k̄ equal): `MUL_MAT_ID`
++18.2 ms (+86 %), dense `MUL_MAT` +2.5 (+10 %), `SSM_SCAN` +0.5, `CPY` +0.2, waits +5.0, everything else < 0.3.
+A clock ramp would hit every op by the same factor; +86 % on the op that touches 2.2 GB of fresh expert pages in
+its first 32 tokens vs +10 % on the op that streams the same 560 MB every token is page mapping, not DVFS.
+Arithmetic: 32 tokens × 4.3 experts × 40 layers touch ≈ 56 of 62 experts per layer ≈ 2.2 GB ≈ 550k pages; at a
+16-page fault-around that is ≈ 34k minor faults ≈ 1,070/token — the kit measured 1,176-1,410 minflt/token on the
+A/B runs. At 18 ms/token the mapping cost is ≈ 17 µs per fault-around ≈ 1 µs/page (*estimated*). DVFS is at most
+the uniform part: ≤ 10 % × window 1 ≈ ≤ 2.5 ms/token for 32 tokens ≈ **≤ 0.4 ms/token over 200** — and on the
+clean day (r3 run 8) window 1 was 68.5 vs steady 67.6: **no measurable warm-up at all** when the pages are mapped.
+
+### 7.3 Corrected steady-state cost model, 3 threads (per op, ms/token)
+
+| op | clean k 6, ILP off (*device*, r3 run 8 w3-8) | r4 control steady w4-6 (*device*) | r4 skip 115 steady w5-6 (*device*) | **round-5 default clean, k 6** (*estimated*) | **+ SKIP 115** (k̄ 4.25) | **+ SKIP 130** (3.61) | **+ SKIP 140** (3.20) |
+|---|---|---|---|---|---|---|---|
+| `MUL_MAT_ID` + wait | 29.3 + 0.6 | 36.9 + 2.8 | 21.1 + 0.7 | 26.7 + 0.6 | 19.6 + 0.5 | 16.9 + 0.5 | 15.3 + 0.5 |
+| dense `MUL_MAT` + wait | 24.0 + 1.7 | 25.6 + 2.5 | 24.4 + 2.0 | 24.0 + 1.7 | same | same | same |
+| `SSM_SCAN` + wait | 3.5 + 0.2 | 3.6 + 1.2 | 3.4 + 0.5 | 2.4 + 0.1 | same | same | same |
+| `CPY` + wait | 2.1 + 0.8 | 2.6 + 0.9 | 2.3 + 0.9 | 0.2 + 0.3 | same | same | same |
+| small ops (MUL, GET_ROWS, ADD, CONCAT, GLU, SSM_CONV, RMS_NORM, FA, UNARY, ARGSORT) + wait | 4.4 + 0.4 | 4.7 + 0.6 | 4.4 + 0.6 | 4.4 + 0.4 | same | same | same |
+| **profile total** | **67.6** | **82.1** | **60.8** | **61.4** | **54.2** | **51.5** | **49.9** |
+
+How the estimated columns are built: ILP −9 % ± 5 of 29.3 → 26.7 (±1.5); `SSM_INPLACE` at clean state −3.6
+(the r4 −4.5 was measured with the `CPY` fault-inflated: 2.85 vs clean 2.1; `SSM_SCAN` −1.1, `CPY` −1.9, waits
+−0.6); skip = F + (26.7 − F)(1 − share) with F = 2.2 and share from the measured k̄ on story prompts (115: 4.09-4.35
+→ 0.29; 130: 3.61; 140: 3.20); the fault term g is 0 by definition of "clean". Same model on an **r4-like day**:
+take the measured skip-115 steady 60.8 and subtract only the exact `SSM_INPLACE` (−4.5, its ops do not depend on
+k̄) → **56.3**; for 130 / 140 scale the measured 21.1 by k̄ (the steady fault term on the skip side was ≈ 0.6-3 ms,
+small enough to scale with it) → 18.6 / 16.5 → **53.8 / 51.7**. Clean-day sanity check against r4: control steady
+82.1 vs clean 67.6 + ILP − … → the day's fault tax at k = 6 is ≈ 13-15 ms on the steady state, ≈ 3-5 ms at k̄ 4.1
+(21.1 measured vs 19.6 + F-model 19.6); the skip's super-linear printed gain (×1.40 at −29 % slots) is this
+coupling, and it is real for the user on bad days.
+
+### 7.4 What reaches 20 tok/s printed (200-token story, `_benchPrompt`-style greedy)
+
+Printed ms/token = steady profile + warm-up excess + 1.4 (kit/sampling/stream overhead, *device*: decode wall
+minus profiled windows, 1.41 skip / 1.33 control). Warm-up excess (Σ (window − steady) × 32 / 200, *device*):
+r4 control **15.2**, r4 skip 115 **7.9**, clean day (r3 run 8) **≈ 0.15**. On an r4-like day the excess scales
+with the expert bytes of the first window: linear in slots, 130 → ≈ 6.0, 140 → ≈ 4.8 (*estimated*).
+
+| threshold (PPL) | clean day steady → **printed** | r4-like day steady → **printed** | with waits −1.0 and F = 0 (best corner), clean |
+|---|---|---|---|
+| 115 (+1.79 %, approved) | 54.2 → 55.8 ms = **17.9 tok/s** | 56.3 → 65.6 = **15.2** | 52.6 → 54.2 = 18.5 |
+| 130 (+3.60 %, owner's call) | 51.5 → 53.1 = **18.8** | 53.8 → 61.2 = **16.3** | 49.6 → 51.2 = 19.5 |
+| 140 (+5.20 %, owner's call) | 49.9 → 51.5 = **19.4** | 51.7 → 57.9 = **17.3** | 47.9 → 49.5 = **20.2** |
+| control k 6 (round-5 defaults) | 61.4 → 63.0 = 15.9 | 77.6 → 94.2 = 10.6 | — |
+
+Reading: **20 printed needs all three of a clean day, SKIP 140 and the waits lever (or F ≈ 0)**; 130 tops at
+19.5 in its best corner; 115 (the approved budget) is 17.5-18.5 clean and ≈ 15 on an r4-like day. The
+swapping day costs 2.6-3.1 tok/s at every threshold and no runtime lever recovers it except fewer bytes per
+token. Those are the numbers for the owner's threshold decision; I present 130/140 as measured options inside
+the +20 % hard limit and outside the +2 % budget, not as a recommendation.
+
+Levers left, priced (*estimated*, clean steady, per printed token):
+
+| # | lever | ms | exact? | cheapest falsifier |
+|---|---|---|---|---|
+| 1 | threshold 130 / 140 (owner) | −2.7 / −4.3 vs 115 | no (+3.60 / +5.20 % full set, host) | round-5 always-on rows |
+| 2 | `SSM_INPLACE` default (done) | −3.6 to −4.5 | yes | ABBA `SSM_INPLACE:1:0` |
+| 3 | waits: dense `MUL_MAT` tail 1.7 (thread 0 runs 6-10 % slower than 1-2 in every `mmid_thr` triple → end-of-op chunk stealing), `MUL_MAT_ID` 0.5, small-op waits 0.4 | **−0.8 to −1.5** | yes | prof `wait` per op; `mmid_thr` spread < 3 % |
+| 4 | conv state in place (ring buffer): drop `CONCAT` 36 ops 0.59 + its barriers; `SSM_CONV` reads the ring | −0.5 to −0.7 | yes if the conv sum order is kept | host prof `CONCAT` 36 → 0, PPL identity |
+| 5 | fuse `RMS_NORM` + weight `MUL` (76 of the 117 norms; ggml's CUDA path already fuses) | −0.3 to −0.5 | yes if kept as two multiplies in the same order | host prof `MUL` 76 → 40, PPL identity |
+| 6 | first-window penalty on a swapping day: pre-fault expert pages (`MADV_WILLNEED`/toucher thread on the A55s) | 0 on a clean day (nothing to map); **0 to negative on an r4-like day** — the model (3.1 GB) does not fit the cache the phone had (1.4-2.0 GB available), so readahead evicts what the current layer needs; `mlock`/`MAP_POPULATE` of 2.5 GB is the OOM of `granite-phone-oom` | — | not worth a build; the falsifier is already in hand: clean window 1 = steady |
+| 7 | keep the big cores off 710 MHz between prompts (spin/`sched` hint) | ≤ −0.4 over 200 tokens, ≤ 1 token-equivalent per prompt; costs battery and heat (threshold 0.93) | — | per-block MHz log (§7.5) — if the clock is at 2,112 from block 1 it is 0 |
+| 8 | expert page touch order within a layer | 0: fault-around is already sequential within an expert; file THP is off on this kernel (`thp:` empty) | — | — |
+
+Sum of the exact levers not yet built (3 + 4 + 5): −1.6 to −2.7 ms ≈ +0.6 to +1.0 tok/s. Nothing exact above 1.5
+ms remains; dense `MUL_MAT` is at the bandwidth ridge (R24).
+
+### 7.5 Round-5 kit design
+
+**Choose ABBA blocks within one run, not both orders per knob.** Both-orders needs the bias to be equal across two
+runs; r4's two `115` runs had 18 vs 534 majflt/token and 4.5 ms of raw Δ between them — the assumption fails on
+the day it matters. Within-run alternation shares the memory state; **ABBA (8 A, 8 B, 8 B, 8 A) cancels a linear
+drift exactly**, which plain ABAB does not (r4 window 1 → 2 slope 0.38 ms/token = 3 ms of bias on an early AB
+pair). Layout over the existing 200-token story: 16-token warm-up, then 23 blocks of 8 = 11.5 ABBA groups → **92
+tokens per side**, ≈ 13 s per A/B run at 15 tok/s.
+
+Resolution (*device*-derived, pessimistic iid bound: per-token sd = window sd × √32): r4 skip steady windows sd
+1.56 → 8.8 ms/token → 1σ on B − A at 92/side = **±1.3 ms**; r3 clean windows sd 2.6 → ±2.2; r4 control sd 3.65 →
+±3.0. ±1 ms at 1σ needs 155 / 430 / 850 per side respectively — more than one story. So: 92/side settles SSM (4)
+and skip (7-11) in one run; ILP (≈ 2.5) and waits (≈ 1) need **two runs pooled (±0.9-1.5)** and must be read on
+the `MUL_MAT_ID` / `wait` columns, whose block-to-block noise excludes the dense op's. The iid bound is likely
+pessimistic for ABBA (slow drift cancels), so the kit must log per-block ms and the parser must print the sd of
+the per-group differences — round 5 measures its own noise and sizes round 6.
+
+Spec for Tom (lab only, C side of the existing `GGML_CPU_AB` handler + parser; nothing in the app's decode path):
+`GGML_CPU_AB_WARM=16` and `GGML_CPU_AB_BLOCK=8` (defaults 32/32 reproduce r4); after the warm-up graphs the knob
+follows A B B A repeating per block; the prof window closes at each block boundary and the `cpu-prof` line carries
+`ab=A blk=n`; `research_parse.py` prints per-group (B̄ − Ā) and their sd alongside the pooled Δ. Dart: the `ab` runs
+use the 200-token story (not 72) and sample `scaling_cur_freq` of cpu4 and cpu7 every 8 received tokens into the
+run's JSON (`mhz_blocks`). Verify on the host with `lab/checks/kit_runs.sh`: `EXPERT_SKIP:0:115` shows 1 warm-up +
+23 block lines, k̄ 6.00 on every A block and 4.2-4.5 on every B block, barriers 746 on both sides.
+
+Run list (≈ 12 min): official 32 ×2 (round-5 defaults: ILP + `SSM_INPLACE`, no skip); ABBA `SSM_INPLACE:1:0`,
+`Q3K_ILP:1:0` ×2, `EXPERT_SKIP:0:115`, `0:130`, `0:140`; always-on story 200 at skip 115 / 130 / 140 and control;
+official 32 with skip 115. If Tom ships lever 3 (waits) behind an env var: ABBA `MM_STEAL:0:1` ×2.
+
+### 7.6 Pre-registered round-5 predictions (*estimated*; B − A as the parser prints it)
+
+| item | prediction | falsified if |
+|---|---|---|
+| ABBA `SSM_INPLACE:1:0` (A = on) | **+3.4 to +5.0 ms** (off slower); `CPY` 108 vs 144 nodes, barriers 746 vs 818 on the right sides | < +2.5 or > +6 |
+| ABBA `Q3K_ILP:1:0` ×2 pooled (A = on) | **+1.0 to +5.0 ms**, `MUL_MAT_ID` +4 to +18 %; central +2.5 | ≤ 0 (then ILP is 0 and the floor model §6.2 over-counted the stall); > +6 (then R23's −18 % was honest and the bias story is wrong) |
+| ABBA `EXPERT_SKIP:0:115` | share 27-31 %, k̄ 6(1 − s) ± 0.05; `MUL_MAT_ID` −(0.9-1.0 × share) at ≤ 100 minflt/token, token **−6.5 to −8.5 clean, −7 to −12 r4-like**; per-group sd ≤ 3 ms | coefficient < 0.8 on a clean day → F > 15 % and the fixed per-op cost becomes a lever |
+| ABBA `0:130` / `0:140` | clean **−9 to −11.5 / −10.5 to −13**; proportional to share ± 15 % | not proportional |
+| story 200, skip 115, round-5 defaults | clean steady **53-55.5 → printed 17.3-18.2**; r4-like steady 55-58 → printed 14.8-15.8 | clean steady > 57 at ≤ 50 minflt/token |
+| story 200, skip 130 | clean 50.5-53 → **18.3-19.3**; r4-like printed 15.8-16.8 | outside by > 1 tok/s |
+| story 200, skip 140 | clean 48.5-51 → **19.0-20.3**; r4-like printed 16.5-17.8 | outside by > 1 tok/s |
+| story 200 control (k 6, defaults) | clean 60-63 steady; r4-like 75-82 | — |
+| warm-up (window 1 − steady, skip 115) | clean ≤ 3 ms (≤ 0.5 ms/token over 200); r4-like 20-30 ms (6-9 ms/token); scales with bytes/token | clean window-1 penalty > 5 ms with ≤ 100 minflt/token → a DVFS term exists after all, lever 7 reopens |
+| `mhz_blocks` | cpu4-6 at 2,112 and cpu7 at 2,035 from block 1 on, at most block 0 lower | lower clocks persist into block ≥ 2 → lever 7 is live, price it from the deficit |
+| official 32, skip 115 | r4-like 9-13; clean 16-18.5 | — |
+| waits lever if built | −0.8 to −1.5; `mmid_thr` spread < 3 % | < −0.4 |
+| levers 4 + 5 if built | −0.8 to −1.2, bit-identical | < −0.4 or any PPL digit moves |
+
+Verdict for the owner, unchanged in direction and sharper in number: with everything exact in, **115 prints
+17.5-18.5 on a clean day and ≈ 15 on a swapping day; 20 printed needs 140 + a clean day + the last exact
+millisecond**. The threshold is the owner's decision; the day is the phone's.
