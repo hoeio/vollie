@@ -15,25 +15,27 @@ speed rule is +2 % over the served file. All conditions are in [RULES.md](RULES.
 
 | | vanilla llama.cpp | Vollie | label | where logged |
 |---|---|---|---|---|
-| Fits in 8 GB | no: default settings (repack on) were OOM-killed, 3,931 MB footprint | yes: 659 MB footprint (D1 file); served D6 file at 674 MB anon + ~2 GB file cache | device | `results.csv` lines 4, 9, 27; `03_final.md` |
-| Writing speed (decode) | 3.4 tok/s (stock settings, warm phone, 32 tokens) | **14.2 tok/s** over a 200-token story with expert skip 115; **10.2 tok/s** with the bit-identical runtime alone; 11.3 tok/s on the official 32-token bench (swapping day, page-cache-bound) | device | vanilla: `results.csv` line 16 (app 2.1.7+19); Vollie: `03_final.md` "R24 — round-4 device results" |
-| Reading speed (prefill) | 16 tok/s | 20-25 tok/s (20.1 in round 4; 25 in round 3) | device | `results.csv` lines 16, 29, 84; `03_final.md` R24 |
-| Output identical to stock | (reference) | yes for every default knob (bit-identical at `-ub 1/32/512`); not for expert skip | host | `RULES.md` §4; `results.csv` lines 17, 49, 82 |
-| Quality, wikitext-2 PPL | F16 9.0438; served file 9.6051 (+6.21 %) | 9.6051 (+6.21 %) bit-identical runtime; with expert skip 115: 9.7771 (+1.79 % over stock, budget +2 %, limit 10.853) | host | `results.csv` lines 21, 71; `RULES.md` §1 |
+| Private memory for the weights | stock default (weight repacking) copies the weights into private memory: 3,931 MB with the first Q4_0 file → killed by Android on this phone | weights stay in the page cache (mmap, repack off): 674 MB anon for the served file | device | `results.csv` rows "A file with repack ON" and "app 2.2.2+25"; `03_final.md` R1, R10-R11 |
+| Writing speed (decode) | 3.4 tok/s — stock CPU-module settings inside the same app, earlier file (D1), 4 threads, warm phone | **14.2 tok/s** over a 200-token story with expert skip 115; **10.2 tok/s** with the bit-identical runtime alone; 11.3 tok/s on the official 32-token bench (swapping day, page-cache-bound) | device | vanilla: `results.csv` row "app 2.1.7+19 … DEVICE-MEASURED"; Vollie: `03_final.md` "R24 — round-4 device results" |
+| Reading speed (prefill) | 16 tok/s (same run as above) | 20-25 tok/s (20.1 in round 4; 25 in round 3) | device | `results.csv` rows "app 2.1.7+19", "app 2.2.3+26", "R24 DEVICE"; `03_final.md` R24 |
+| Output identical to stock | (reference) | yes for every default knob (bit-identical at `-ub 1/32/512`); not for expert skip | host | `RULES.md` §4; `results.csv` identity rows (tiny-op v2, Q3_K x4, R23/R24 probes) |
+| Quality, wikitext-2 PPL | F16 9.0438; served file 9.6051 (+6.21 %) | 9.6051 (+6.21 %) bit-identical runtime; with expert skip 115: 9.7771 (+1.79 % over stock, budget +2 %, limit 10.853) | host | `results.csv` rows "D6" and "R22 … skip 115 full set"; `RULES.md` §1 |
 
-*Footnote.* The vanilla row is from an earlier app build (2.1.7+19, D1 file, 4 threads) on a
-different day; the OOM row is the earlier i1-Q4_0 file with repack on. Round 5 will re-measure vanilla
-and Vollie in the same run on the same day (kit r5 has a "vanilla" row), and this table will be
-updated then. *Device* = measured on the phone by its owner through the app; *host* = Apple M4 Pro,
+*Footnote.* The vanilla column is not yet a same-day, same-file measurement: its decode/prefill come
+from an earlier app build (2.1.7+19, D1 file, 4 threads) with stock CPU-module settings, and the
+repack row is the first Q4_0 file (the served file's Q3_K experts have no repack path, so stock
+llama.cpp may well load it). Round 5 measures vanilla (every Vollie knob at its stock value) and
+Vollie in the same run on the same day (kit r5 "vanilla" rows), and this table is replaced by that. *Device* = measured on the phone by its owner through the app; *host* = Apple M4 Pro,
 CPU only, relative or machine-independent only. Decode numbers vary by day with page-cache state
 (round 4: swapping day, 18-1,390 major faults per token).
 
 ## What Vollie's runtime does differently
 
-Sync-skipping around small ops: tiny ops run on one thread without a sync of all threads (R5-R6,
-R20). Page-cache-aware expert prefetch of exactly the routed experts, plus next-layer expert guessing
-a layer early (R10-R13; 85 % right on the device). Dynamic 32-row expert chunks and a 4-row Q3_K
-kernel (R17-R18). SSM state updated in place instead of copied (R24, bit-identical). Router-weight
+Sync-skipping around small ops: tiny ops run on one thread without a sync of all threads (R3, R7;
+barrier latency measured at 0.3 µs in R18 — the waits are imbalance, not sync cost). Page-cache-aware
+expert prefetch of exactly the routed experts, plus next-layer expert guessing a layer early (R12-R13;
+85 % right on the device). Faster NEON Q3_K dot, dynamic 32-row expert chunks and a 4-row Q3_K kernel
+(R15, R17-R20). SSM state updated in place instead of copied (R24, bit-identical). Router-weight
 expert skip: experts with a small normalised router weight are not computed, under the +2 % PPL budget
 (R21-R24; threshold 115). What was tried and closed (4 compute threads, helper on an A55, n-gram and
 draft-model speculation, early exit, hot-expert cache) is in the log with numbers. Findings in the
