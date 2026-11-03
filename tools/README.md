@@ -6,6 +6,7 @@ Scripts that produced every number in `reports/`. They expect the lab workspace 
 | script | does |
 |---|---|
 | `ppl.sh <tag> <model.gguf>` | **the quality gate**: wikitext-2-raw test + `lab/text/en.txt`, ctx 512, `llama-perplexity`; resumable |
+| `reproduce.sh [--quick] [workdir]` | host reproduction of the no-phone claims: patched build, model sha256, knob bit-identity, wikitext-2 gate stock vs skip 118; resumable |
 | `ppl_table.py` | perplexity → bits per byte, to compare models with different tokenizers |
 | `quant_variant.sh <tag> <type> [args]` | requantize from the F16 reference with the same imatrix (`EXPERTS=` sets experts per token) |
 | `host_bench.sh <tag> <model.gguf>` | host CPU-only `llama-bench` with the app's settings (FA, q8_0 KV), appends to `bench.csv`; relative numbers only |
