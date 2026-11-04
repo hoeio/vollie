@@ -1,6 +1,6 @@
 # Vollie — serving a MoE LLM fast on a phone CPU
 
-**What / why / result:** Runtime patches for llama.cpp that make a 7B mixture-of-experts model (Granite-4.0-H-Tiny) write at 14.2 tok/s on a 2021 Android phone (Snapdragon 888, 8 GB) where stock settings gave 3.4: same model file, output bit-identical except for one expert-skip rule that costs +1.79 % perplexity (budget +2 %); every number is measured on the phone and logged round by round (table below).
+**What / why / result:** Runtime patches for llama.cpp that make a 7B mixture-of-experts model (Granite-4.0-H-Tiny) write at 13.9 tok/s on the official 32-token bench on a 2021 Android phone (Snapdragon 888, 8 GB) where stock settings gave 9.4 (×1.48); the bit-identical runtime alone gives 12.0 (×1.28). Same model file, same app, same run, same day; output is bit-identical except for one expert-skip rule that costs +1.98 % perplexity over the served file (budget +2 %). Every number is measured on the phone and logged round by round (table below).
 
 **Reproduce (no phone needed):** `git clone https://github.com/hoeio/vollie && cd vollie && tools/reproduce.sh` builds llama.cpp at the pinned base with the patches, downloads the model (3.16 GB, sha256-checked) and wikitext-2, and checks the two host claims: bit-identity of the runtime knobs (per-chunk PPL to the last digit) and the perplexity gate (stock vs `GGML_EXPERT_SKIP=118`, PASS/FAIL against the +2 % budget; ~1-1.5 h on a laptop, `--quick` screens it in ~15 min). The Android CPU module needs the NDK: `android/build_cpu.sh` (see `android/README.md`). Every phone number comes from the device JSONs, which need the phone.
 
@@ -19,21 +19,29 @@ speed rule is +2 % over the served file. All conditions are in [RULES.md](RULES.
 
 ## Vanilla llama.cpp vs Vollie, same phone
 
-| | vanilla llama.cpp | Vollie | label | where logged |
-|---|---|---|---|---|
-| Private memory for the weights | stock default (weight repacking) copies the weights into private memory: 3,931 MB with the first Q4_0 file → killed by Android on this phone | weights stay in the page cache (mmap, repack off): 674 MB anon for the served file | device | `results.csv` rows "A file with repack ON" and "app 2.2.2+25"; `03_final.md` R1, R10-R11 |
-| Writing speed (decode) | 3.4 tok/s — stock CPU-module settings inside the same app, earlier file (D1), 4 threads, warm phone | **14.2 tok/s** over a 200-token story with expert skip 115; **10.2 tok/s** with the bit-identical runtime alone; 11.3 tok/s on the official 32-token bench (swapping day, page-cache-bound) | device | vanilla: `results.csv` row "app 2.1.7+19 … DEVICE-MEASURED"; Vollie: `03_final.md` "R24 — round-4 device results" |
-| Reading speed (prefill) | 16 tok/s (same run as above) | 20-25 tok/s (20.1 in round 4; 25 in round 3) | device | `results.csv` rows "app 2.1.7+19", "app 2.2.3+26", "R24 DEVICE"; `03_final.md` R24 |
-| Output identical to stock | (reference) | yes for every default knob (bit-identical at `-ub 1/32/512`); not for expert skip | host | `RULES.md` §4; `results.csv` identity rows (tiny-op v2, Q3_K x4, R23/R24 probes) |
-| Quality, wikitext-2 PPL | F16 9.0438; served file 9.6051 (+6.21 %) | 9.6051 (+6.21 %) bit-identical runtime; with expert skip 115: 9.7771 (+1.79 % over stock, budget +2 %, limit 10.853) | host | `results.csv` rows "D6" and "R22 … skip 115 full set"; `RULES.md` §1 |
+| | vanilla llama.cpp | Vollie, bit-identical runtime | Vollie + expert skip 118 | label | where logged |
+|---|---|---|---|---|---|
+| Private memory for the weights | stock default (weight repacking) copies the weights into private memory: 3,931 MB with the first Q4_0 file → killed by Android on this phone | weights stay in the page cache (mmap, repack off): 674 MB anon for the served file | same | device | `results.csv` rows "A file with repack ON" and "app 2.2.2+25"; `03_final.md` R1, R10-R11 |
+| Writing speed, official 32-token bench (decode) | 9.4 tok/s | 12.0 tok/s (8.2 on a cold cache in the other baseline run) | 13.9 tok/s | device | `03_final.md` "R25 — round-5 device results"; `results.csv` row "R25 VANILLA VS VOLLIE"; `reports/device/r5_2026-11-04.json` |
+| Reading speed (prefill, same runs) | 15.1 tok/s | 16.2-18.0 tok/s | 21.6 tok/s | device | same as above |
+| 200-token story, printed | 10.2 tok/s | 14.5 tok/s | 12.5 tok/s (see note) | device | same as above |
+| 200-token story, steady profile (ms per token, last windows) | 82-97 | 62-66 | 55.4 (≈ 18 tok/s steady) | device | same as above |
+| Output identical to stock | (reference) | yes for every default knob (bit-identical at `-ub 1/32/512`) | no (expert skip) | host | `RULES.md` §4; `results.csv` identity rows (tiny-op v2, Q3_K x4, R23/R24 probes) |
+| Quality, wikitext-2 PPL | F16 9.0438; served file 9.6051 (+6.21 %) | 9.6051 (+6.21 %) | 9.7952 (+1.98 % over stock; budget +2 %, limit 10.853) | host | `results.csv` rows "D6" and "R25 SKIP THRESHOLD EDGE"; `RULES.md` §1 |
 
-*Footnote.* The vanilla column is not yet a same-day, same-file measurement: its decode/prefill come
-from an earlier app build (2.1.7+19, D1 file, 4 threads) with stock CPU-module settings, and the
-repack row is the first Q4_0 file (the served file's Q3_K experts have no repack path, so stock
-llama.cpp may well load it). Round 5 measures vanilla (every Vollie knob at its stock value) and
-Vollie in the same run on the same day (kit r5 "vanilla" rows), and this table is replaced by that. *Device* = measured on the phone by its owner through the app; *host* = Apple M4 Pro,
-CPU only, relative or machine-independent only. Decode numbers vary by day with page-cache state
-(round 4: swapping day, 18-1,390 major faults per token).
+*Note on the 12.5.* That run was in a worse page-cache state (77 vs 34 major faults per token). The in-run A/B
+measured the skip rule at −7.6 ± 6.0 ms/token (−8.3 ± 2.9 at threshold 115), i.e. ≈ ×1.12-1.15 over the
+bit-identical runtime.
+
+*Footnote.* All speed numbers are one run on one day (2026-11-04, a swapping day: swap free 0-386 MB,
+6-110 major faults per token), same app (2.2.10+33, kit r5), same file, 3 threads, measured by the owner
+through the app. Printed tok/s over 200 tokens varies with page-cache state more than with the runtime (the
+same build printed 14.5 and 12.5 in consecutive runs). "Vanilla" = every Vollie CPU-module knob at its stock
+value; what env knobs cannot switch, and so is shared by all columns: q8_0 KV cache + flash attention, mmap
+weights with repack off, big-core pinning + 3 threads, the Granite rollback patch, context/template/greedy
+decoding. The repack row is the first Q4_0 file (the served file's Q3_K experts have no repack path, so stock
+llama.cpp may well load it). *Device* = measured on the phone by its owner through the app; *host* = Apple M4 Pro,
+CPU only, relative or machine-independent only.
 
 ## What Vollie's runtime does differently
 
@@ -43,7 +51,7 @@ expert prefetch of exactly the routed experts, plus next-layer expert guessing a
 85 % right on the device). Faster NEON Q3_K dot, dynamic 32-row expert chunks and a 4-row Q3_K kernel
 (R15, R17-R20). SSM state updated in place instead of copied (R24, bit-identical). Router-weight
 expert skip: experts with a small normalised router weight are not computed, under the +2 % PPL budget
-(R21-R24; threshold 115). What was tried and closed (4 compute threads, helper on an A55, n-gram and
+(R21-R25; threshold 118 since round 5, 115 before). What was tried and closed (4 compute threads, helper on an A55, n-gram and
 draft-model speculation, early exit, hot-expert cache) is in the log with numbers. Findings in the
 order they were made: [docs/findings.md](docs/findings.md).
 
