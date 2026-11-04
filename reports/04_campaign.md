@@ -356,3 +356,38 @@ Swapping day again (swapfree 0-351 MB, 18-1,390 majflt per token); official base
   SSM ≈ 53 (19); 140 + SSM ≈ 50.5 (19.8). Printed over 200 tokens is ≈ 2 tok/s under steady profile on a
   swapping day. **Owner's threshold decision still open: 115 (+1.79 %, approved) / 130 (+3.67 %) / 140
   (+5.25 %).** (Decided the same evening: the +2 % budget is final; edge found at 118 = +1.98 %, R25.) Exact levers left: waits −0.8 to −1.5 ms.
+
+## 12. Round 5 answers (R25, 2026-11-04; details `03_final.md` "R25 — round-5 device results", JSON `reports/device/r5_2026-11-04.json`, pre-registration memo `05_compute_less.md` §7.7)
+
+Swapping day again (swapfree 0-386 MB, 6.5-119 majflt per token on the stories, 309-573 minflt); clocks full
+(2,112 / 2,035) at every sample. 8 of 12 pre-registered items hit, ILP at the edge, `CONV_RING` unresolvable at
+token level, 2 misses (the printed skip-118 story, the warm-up size).
+
+- **Vanilla vs Vollie, same app, same file, same run (the README table):** official 32-token bench **9.4 →
+  12.0 (bit-identical) → 13.9 (skip 118)** tok/s; 200-token story printed **10.2 → 14.5 → 12.5**, steady profile
+  **82-97 → 62-66 → 55.4 ms/token**. The exact stack (tiny-op, `MMID 3`, `Q3K_X4`, ILP, SSM in place) is worth
+  **−27 ms/token steady (−30 %)**: `MUL_MAT_ID` −21 (−13 of it waits), `CPY` −2.7, `SSM_SCAN` −1.5; the dense
+  `MUL_MAT` is untouched (25.9 → 23.1). Ratio 1.42, below the predicted clean band (1.5-1.65), above the
+  falsifier (1.35): the stack was over-priced by 5-8 ms, from R20's bad-day tiny-op number. Vanilla landed in
+  the clean band on a swapping day: `EXPERT_IO=0` triples the faults (109 vs 34/token) but not the time.
+- **The skip rule's own value, measured in-run (ABBA):** 115 **−8.3 ± 2.9 ms**, 118 **−7.6 ± 6.0 ms** per token
+  (share 28.5 / 29.8 %, k̄ 4.29 / 4.21, `MUL_MAT_ID` −25 % / −30 % steady = coefficient 0.9-1.0 × share). That is
+  **≈ ×1.12-1.15 over a 62 ms control**. R24's "×1.40 printed" was the control's bad page-cache day: today the
+  control printed 14.5 and the skip-118 run 12.5 in consecutive runs (34 vs 77 majflt/token). The README drops
+  the ×1.40.
+- **ABBA settles the A/B method:** ILP, which read −18 % and +3.7 % in the two one-order rounds, reads
+  **+1.2 ± 5.2 ms pooled** (≈ −1 to −2 ms real; stays default, out of the sum); `SSM_INPLACE` shows its own
+  −4.6 ms to ±0.2 (second confirmation); `CONV_RING` shows **−0.7 ms exact** in its own ops (`CONCAT` → 0,
+  `SSM_CONV` −0.15) → round-6 default. One-order A/Bs from r3/r4 are superseded.
+- **What "printed" measures on this phone now:** steady at 118 is **55-56 ms = 17.7-18.1 tok/s**, but the
+  200-token printed number is set by the page-cache term (window-1 penalty 22-62 ms, 34-109 majflt/token):
+  10.2 / 14.5 / 12.5 printed for 91 / 63 / 55 ms steady. The runtime's remaining lever on the printed number is
+  bytes read per token, not MACs.
+- **Where 20 stands:** the k̄ lever is spent under the +2 % budget (118 = −8); exact crumbs `CONV_RING` −0.7 +
+  waits −0.8 to −1.5 + madvise −0.4 to −1.0 → ≈ 53 ms = **18.5-19 steady at best**; 20 printed needs 48.6
+  steady and a quiet warm-up. The dense `MUL_MAT` (23-25 ms, 42-45 % of the token at 118, bandwidth ridge) is
+  the only block big enough for the last 4-6 ms: bytes, not MACs, must fall. **Round 6:** (1) `CONV_RING`
+  default on; (2) Tom checks whether `EXPERT_IO`'s `MADV_WILLNEED` is issued before the skip decision (if so,
+  the runtime reads ≈ 30 % of expert rows it never multiplies — an exact cut of bytes/token and of the
+  swapping-day printed number); (3) Bonnie's memo on the dense `MUL_MAT` byte term inside the rules and the
+  frozen file (round-6 pre-registration); (4) waits and madvise-off-compute-threads after (2).
