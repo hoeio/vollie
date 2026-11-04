@@ -6,6 +6,8 @@
 
 **Here / not here:** Here: CPU-module patches, build script, on-device research kit and parser, perplexity gate, the full log with raw device JSON (`reports/device/`). Not here: the Flutter app, CI, releases. The evidence is the device JSONs and the pre-registered predictions scored against them.
 
+**Store builds lag.** The store version of the app can be behind the builds measured here, because store review takes time; every number in this repo comes from a research-kit APK build (latest: 2.2.10+33, kit r5), not from the store version.
+
 Research and runtime code for running an LLM well on an 8 GB Android phone with llama.cpp. It
 comes from Vollie, an on-device assistant. Its model files are on Hugging Face in
 [HoeioUser/vollie-qwen3.5-4b](https://huggingface.co/HoeioUser/vollie-qwen3.5-4b); that repository name
