@@ -6,7 +6,7 @@
 
 **Here / not here:** Here: CPU-module patches, build script, on-device research kit and parser, perplexity gate, the full log with raw device JSON (`reports/device/`). Not here: the Flutter app, CI, releases. The evidence is the device JSONs and the pre-registered predictions scored against them.
 
-**Store builds lag.** The store version of the app can be behind the builds measured here, because store review takes time; every number in this repo comes from a research-kit APK build (latest: 2.2.10+33, kit r5), not from the store version.
+**Store builds lag.** The store version of the app can be behind the builds measured here, because store review takes time (on 2026-11-04 the store version is 2.1.10, per the owner; its numbers are the last column of the table below). The other numbers come from builds the owner measured: the app's own speed test before 2.2.6+29, research-kit APKs from 2.2.6+29 on (latest: 2.2.10+33, kit r5).
 
 Research and runtime code for running an LLM well on an 8 GB Android phone with llama.cpp. It
 comes from Vollie, an on-device assistant. Its model files are on Hugging Face in
@@ -25,15 +25,24 @@ speed rule is +2 % over the served file. All conditions are in [RULES.md](RULES.
 
 ## Vanilla llama.cpp vs Vollie, same phone
 
-| | vanilla llama.cpp | Vollie, bit-identical runtime | Vollie + expert skip 118 | label | where logged |
-|---|---|---|---|---|---|
-| Private memory (anon) after the run | 679-690 MB; not a difference between columns: mmap weights with repack off are shared by all three (see *Footnote*). The stock-repack comparison is a different test, see *Note on stock repack* | 692-707 MB (the two baseline runs; 645-707 MB over all 13 runs of the day) | 660-689 MB | device | `reports/device/r5_2026-11-04.json` (`mem_after`, app 2.2.10+33) |
-| Writing speed, official 32-token bench (decode) | 9.4 tok/s | 12.0 tok/s (better of two same-session baseline runs; the first read 8.2 with 97 MB of mapped file pages resident at start, the second 12.0 with 251 MB) | 13.9 tok/s | device | `03_final.md` "R25 — round-5 device results"; `results.csv` row "R25 VANILLA VS VOLLIE"; `reports/device/r5_2026-11-04.json` |
-| Reading speed (prefill, same runs) | 15.1 tok/s | 16.2-18.0 tok/s | 21.6 tok/s | device | same as above |
-| 200-token story, printed | 10.2 tok/s | 14.5 tok/s | 12.5 tok/s (see note) | device | same as above |
-| 200-token story, steady profile (ms per token, last windows) | 82-97 | 62-66 | 55.4 (≈ 18 tok/s steady) | device | same as above |
-| Output identical to stock | (reference) | yes for every default knob (bit-identical at `-ub 1/32/512`) | no (expert skip) | host | `RULES.md` §4; `results.csv` identity rows (tiny-op v2, Q3_K x4, R23/R24 probes) |
-| Quality, wikitext-2 PPL | F16 9.0438; served file 9.6051 (+6.21 %) | 9.6051 (+6.21 %) | 9.7952 (+1.98 % over stock; budget +2 %, limit 10.853) | host | `results.csv` rows "D6" and "R25 SKIP THRESHOLD EDGE"; `RULES.md` §1 |
+| | vanilla llama.cpp | Vollie, bit-identical runtime | Vollie + expert skip 118 | Store build 2.1.10 (earlier test, D1 file, not same-day; see *Note on the store build*) | label | where logged |
+|---|---|---|---|---|---|---|
+| Private memory (anon) after the run | 679-690 MB; not a difference between columns: mmap weights with repack off are shared by all three (see *Footnote*). The stock-repack comparison is a different test, see *Note on stock repack* | 692-707 MB (the two baseline runs; 645-707 MB over all 13 runs of the day) | 660-689 MB | not measured on the phone (anon not logged); estimated need 3.8 GB resident = 3.1 GB mmapped experts + 0.66 GB repack copy | device | `reports/device/r5_2026-11-04.json` (`mem_after`, app 2.2.10+33) |
+| Writing speed, official 32-token bench (decode) | 9.4 tok/s | 12.0 tok/s (better of two same-session baseline runs; the first read 8.2 with 97 MB of mapped file pages resident at start, the second 12.0 with 251 MB) | 13.9 tok/s | 6.1 tok/s best run (2 threads, 32 written tokens, heat 76-83 %); the same session's knob sweep read 4.3-4.4 at 2 threads | device | `03_final.md` "R25 — round-5 device results"; `results.csv` row "R25 VANILLA VS VOLLIE"; `reports/device/r5_2026-11-04.json` |
+| Reading speed (prefill, same runs) | 15.1 tok/s | 16.2-18.0 tok/s | 21.6 tok/s | not logged for this build | device | same as above |
+| 200-token story, printed | 10.2 tok/s | 14.5 tok/s | 12.5 tok/s (see note) | no such test in this build | device | same as above |
+| 200-token story, steady profile (ms per token, last windows) | 82-97 | 62-66 | 55.4 (≈ 18 tok/s steady) | 137-163 (2 threads; average over a whole profiled reply, not a steady window; 354-1,181 major faults per token) | device | same as above |
+| Output identical to stock | (reference) | yes for every default knob (bit-identical at `-ub 1/32/512`) | no (expert skip) | yes (tiny-op v2 only, host-checked, plus stock dense repack) | host | `RULES.md` §4; `results.csv` identity rows (tiny-op v2, Q3_K x4, R23/R24 probes) |
+| Quality, wikitext-2 PPL | F16 9.0438; served file 9.6051 (+6.21 %) | 9.6051 (+6.21 %) | 9.7952 (+1.98 % over stock; budget +2 %, limit 10.853) | D1 file: 9.6230 (+6.40 % over F16, +0.19 % over the served file) | host | `results.csv` rows "D6" and "R25 SKIP THRESHOLD EDGE"; `RULES.md` §1 |
+
+*Note on the store build.* The last column is app **2.1.10+22** (R9), the version the owner states is in the store
+on 2026-11-04. It was measured with the app's own speed test and profile, before the research kit existed: there is
+no raw JSON, the numbers are as transcribed in `results.csv` (row "app 2.1.10+22") and `03_final.md` R9. The owner
+recalls it was before about 18:00 on 2026-11-01; the repo logs the build number, not the date. It ran the **D1-e5
+file** (`vollie-granite-4.0-h-tiny-d1-e5.gguf`, Q4_0 dense + IQ4_XS experts, 5 experts, 3.77 GB), not the served D6
+file: dense weights repacked, experts read through mmap, tiny-op v2 only, no expert prefetch, 2 threads. File,
+knobs, free memory, heat and test protocol all differ from the same-day columns, so no speedup should be computed
+between this column and the others; it records where the store version stands.
 
 *Note on stock repack (not same-day, not the served file).* The 3,931 MB figure that stood in the memory row
 earlier is a **host** number, not a phone number: Apple M4 Pro, `/usr/bin/time -l` peak memory footprint,
@@ -49,7 +58,7 @@ older 674 MB anon figure (app 2.2.2+25, R12) is superseded by the same-day value
 measured the skip rule at −7.6 ± 6.0 ms/token (−8.3 ± 2.9 at threshold 115), i.e. ≈ ×1.12-1.15 over the
 bit-identical runtime.
 
-*Footnote.* All speed numbers are from one day (2026-11-04, a swapping day: swap free 0-386 MB,
+*Footnote.* All speed numbers except the store-build column are from one day (2026-11-04, a swapping day: swap free 0-386 MB,
 6-110 major faults per token), same app (2.2.10+33, kit r5), same file, 3 threads, measured by the owner
 through the app. Each cell is a single run, except the bit-identical official-32 decode figure: it is the better of
 two baseline runs (8.2 and 12.0), since RULES.md §5 scores a setting by its best run; the vanilla figure is one run.
