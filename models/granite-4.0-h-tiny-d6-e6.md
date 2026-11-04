@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| download | [HoeioUser/vollie-qwen3.5-4b @ 8ab9bf2d](https://huggingface.co/HoeioUser/vollie-qwen3.5-4b/blob/8ab9bf2d710eb7f1bcb80ef2817b06643ce2e6c1/vollie-granite-4.0-h-tiny-d6-e6.gguf) |
+| download | [HoeioUser/vollie-qwen3.5-4b @ 8ab9bf2d](https://huggingface.co/HoeioUser/vollie-qwen3.5-4b/blob/8ab9bf2d710eb7f1bcb80ef2817b06643ce2e6c1/vollie-granite-4.0-h-tiny-d6-e6.gguf) (the repo name predates the switch to Granite and the repo also holds a Qwen3.5-4B file; this file is Granite, see the sha256 below) |
 | size | 3,161,269,888 bytes |
 | sha256 | `5dc1daa0cd3e5099bdaa79beeb9e744bf7c65e0993ea62e4671ddd63b2b5cb25` |
 | model | huihui-ai `Huihui-granite-4.0-h-tiny-abliterated` (IBM Granite 4.0 H Tiny, Apache-2.0: 6.9B MoE, 64 experts, 36 Mamba-2 + 4 attention layers) |

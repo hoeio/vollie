@@ -18,6 +18,8 @@ PATCHES=$ROOT/patches/llama.cpp
 BASE=$(cat "$PATCHES/BASE")
 NPROC=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 T=${THREADS:-$(( NPROC < 8 ? NPROC : 8 ))}
+# NB: the Hugging Face repo name "vollie-qwen3.5-4b" predates the switch to Granite; the repo holds a Qwen3.5-4B file
+# and Granite files. The file below is the Granite-4.0-H-Tiny GGUF, pinned by commit and checked by SHA below.
 URL=https://huggingface.co/HoeioUser/vollie-qwen3.5-4b/resolve/8ab9bf2d710eb7f1bcb80ef2817b06643ce2e6c1/vollie-granite-4.0-h-tiny-d6-e6.gguf
 SHA=5dc1daa0cd3e5099bdaa79beeb9e744bf7c65e0993ea62e4671ddd63b2b5cb25
 WIKI_ZIP=https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip
