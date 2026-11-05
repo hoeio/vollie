@@ -111,4 +111,4 @@ compute threads (thread 0 was never slower).
 Steady at 118: **55 ms = 18 tok/s** at full clock (device), 63.7 ms at 1,555 MHz; printed 12.5-14.5 on a swapping
 day. 20 tok/s printed = 48.6 ms steady plus a quiet warm-up. Exact crumbs left ≈ 1-1.5 ms (barrier waits). The rest
 has to come from the dense `MUL_MAT` reading fewer bytes per token inside the frozen file — the open problem of round 7
-(`reports/04_campaign.md` §13).
+(`reports/04_campaign.md` §13). First byte-cutting lever found inside the rules (R28, host): a two-stage lm_head, Q2_K screen plus the top-8,192 exact rows, 9.6237 (+0.19 %), argmax-identical, estimated −2.0 to −2.5 ms/token; it does not fit beside skip 118 under the +2 % budget, so the next step is the owner's.
