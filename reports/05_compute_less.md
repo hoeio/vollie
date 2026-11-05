@@ -900,3 +900,73 @@ it on a clean day, and the exact levers left (CONV_RING 0.6-1.2, waits 0.8-1.5, 
 So **under the +2 % budget this lever set tops out at ≈ 18.5-19 clean; 20 needs a new MAC-cutting lever outside
 k̄** — the dense `MUL_MAT` (24 ms, 45 % of the token at 118) is the only block big enough, and it is at the
 bandwidth ridge (R24). That is the round-6 research question, not a threshold question.
+
+### 7.8 Round-6 pre-registration (kit r6 as scoped; 2026-11-04 evening, before Tom's build is frozen; all *estimated* unless labelled)
+
+Inputs: R25 device block and `reports/device/r5_2026-11-04.json` (parser output regenerated today), §7.7, Tom's
+prefetch-before-skip code read (R25 "Open after R25" (2)). Round-6 scope: (1) `GGML_CONV_RING` default on;
+(2) skip-aware expert prefetch — the `MADV_WILLNEED` set follows the skip mask (advice only, bit-identical), so at
+118 the ≈ 68-76 MB/token of skipped experts (≈ 30 % of the 243 MB advised) is no longer read ahead; (3) kit ABBA
+`CONV_RING:1:0`, `EXPERT_SKIP:0:118` ×2 pooled, `SSM_INPLACE:1:0`; always-on story 200: skip 118, control, `eio 0`,
+`skip 118 · eio 0`; official 32 skip 118; vanilla official 32 + story 200; baselines ×2. Threshold fixed at 118.
+
+**What R25 changed in my cost model.** (i) The exact stack (tiny-op, `MMID 3`, `Q3K_X4`, ILP, `SSM_INPLACE`) is
+worth **−27 ms/token steady** (*device*, vanilla 91.0 → control 63.9), not the 32-37 I priced in §7.7: the
+over-price was R20's tiny-op number (−9 to −14.5), a bad-day measurement; the tiny-op lever is ≈ −5 to −8 on a
+day like R25's (the vanilla row's 14.6-23.2 ms of waits vs Vollie's 3-7 is where it lives). (ii) ILP is **−1 to −2**
+(*device*, ABBA +1.2 ± 5.2 pooled, `MUL_MAT_ID` +3.5 %), the low edge of my +1 to +5; it stays default and out of
+every sum. (iii) **Printed = steady + 1.4 + page-cache term**, and the page-cache term is now the dominant
+variable on this phone: printed ms/token − last-window steady − 1.4 = 23.2 (skip 118), 5.4 (control), 6.5 (vanilla),
+and in each case it equals Σ(window − steady) × 32/200 within 1 ms (22.5 / 5.0 / 5.5) — so the whole term is the
+warm-up of windows 1-5, set by the file cache at run start (641 / 1,207 / 652 MB) and the expert bytes touched
+(77 / 34 / 109 majflt/token). Steady itself is nearly day-independent now: skip-118 steady 55.4 at 77 majflt/token
+vs the cleanest ABBA B blocks 52.9-59.0. (iv) The dense `MUL_MAT` sat at **23-25 ms through the whole stack**
+(vanilla 25.9 → control 23.1; 249 weight products carry 559 MB, see §8): it is 42-45 % of the token at 118.
+Revised "where 20 stands": clean steady at 118 with r6 defaults (`CONV_RING` −0.7) ≈ **53.5-54.7 → printed
+55.4-56.6 = 17.7-18.1**; the priced exact crumbs (waits −0.8 to −1.5, madvise off the compute threads −0.4 to −1.0)
+→ 51.5-53.5 → **18.2-19.0**; 20 printed needs 48.6 steady on a clean day, i.e. **−4 to −6 ms more that only the
+dense `MUL_MAT` (23-25 ms) or a new budgeted lever can give** (§8). On an r5-like day no steady lever reaches 20:
+the page-cache term alone is 5-25 ms/token.
+
+**Day-state criterion (scoring rule, stated before the run).** R25 showed minflt 309-573/token on every run,
+including the cleanest, so minflt does not separate days. A run is **clean** if `mem_before file=` ≥ 2.0 GB *and*
+majflt ≤ 10 per generated token *and* (window 1 − window 6) ≤ 5 ms (r3 run 8 is the reference: 1.97 GB, 8/token,
++0.9 ms). A run is **r5-like** if `file=` at start is 0.4-1.3 GB, swapfree < 400 MB and majflt 20-120/token. Runs
+between the two are scored against both bands and marked "between". Rows are scored in their own band; the
+vanilla/control/skip comparison is scored only across runs whose `file=` at start differ by < 400 MB.
+
+**Skip-aware prefetch, priced.** What it removes is advice, not faults: `MADV_WILLNEED` reads uncached pages
+asynchronously (those reads are not counted as majflt), so its cost on a clean day is only thread 0's walk
+(`mmid_thr` thread 0 +6.5 % at steady in the skip-118 run, 21317 vs 19999/20093; 30 % fewer ranges → ≈ −0.1 to
+−0.3 ms steady) and on a swapping day the useless 68-76 MB/token of readahead competes for flash bandwidth and
+evicts pages the next layers need. Window 1 of the skip-118 run (*device*, 117.0 vs steady 55.4 = +61.6) was
+`MUL_MAT_ID` +34.7, waits +18.5, dense `MUL_MAT` +7.5, rest +0.9; the expert part (≈ 50 of 61.6) is the only part
+the fix touches, and 30 % of the bytes behind it are the skipped experts' → **window-1 penalty −12 to −20 ms at an
+equal start state** (61.6 → 42-50 at file ≈ 640 MB), steady −0.1 to −0.3, majflt/token −25 to −35 % at an equal
+start state (77 → 50-58; the control-run comparison stays order-confounded unless the run order changes). The 2×2
+of always-on rows (skip/control × eio 1/0) is the clean test: the *ratio* majflt(skip)/majflt(control) must come
+out ≈ 0.65-0.8 at eio 0 (skip touches 30 % fewer expert bytes, dense bytes shared) and, after the fix, ≈ the same
+0.65-0.8 at eio 1 (R25 read 2.25 at eio 1, order-confounded; before the fix the eio-1 ratio could only be ≥ 1).
+
+| item (B − A as the parser prints it; always-on rows: steady = last window, printed = kit tok/s) | prediction | falsified if |
+|---|---|---|
+| ABBA `CONV_RING:1:0` (A = on, B = off) | own ops **+0.6 to +0.9** (`CONCAT` 0 → 0.53-0.57, `SSM_CONV` 0.26 → 0.40-0.42, `CPY` count 72 → 108, total ±0.1); token +0.5 to +1.5 (not resolvable at ±1.3 1σ; score the own-ops line); nodes 1855 / 1927, barriers 746 both | own ops < +0.4 or > +1.2 |
+| ABBA `EXPERT_SKIP:0:118` ×2 pooled | share **28-33 %**, k̄ 4.0-4.3; `MUL_MAT_ID` **−7 to −9**, steady-block coefficient 0.9-1.0; token −6.5 to −9.5, pooled 1σ ≤ ±3.5 r5-like, ≤ ±2 clean; B-side `mmid_thr` thread-0 excess ≤ A-side's − 1 pt (shorter walk) | share < 26 or > 36 %; coefficient < 0.8 on a run with ≤ 10 majflt/token |
+| ABBA `SSM_INPLACE:1:0` (A = on) | own ops **+3.4 to +5.0** (`CPY` +3.0 to +3.5, `SSM_SCAN` +1.0 to +1.5), barriers 746 → 818 | < +2.5 or > +6 |
+| story 200 · skip 118 (r6 defaults), clean | steady **53.5-55.0**; window-1 penalty ≤ 5; printed **17.5-18.3** | steady > 57 or printed < 16.5 in a run that meets the clean criterion |
+| story 200 · skip 118, r5-like | steady 54.5-57.5; window-1 penalty **25-50** (R25 61.6); majflt/token 40-65 at file ≈ 640 MB at start (R25 77); printed **12.5-15.5** (13.4-13.8 at R25's exact state) | at file ≤ 700 MB: window-1 penalty ≥ 58 **or** majflt/token ≥ 70 (the prefetch was not what inflated the skip run); printed < 12 |
+| story 200 · control (k 6, r6 defaults) | clean steady 60.5-62.5 → printed 15.6-16.1; r5-like steady 62-67, printed 13.5-15 (R25 14.5 at 1,207 MB) | clean steady > 64 |
+| story 200 · `eio 0` (prefetch off; the §7.7 madvise falsifier) | **clean: steady −1.0 to +0.3 vs control**, `mmid_thr` spread < 3 % (thread 0 no longer slow) → if eio 0 is *not* ≥ 0.4 faster or thread 0 is still ≥ 3 % slow, the madvise-off-threads lever (−0.4 to −1.0) is dead; **r5-like: majflt ×2-3 vs control** (R25 vanilla 109 vs 34), steady +0 to +10, printed −0.5 to −2.5 tok/s vs control | clean: eio 0 slower by > 1 ms steady at ≤ 10 majflt/token (then willneed pays even from cache and the page-cache model is wrong) |
+| story 200 · `skip 118 · eio 0` | majflt/token **0.65-0.8 × the `eio 0` control row** (same day band); steady = skip-118 row ± 1; window-1 penalty ≥ the eio-1 skip row's on an r5-like day (faults now synchronous), equal on a clean day | ratio > 0.95 (the skip does not reduce bytes touched → the mask is applied after the faults somewhere else too) |
+| 2×2 ratio test (after the fix) | majflt(skip)/majflt(control) at eio 1 ≈ at eio 0 ≈ **0.65-0.8**, both within ±0.15 of each other when the start states differ by < 400 MB | eio-1 ratio ≥ 1.3 with comparable start states |
+| official 32 · skip 118 | r5-like 12-15 (R25 13.9 at 848 MB); clean 16.5-18.5 | — |
+| vanilla official 32 / story 200 | official 8-10.5 (R25 9.4); story printed 9.5-11 r5-like, steady 82-97; **ratio control/vanilla 1.35-1.5** steady (R25 1.42) — the r5 numbers must reproduce within ±1 tok/s or the README table is a one-day number | ratio < 1.3 or > 1.6 |
+| baselines ×2 (official 32, r6 defaults) | 8-13 r5-like (R25 8.2 / 12.0); 14-16.5 clean | — |
+| `mhz_blocks` | 2,112 / 2,035 at every sample, at most one transient | any block ≥ 2 at 710 persisting |
+| the skip rule's printed worth, same day, story 200 (skip 118 − control) | clean **+1.9 to +2.5 tok/s**; r5-like −1 to +1.5 (order and start state decide); after the fix the skip row should not lose to the control at an equal-or-better start state | skip prints ≥ 1 tok/s below the control at an equal-or-better `file=` at start |
+
+Verdict pre-registered: round 6 does not move the steady number by more than the `CONV_RING` 0.7 (it is an
+exact-crumb and page-cache round). What it can settle is (a) whether the madvise lever exists (`eio 0` clean row),
+(b) whether the skip run's bad printed number in R25 was prefetch (the 2×2) or day state, and (c) a third
+device confirmation of the skip rule at −7 to −9. The number for the owner stays: **118 prints 17.5-18.3 on a
+clean day and 12.5-15.5 on an r5-like one; 20 needs §8.**

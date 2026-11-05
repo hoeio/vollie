@@ -391,3 +391,36 @@ token level, 2 misses (the printed skip-118 story, the warm-up size).
   the runtime reads ≈ 30 % of expert rows it never multiplies — an exact cut of bytes/token and of the
   swapping-day printed number); (3) Bonnie's memo on the dense `MUL_MAT` byte term inside the rules and the
   frozen file (round-6 pre-registration); (4) waits and madvise-off-compute-threads after (2).
+
+## 13. Round 6 answers (R27, 2026-11-05; details `03_final.md` "R27 — round-6 device results", JSON `reports/device/r6_2026-11-05.json`, pre-registration memo `05_compute_less.md` §7.8)
+
+The worst day yet: the four fast cores sat at **1,555 MHz** for every story run (r5: 2,112 / 2,035; heat 0.81-0.93
+against the 0.933 threshold) and swap was exhausted after every run. The ABBA items are immune to that (both
+sides share the clock) and hit; every absolute band missed by the clock. 8 hits, 3 clock misses, the 1,555 cap
+itself, **1 falsified**.
+
+- **Three knobs, three device confirmations each (ABBA, in-run):** `CONV_RING` own ops **+1.25 ms** when off
+  (above the +0.6-0.9 band — the conv `CPY` is not free), default on stands; `EXPERT_SKIP` 118 **−10.5 ± 2.5
+  ms** pooled (share 29.8 %, k̄ 4.21, coefficient 0.96, `adv` 720 → 505 = the skip-aware read-ahead works as
+  built); `SSM_INPLACE` **+3.96** own ops when off. The A/B method is settled; the kit stays ABBA.
+- **The madvise lever is dead.** `eio 0` costs **+0.85 ms steady**, −0.27 tok/s printed, and **×9.6 faults**
+  (365 vs 38/token); `mmid_thr` spread is < 1 % on *both* sides, so thread 0 was never paying for the advice.
+  `WILLNEED` stays on; nothing to move off the compute threads.
+- **The one falsified item:** with the advice on, the skip run still faulted **1.55 ×** the control (pre-registered
+  0.65-0.8, falsifier ≥ 1.3; start states 820 vs 1,174 MB, inside the ±400 MB rule); with the advice off it
+  faulted **0.42 ×**. Per-run majflt with a 354 MB start-state gap cannot separate "the prefetch fix did not
+  reduce bytes touched" from "the start state did it"; round 7 puts the fault counters inside the ABBA blocks.
+- **A free clock experiment, device-grounded:** 2,112 → 1,555 MHz (×0.736) moved `MUL_MAT_ID` 27-29 → 34.6
+  (×1.24) and the skip Δ −8 → −10.5 (×1.3) but the dense `MUL_MAT` only 23.1 → 25.0-25.4 (×1.08-1.10) and
+  `SSM_SCAN` not at all. The expert products are compute-bound, the dense products bandwidth-bound — the R24
+  ridge is now shown, not inferred. On a hot phone the skip rule is worth more and the dense term weighs less.
+- **Vanilla, same run:** official 32 **6.1**, story **8.9** printed / 100.9 steady (waits 20-22 ms, 1,926 barriers)
+  vs Vollie control 12.05 / 74.6 → **ratio 1.35** (R25 1.42, band 1.35-1.5). Exact stack −26 ms/token today.
+- **Where 20 stands:** steady at 118 **63.7 ms = 15.7 tok/s** at 1,555 MHz, ≈ **54-56 ms = 18** clock-corrected
+  (*estimated*); printed 12.7. Round 6 delivered its pre-registered −1 (CONV_RING) and answered its two questions
+  (madvise: no; prefetch bytes: unresolved by this instrument). Under the +2 % budget only waits (−0.8 to −1.5)
+  are left as exact crumbs; the dense `MUL_MAT` byte term is the only path to 20 inside the rules. **Round 7
+  (not built):** (1) per-ABBA-block `getrusage` faults in `cpu-prof` (Tom, exact instrument) + kit r7 with
+  `EXPERT_SKIP:0:118` ABBA at eio 1 and eio 0; (2) Bonnie's dense `MUL_MAT` byte memo (§8), including the
+  repaired two-stage lm_head screen (126 MB Q6_K ≈ 6 of the 25 ms); (3) waits only if (2) finds nothing bigger.
+  Closed: madvise off the compute threads, `EXPERT_IO=0`, steady numbers quoted without their clock.
