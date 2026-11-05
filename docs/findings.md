@@ -64,7 +64,51 @@ heat and clocks fall on both sides alike.
 - 4 threads for writing once the expert-guess helper runs: it takes a core from the compute threads
   (device: writing best at 3, reading best at 4).
 
-## Where the ceiling is
+## Where the ceiling was (2026-11-01 view)
 
 Dense weights ~25 ms per token, already near this SoC's bandwidth. 20 tok/s = 50 ms/token needs the
 expert compute and the remaining waits down to ~25 ms together. That is the open problem.
+
+## 5. Rounds 3-6 (R21-R27, 2026-11-02 to 2026-11-05): measure the knob, not the day
+
+Everything above was measured with one-order A/Bs and single runs on a phone whose page cache and clock
+changed between runs. From round 5 the kit runs every knob as an **ABBA** block inside one generation
+(16 warm-up tokens on A, then 8-token blocks A B B A …), so both sides share the same heat, clock and
+cache. Three rounds of that settled the numbers:
+
+| knob (bit-identical unless noted) | worth, ms/token, in-run | confirmations |
+|---|---|---|
+| SSM scan in place (`GGML_SSM_INPLACE`) | −4.0 to −4.6 | r4, r5, r6 |
+| conv state ring (`GGML_CONV_RING`) | −0.7 at 2,112 MHz, −1.25 at 1,555 | r5, r6 → default on |
+| Q3_K ILP (`GGML_Q3K_ILP`) | −1 to −2 (one-order rounds said −18 %: order bias) | r5 |
+| **skip rule at 118** (`GGML_EXPERT_SKIP`, PPL +1.98 %, inside the +2 % budget) | **−8 at 2,112 MHz, −10.5 at 1,555**; 29.8 % of expert slots skipped, k̄ 4.2 | r3, r4, r5 ×2, r6 ×2 |
+
+**Vanilla vs Vollie, same app, same file, same day (device).** Stock llama.cpp kernels and settings vs the exact
+stack vs the stack plus skip 118: official 32-token benchmark **9.4 → 12.0 → 13.9** tok/s; 200-token story printed
+**10.2 → 14.5 → 12.5**, steady **82-97 → 62-66 → 55.4** ms/token (2026-11-04). The exact stack is **−27 ms/token
+(−30 %)**, almost all of it `MUL_MAT_ID` read waits and small-op barriers (1,926 → 746 per token); it never touched
+the dense products (25.9 → 23.1). The skip rule adds ≈ ×1.12-1.15. An earlier "×1.40 printed" for the skip rule
+was a control run with a bad page cache and is withdrawn.
+
+**What "printed" measures on this phone.** Steady at 118 is 55 ms = 18 tok/s, but the 200-token printed rate is set
+as much by the page-cache term — a 22-62 ms penalty in the first 32 tokens and 34-365 major faults per token — as by
+the steady runtime: runs at 91 / 63 / 55 ms steady printed 10.2 / 14.5 / 12.5. Bytes read per token, not multiply-adds,
+is what moves the printed number from here.
+
+**A free clock experiment (round 6).** On 2026-11-05 the phone held its fast cores at 1,555 MHz instead of 2,112.
+Same build, same knobs: the expert products went ×1.24 and the skip rule's saving ×1.3 (compute-bound); the dense
+`MUL_MAT` went 23.1 → 25.0 ms (×1.08, bandwidth-bound); the SSM scan did not move. Every steady number now carries its
+clock. The dense products are the only block large enough for the last 4-6 ms, and only fewer bytes per token can
+move them.
+
+**Closed with device numbers:** speculation of every kind (verify of k tokens costs ≈ k tokens: the CPU is
+compute-bound at any batch > 1), early exit, 4 threads, an A55 helper, anonymous expert caches, Q3_K prefetch,
+thresholds above 118 (the +2 % budget is final), `EXPERT_IO=0` (+0.85 ms, ×9.6 faults), moving `madvise` off the
+compute threads (thread 0 was never slower).
+
+## Where the ceiling is (2026-11-05)
+
+Steady at 118: **55 ms = 18 tok/s** at full clock (device), 63.7 ms at 1,555 MHz; printed 12.5-14.5 on a swapping
+day. 20 tok/s printed = 48.6 ms steady plus a quiet warm-up. Exact crumbs left ≈ 1-1.5 ms (barrier waits). The rest
+has to come from the dense `MUL_MAT` reading fewer bytes per token inside the frozen file — the open problem of round 7
+(`reports/04_campaign.md` §13).
