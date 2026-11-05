@@ -52,7 +52,7 @@ case $(uname -m) in arm64|aarch64) ARCH="-DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=a
 cmake -S "$SRC" -B "$SRC/build" -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=OFF -DGGML_BLAS=OFF \
   -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DGGML_OPENCL=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF \
   -DLLAMA_BUILD_SERVER=OFF $ARCH > "$W/cmake.log" 2>&1 || { cat "$W/cmake.log"; exit 1; }
-cmake --build "$SRC/build" --config Release -j "$NPROC" --target llama-perplexity llama-cli > "$W/build.log" 2>&1 \
+cmake --build "$SRC/build" --config Release -j "$NPROC" --target llama-perplexity > "$W/build.log" 2>&1 \
   || { tail -40 "$W/build.log"; exit 1; }
 PPL=$SRC/build/bin/llama-perplexity
 echo "   built $PPL"
