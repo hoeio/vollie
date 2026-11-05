@@ -14,6 +14,7 @@ behind each lesson is in `reports/03_final.md` (R-numbers).
 - **Working budget for the speed rule: +2 % over the served file's stock PPL** (≤ 9.797 on wikitext-2;
   en.txt reported as the sanity check). Owner's amendment 2026-11-02 for the router-weight adaptive expert
   count (`reports/05_compute_less.md`). Anything beyond +2 % is proposed with numbers first.
+  *2026-11-05: the +2 % speed-rule budget is final for the campaign; a request to raise it to +2.25 % after R28 was declined (pre-registered budgets do not move after results).*
 - **The quality test is fixed:** `llama-perplexity`, wikitext-2-raw test set, context 512, batch 512,
   all chunks (`tools/ppl.sh`). It does not change mid-project to make numbers look better.
 - `lab/text/en.txt` (English prose) is measured and reported with every result as a **sanity check**;

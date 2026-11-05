@@ -424,3 +424,8 @@ itself, **1 falsified**.
   `EXPERT_SKIP:0:118` ABBA at eio 1 and eio 0; (2) Bonnie's dense `MUL_MAT` byte memo (`05_compute_less.md` §8 (part done: the lm_head half is R28 / reports/memos/head2stage_fix.md; the remaining ≈ 19 ms of dense products still owed)), including the
   repaired two-stage lm_head screen (126 MB Q6_K ≈ 6 of the 25 ms); (3) waits only if (2) finds nothing bigger.
   Closed: madvise off the compute threads, `EXPERT_IO=0`, steady numbers quoted without their clock.
+- **Budget ruling (2026-11-05, after R28):** the owner was asked, with numbers, whether +2 % could become +2.25 % to fit
+  skip 118 + the two-stage head (≈ 9.814 est.). **Declined: +2 % is final for the campaign** — moving a pre-registered
+  budget after a result lands on its other side would dirty the research, and the rules are public. Round-7 item (2)
+  is therefore: `GGML_HEAD2=<M>` built (default off, bit-identical when off), full-set PPL of 116/117 + head2 vs 118
+  alone, the fastest under 9.797 into kit r7 as an ABBA item, pre-registered net −1.0 to −1.7 ms/token (*estimated*).
