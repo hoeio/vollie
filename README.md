@@ -60,7 +60,7 @@ bit-identical runtime.
 
 *Round 6, same-day row (device).* 2026-11-05, fast cores capped at 1,555 MHz (r5: 2,112): official 32 vanilla 6.1 → Vollie 9.9 (bit-identical) → 14.0 (skip 118); story 200 printed 8.9 → 12.05 → 12.7; steady 100.9 → 74.6 → 63.7 ms/token; ratio 1.35.
 
-*Footnote.* All speed numbers except the store-build column are from one day (2026-11-04, a swapping day: swap free 0-386 MB,
+*Footnote.* All speed numbers in the table above, except the store-build column and the round-6 row, are from one day (2026-11-04, a swapping day: swap free 0-386 MB,
 6-110 major faults per token), same app (2.2.10+33, kit r5), same file, 3 threads, measured by the owner
 through the app. Each cell is a single run, except the bit-identical official-32 decode figure: it is the better of
 two baseline runs (8.2 and 12.0), since RULES.md §5 scores a setting by its best run; the vanilla figure is one run.
