@@ -1,4 +1,5 @@
 #!/bin/sh
+# Portable entry point for outside readers: tools/reproduce.sh (this check assumes the private lab/ layout).
 # Vollie: identity of the A/B path with a no-op skip: GGML_CPU_AB=knob:EXPERT_SKIP:0:0 (+ GGML_CPU_PROF=1)
 # must equal off per chunk, chunks 1-3, -t 6, -ub 1 / -ub 32 / -b 512. Exit 1 if any differs.
 # Usage: sh lab/checks/ab_skip_id.sh

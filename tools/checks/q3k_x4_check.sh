@@ -1,4 +1,5 @@
 #!/bin/sh
+# Portable entry point for outside readers: tools/reproduce.sh (this check assumes the private lab/ layout).
 # Builds lab/checks/q3k_x4_check.c against the lab host build's libggml-cpu and runs it (exit 1 = not bit-identical).
 cd "$(dirname "$0")/../.."
 L=$PWD/lab/llama.cpp-tiny/build-888/bin

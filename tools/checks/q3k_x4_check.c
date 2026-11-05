@@ -1,3 +1,4 @@
+// Portable entry point for outside readers: tools/reproduce.sh (this check assumes the private lab/ layout).
 // Vollie R23 check: ggml_vec_dot_q3_K_q8_K_x4 (default, GGML_Q3K_ILP, GGML_Q3K_PF) is bit-identical to
 // four ggml_vec_dot_q3_K_q8_K calls on random Q3_K rows; also times the variants (1 thread, cache-hot).
 // build+run: sh lab/checks/q3k_x4_check.sh

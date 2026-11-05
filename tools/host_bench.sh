@@ -1,4 +1,5 @@
 #!/bin/sh
+# Portable entry point for outside readers: tools/reproduce.sh (this script assumes the private lab/ layout).
 # Host CPU-only speed (RELATIVE numbers, not phone speed). Vollie's config: FA on, q8_0 KV, mmap.
 # usage: tools/host_bench.sh <tag> <model.gguf> [extra llama-bench args]   env: LLAMA_BIN, THREADS="1 4", REPACK="0 1"
 # appends to lab/logs/p/bench.csv: tag,threads,repack,test,tok_s,stddev

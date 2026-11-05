@@ -1,3 +1,4 @@
+// Portable entry point for outside readers: tools/reproduce.sh (this check assumes the private lab/ layout).
 // Vollie: host stand-in for the research kit's run sequence in ONE process (lab/checks/kit_runs.sh).
 // Usage: kit_runs <model> <threads> "<n_tokens>|ENV=V,ENV=V" ...  Each run: every kit knob reset to ''
 // (as research.dart setEnv), the run's env set, KV cleared, the story prompt decoded, n_tokens greedy.
@@ -10,7 +11,8 @@
 #include <vector>
 
 static const char * knobs[] = {"GGML_CPU_PROF", "GGML_CPU_AB", "GGML_MMID", "GGML_Q3K_X4", "GGML_Q3K_VEC", "GGML_Q3K_ILP",
-                               "GGML_Q3K_PF", "GGML_EXPERT_ANON", "GGML_EXPERT_SKIP", "GGML_EXPERT_SKIP_RENORM"};
+                               "GGML_Q3K_PF", "GGML_EXPERT_ANON", "GGML_EXPERT_SKIP", "GGML_EXPERT_SKIP_RENORM",
+                               "GGML_SSM_INPLACE", "GGML_CONV_RING", "GGML_CPU_AB_WARM", "GGML_CPU_AB_BLOCK"};
 
 static void set_tokens(llama_batch_ext * b, const llama_token * t, int n, llama_pos p0) {
     llama_batch_ext_clear(b);
