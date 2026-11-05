@@ -55,6 +55,10 @@ def abba_summary(runs):
     kb = [float(d['kavg']) for _, (s_, _, d, _) in blocks if s_ == 'B']
     if ka and kb:
         rows.append(('kavg', f"A {statistics.mean(ka):.2f}  B {statistics.mean(kb):.2f} (min {min(kb):.2f} max {max(kb):.2f})"))
+    aa = [int(d['adv']) for _, (s_, _, d, _) in blocks if s_ == 'A' and 'adv' in d]  # r6: expert slices read ahead per token
+    ab = [int(d['adv']) for _, (s_, _, d, _) in blocks if s_ == 'B' and 'adv' in d]
+    if aa and ab:
+        rows.append(('adv', f"A {statistics.mean(aa):.1f}  B {statistics.mean(ab):.1f}  B/A {statistics.mean(ab)/statistics.mean(aa) if statistics.mean(aa) else float('nan'):.3f}"))
     return rows
 
 def main():
@@ -123,7 +127,7 @@ def main():
         for line in lines[-2:] if x['phase'] == 'ab' else lines[-1:]:
             d, o = prof_fields(line)
             mmid = o.get('MUL_MAT_ID', (0, 0, 0))
-            print(f"  {x['phase']:8s} {x['name'][:30]:30s} {d.get('ab','  ')} anon={d.get('anon')} anon_mb={d.get('anon_mb')} kavg={d.get('kavg')} "
+            print(f"  {x['phase']:8s} {x['name'][:30]:30s} {d.get('ab','  ')} eio={d.get('eio')} adv={d.get('adv')} anon={d.get('anon')} anon_mb={d.get('anon_mb')} kavg={d.get('kavg')} "
                   f"ilp={d.get('ilp')} pf={d.get('pf')} us/token={d.get('us/token')} MUL_MAT_ID {mmid[1]/1000:.1f}+{mmid[2]/1000:.1f} ms  "
                   f"majflt/tok={(x.get('majflt') or 0)/tok if tok else float('nan'):.1f} minflt/tok={(x.get('minflt') or 0)/tok if tok else float('nan'):.0f}")
     print('\n== best per setting (phases threads/baseline/release/spec)')

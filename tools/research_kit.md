@@ -1,31 +1,29 @@
-# Research kit (round 5) — what it runs, the result file, how to run it
+# Research kit (round 6) — what it runs, the result file, how to run it
 
-The kit is the **"Run research kit (~15 min)"** button in Vollie's Settings (app 2.2.10+33, kit `r5`; round 4 was
-2.2.9+32 / `r4`, results in `reports/03_final.md` R24). It measures the round-5 runs
-(`reports/05_compute_less.md` §7.5-7.6) on the phone as it is, and puts one JSON report on the clipboard
-("Copy research results"). `tools/research_parse.py` turns that JSON into `results.csv` rows and R-log text.
+The kit is the **"Run research kit (~15 min)"** button in Vollie's Settings (app 2.2.11+34, kit `r6`; round 5 was
+2.2.10+33 / `r5`, results in `reports/03_final.md` R25). It measures the round-6 runs on the phone as it is, and
+puts one JSON report on the clipboard ("Copy research results"). `tools/research_parse.py` turns that JSON into
+`results.csv` rows and R-log text.
 
-What changed in the round-5 build (CPU module): `GGML_SSM_INPLACE` is now **on by default** (bit-identical, R24;
-`GGML_SSM_INPLACE=0` turns it off), so the baseline rows include it. New probe `GGML_CONV_RING=1` (default off,
-bit-identical): the one-token Mamba2 conv reads the old conv state and the new input where they are and shifts the
-state into the cache itself, so the 36 `CONCAT` and 36 conv-state `CPY` ops are not run. **A/B runs are now ABBA
-blocks** inside one 200-token story: 16 warm-up tokens on side A, then 8-token blocks A B B A A B B A … (one
-`cpu-prof` line per block, `ab=A|B blk=N`, `blk=0` = warm-up; `GGML_CPU_AB_WARM` / `GGML_CPU_AB_BLOCK` change the
-16 / 8), so a drift during the run (page cache filling, clocks) falls on both sides alike. Fix: an empty
-`GGML_Q3K_VEC` now means "default" (on); the r3/r4 kits reset it to '' and so ran it off (`q3k=0` in their lines;
-the x4 kernel bypasses it, so their expert numbers are unaffected).
+What changed in the round-6 build (CPU module, both bit-identical, R26): `GGML_CONV_RING` is now **on by default**
+(`GGML_CONV_RING=0` turns it off; device R25: −0.7 ms/token in its own ops), so the baseline rows include it. The
+expert read-ahead (`GGML_EXPERT_IO` bit 1, `MADV_WILLNEED`) now runs **after** the expert-skip mask and leaves out
+experts whose every slot is skipped (r5 read all six ahead, so at threshold 118 ≈ 30 % of what it read was never
+multiplied). No knob: it follows `GGML_EXPERT_SKIP`. New `cpu-prof` field `adv=` = expert tensor slices read ahead
+per token on that side (Granite: 720 at k 6 = 40 layers × 6 experts × 3 tensors). A/B runs are ABBA blocks exactly
+as in r5 (16 warm-up tokens on side A, then 8-token blocks A B B A …; one `cpu-prof ab=A|B blk=N` line per block).
 
 ## What one run does (about 15 minutes, no settings to change, no extra memory)
 
 | phase | runs | what | knob |
 |---|---|---|---|
-| `baseline` | 2 | official benchmark prompt, 32 tokens, saved settings (round-5 defaults: ILP + SSM in place, no skip) | — |
+| `baseline` | 2 | official benchmark prompt, 32 tokens, saved settings (round-6 defaults: ILP + SSM in place + conv ring, no skip) | — |
 | `vanilla` | 2 | **stock llama.cpp settings, for comparison**: official 32 and story 200 with every Vollie knob that has an off switch off (list below), threads as saved | env for that run only |
-| `ab` | 7 | ABBA A/B over the 200-token story: `SSM_INPLACE:1:0` and `Q3K_ILP:1:0` ×2 (**A = on = default, B = off**: B − A > 0 means it helps), `EXPERT_SKIP:0:115` (the budget threshold), `EXPERT_SKIP:0:118` (the edge: the largest threshold whose full-set PPL is still ≤ 9.797, 9.7952 = +1.98 %), `CONV_RING:0:1` (A = off) | `GGML_CPU_AB=knob:…` |
-| `on` | 3 | always-on rows: story 200 with `GGML_EXPERT_SKIP=118`, story 200 with nothing (control), official 32 with `GGML_EXPERT_SKIP=118` | `GGML_EXPERT_SKIP` |
+| `ab` | 4 | ABBA A/B over the 200-token story: `CONV_RING:1:0` (**A = on = default, B = off**: B − A > 0 means it helps), `EXPERT_SKIP:0:118` ×2 (the edge, full-set PPL 9.7952 = +1.98 %; pooled; side A `adv=` = what r5 read ahead, side B = the skip-aware read-ahead), `SSM_INPLACE:1:0` (A = on, one more confirmation) | `GGML_CPU_AB=knob:…` |
+| `on` | 5 | always-on rows: story 200 with `GGML_EXPERT_SKIP=118`, story 200 with nothing (control), story 200 `eio 0` (`GGML_EXPERT_IO=0`, everything else default: what the read-ahead and thread 0's madvise calls are worth), story 200 skip 118 · eio 0, official 32 with `GGML_EXPERT_SKIP=118` | `GGML_EXPERT_SKIP`, `GGML_EXPERT_IO` |
 
 The parser's A/B Δ is always B − A, per side mean ± sd over the post-warm-up blocks, ± 1σ, and the per ABBA group
-(B̄ − Ā) mean and sd; the two `Q3K_ILP:1:0` runs are also pooled. Every story run also logs `mhz_blocks`: the cpu4
+(B̄ − Ā) mean and sd; the two `EXPERT_SKIP:0:118` runs are also pooled. Every story run also logs `mhz_blocks`: the cpu4
 and cpu7 clock every 8 tokens.
 
 **Vanilla rows, what is off:** `GGML_TINY_OP=0`, `GGML_MMID=0`, `GGML_Q3K_X4=0`, `GGML_Q3K_VEC=0`, `GGML_Q3K_ILP=0`,
@@ -80,24 +78,25 @@ after `|`, per op type: count : µs computing + µs waiting at the sync after it
 expert-skip threshold / share of routed experts skipped, both on that side; `kavg` = experts kept per layer and token on that side.
 `x4`, `ilp`, `pf`, `mmid` = kernel and no-barrier knobs in effect. `anon=16/68%/11.2` = cache slots per expert
 tensor on that side (0 = not read) / routed experts of decode tokens found cached / tensor copies per decode token
-(Granite: 3 tensors per expert, ~0.34 MB each); `anon_mb` = anonymous memory the cache holds.
+(Granite: 3 tensors per expert, ~0.34 MB each); `anon_mb` = anonymous memory the cache holds. `adv` (r6) = expert tensor slices given `MADV_WILLNEED` per token on
+that side (0 when `GGML_EXPERT_IO=0`); r5 lines have no `adv`.
 `majflt`, `minflt` per run divided by `tokens` = faults per token (the parser prints both).
 
 ## 실행 안내 (한국어)
 
-**이번 회차(r5)에서 바뀐 것:** 상태 복사 생략(`SSM_INPLACE`, 출력은 완전히 동일)이 이제 기본으로 켜져 있습니다. A/B는 이제
-200토큰 이야기 하나 안에서 8토큰씩 A·B·B·A 순서로 번갈아 잽니다(앞쪽이 늘 불리하던 순서 편향을 없애기 위해서입니다).
-새 시험 `CONV_RING`(출력 동일)을 한 번 잽니다. 전문가 생략(expert skip)은 승인된 115와, 품질 기준(+2 %) 안에서 가장 큰 값
-118(품질 기준 +2 % 안에서 가장 큰 값, 전체 PPL 9.7952)로 잽니다. 항상 켜는 줄도 118입니다. **"vanilla" 두 줄은 비교용으로, Vollie의 속도 기능을 끈 기본 llama.cpp 설정으로 잰 것입니다**(같은 모델,
-추가 다운로드 없음). 메모리를 추가로 쓰는 단계는 없습니다.
+**이번 회차(r6)에서 바뀐 것:** 지난 회차에 잰 `CONV_RING`(출력 완전히 동일)이 이제 기본으로 켜져 있습니다. 전문가 생략을 쓸 때
+생략될 전문가는 미리 읽어 두지 않습니다(출력 동일, 읽기만 줄어듭니다). A/B는 r5와 똑같이 200토큰 이야기 하나 안에서
+8토큰씩 A·B·B·A 순서로 잽니다. 전문가 생략 값은 118 그대로입니다(품질 기준 +2 % 안에서 가장 큰 값, 전체 PPL 9.7952). 새로
+"eio 0" 줄 두 개가 있습니다: 전문가 미리 읽기를 끈 채 이야기를 씁니다. **"vanilla" 두 줄은 비교용으로, Vollie의 속도 기능을 끈
+기본 llama.cpp 설정으로 잰 것입니다**(같은 모델, 추가 다운로드 없음). 메모리를 추가로 쓰는 단계는 없습니다.
 
-**준비:** Vollie 2.2.10+33 설치(APK, `vollie-2.2.10+33-research-r5.apk`), 모델이 이미 받아져 있고 평소처럼 쓰는 상태면 됩니다.
+**준비:** Vollie 2.2.11+34 설치(APK, `vollie-2.2.11+34-research-r6.apk`), 모델이 이미 받아져 있고 평소처럼 쓰는 상태면 됩니다.
 전화기 설정은 아무것도 바꾸지 마세요(다른 앱도 그대로). 이번 회차는 추가 다운로드가 없습니다.
 
 1. Vollie → 설정(Settings) → **"Run research kit (~15 min)"** 탭.
-2. 약 15분 동안 화면을 켠 채로 둡니다(앱이 켜둡니다). 진행 상황은 버튼 아래에 `Research · 분:초 · 단계`로 보입니다.
+2. 약 15-20분 동안 화면을 켠 채로 둡니다(앱이 켜둡니다). 진행 상황은 버튼 아래에 `Research · 분:초 · 단계`로 보입니다.
 3. 끝나면 **"Copy research results"** 탭 → 클립보드에 JSON이 복사됩니다. 그대로 제게 붙여 보내 주세요
-   (길이 50-150 KB). 같은 내용이 앱 파일 폴더에 `research-r5-<시각>.json`으로도 저장됩니다.
+   (길이 50-150 KB). 같은 내용이 앱 파일 폴더에 `research-r6-<시각>.json`으로도 저장됩니다.
 4. 중간에 멈추려면 **"Stop research run"**. 그때까지의 결과도 복사할 수 있습니다.
 
 **보내 주실 것:** 붙여 넣은 JSON 한 개. 가능하면 실행 직전의 전화기 상태 한 줄(예: 충전 중 여부, 방금

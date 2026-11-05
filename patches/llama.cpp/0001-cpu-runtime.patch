@@ -426,7 +426,7 @@ index cfbbf6617..dba0e085f 100644
  static inline svuint32_t ggml_decode_q4scales_and_mins_for_mmla(const uint32_t * vx_scales) {
      const svbool_t pg_all   = svptrue_pat_b32(SV_VL4);
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index ab82e3d6c..b5bc9bc71 100644
+index ab82e3d6c..bcbfaa04f 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -197,6 +197,7 @@ typedef void * thread_ret_t;
@@ -908,7 +908,7 @@ index ab82e3d6c..b5bc9bc71 100644
                          // matrix_row_counts
                          cur += n_as * sizeof(int64_t) + sizeof(int64_t);
                          // matrix_rows
-@@ -3064,40 +3438,815 @@ struct ggml_cplan ggml_graph_plan(
+@@ -3064,40 +3438,823 @@ struct ggml_cplan ggml_graph_plan(
  // Returns the number of nodes skipped by fusion (>=1), or 0 if no fusion was applied.
  static bool ggml_cpu_disable_fusion = false;  // initialized once in ggml_cpu_init(), read-only afterwards
  
@@ -979,6 +979,7 @@ index ab82e3d6c..b5bc9bc71 100644
 +static int     ggml_cpu_prof_cnt[2][GGML_OP_COUNT], ggml_cpu_prof_graphs[2], ggml_cpu_prof_tokens[2], ggml_cpu_prof_nodes[2], ggml_cpu_prof_barriers[2];
 +static int64_t ggml_cpu_prof_total[2];
 +static int64_t ggml_cpu_prof_kept[2], ggml_cpu_prof_ktok[2]; // kept expert slots / tokens, down projections
++static int64_t ggml_cpu_prof_adv[2]; // Vollie: expert slices given MADV_WILLNEED (EXPERT_IO bit 1), profiled graphs, per A/B side
 +static bool    ggml_cpu_prof_anon[2];                        // the side read the GGML_EXPERT_ANON copies
 +static int     ggml_cpu_prof_ilp[2], ggml_cpu_prof_pf[2];    // GGML_Q3K_ILP / _PF on that side
 +static int     ggml_cpu_prof_skip[2];                        // GGML_EXPERT_SKIP on that side
@@ -1140,7 +1141,7 @@ index ab82e3d6c..b5bc9bc71 100644
 -                mul_w->type         == GGML_TYPE_F32 &&
 -                mul_w->ne[0]        == node->ne[0]   &&
 -                mul_w->nb[0]        == sizeof(float)) {
-+// Vollie: env GGML_CONV_RING=1 (default off; bit-identical). One-token Mamba2 conv: stock builds
++// Vollie: env GGML_CONV_RING (default on since r6, "" = unset = on, 0 = off; bit-identical, R25). One-token Mamba2 conv: stock builds
 +// conv_x = CONCAT(old conv state, x^T), CPYs conv_x's last d_conv-1 columns into the conv cache, and
 +// SSM_CONV dots conv_x with the weights. Here SSM_CONV reads the old state and x where they already
 +// are (same products summed in the same order), writes the shifted state into the cache slot itself
@@ -1551,12 +1552,16 @@ index ab82e3d6c..b5bc9bc71 100644
 +    if (n_as > 512) {
 +        return;
 +    }
-+    uint8_t used[512] = {0};
++    // Vollie (r6): the skip mask is built first (same decision the op makes next), so experts whose
++    // every slot is skipped are not read ahead: used[] = routed (bit 4's hit count), need[] = advised
++    const bool masked = ggml_cpu_skip_prepare(cgraph->nodes[node_n]);
++    uint8_t used[512] = {0}, need[512] = {0};
 +    for (int64_t t = 0; t < ids->ne[1]; t++) {
 +        for (int64_t k = 0; k < ids->ne[0]; k++) {
 +            const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + k*ids->nb[0]);
 +            if (e >= 0 && e < n_as) {
 +                used[e] = 1;
++                need[e] |= !(masked && ggml_cpu_skip_mask_tl[t*ids->ne[0] + k]);
 +            }
 +        }
 +    }
@@ -1589,8 +1594,9 @@ index ab82e3d6c..b5bc9bc71 100644
 +        if (ggml_cpu_expert_io & 1) {
 +            const struct ggml_cpu_anon_ent * anon = ggml_cpu_anon_find(w); // cached experts need no read
 +            for (int64_t e = 0; e < n_as && e < w->ne[2]; e++) {
-+                if (used[e] && !(anon && anon->slot_of[e] >= 0)) {
++                if (need[e] && !(anon && anon->slot_of[e] >= 0)) {
 +                    ggml_cpu_madvise((const char *) w->data + e*w->nb[2], w->nb[2], MADV_WILLNEED);
++                    ggml_cpu_prof_adv[ggml_cpu_ab_var] += ggml_cpu_prof_this;
 +                }
 +            }
 +        }
@@ -1625,7 +1631,7 @@ index ab82e3d6c..b5bc9bc71 100644
 +    }
 +    // Vollie: kavg = kept expert slots per layer and token on this side; anon=N/hit%/tensor copies per
 +    // decode token (both sides together: one cache); ilp, pf = GGML_Q3K_ILP / GGML_Q3K_PF on this side
-+    int len = snprintf(line, sizeof line, "cpu-prof%s graphs=%d tokens=%d threads=%d tiny=%lld eio=%d q3k=%d x4=%d ilp=%d pf=%d mmid=%d skip=%d/%lld%% kavg=%.2f anon=%d/%lld%%/%.1f anon_mb=%lld pred=%lld%% us/token=%lld compute=%lld wait=%lld nodes=%d barriers=%d mmid_thr=",
++    int len = snprintf(line, sizeof line, "cpu-prof%s graphs=%d tokens=%d threads=%d tiny=%lld eio=%d q3k=%d x4=%d ilp=%d pf=%d mmid=%d skip=%d/%lld%% kavg=%.2f anon=%d/%lld%%/%.1f anon_mb=%lld pred=%lld%% adv=%lld us/token=%lld compute=%lld wait=%lld nodes=%d barriers=%d mmid_thr=",
 +        ab, g, ggml_cpu_prof_tokens[v], n_threads,
 +        (long long) (ggml_cpu_ab_mode == 2 && v ? ggml_cpu_ab_tiny : ggml_cpu_tiny_thresh), ggml_cpu_expert_io,
 +        ggml_cpu_ab_mode == 1 ? (v ? 0 : 1) : ggml_cpu_q3k_vec, ggml_cpu_q3k_x4, ggml_cpu_prof_ilp[v], ggml_cpu_prof_pf[v], ggml_cpu_mmid,
@@ -1635,6 +1641,7 @@ index ab82e3d6c..b5bc9bc71 100644
 +        (long long) (ggml_cpu_anon_routed ? 100*ggml_cpu_anon_hit/ggml_cpu_anon_routed : -1),
 +        ggml_cpu_anon_dtok ? (double) ggml_cpu_anon_copies / ggml_cpu_anon_dtok : 0.0, (long long) (ggml_cpu_anon_bytes >> 20),
 +        (long long) (ggml_cpu_pred_total ? 100*ggml_cpu_pred_hit/ggml_cpu_pred_total : -1),
++        (long long) (ggml_cpu_prof_tokens[v] ? ggml_cpu_prof_adv[v] / ggml_cpu_prof_tokens[v] : 0),
 +        (long long) (ggml_cpu_prof_total[v] / g),
 +        (long long) (comp / g), (long long) (wait / g), ggml_cpu_prof_nodes[v] / g, ggml_cpu_prof_barriers[v] / g);
 +    // per-thread µs computing inside MUL_MAT_ID (both A/B variants together): the spread is the imbalance
@@ -1657,6 +1664,7 @@ index ab82e3d6c..b5bc9bc71 100644
 +    ggml_cpu_pred_hit = ggml_cpu_pred_total = 0;
 +    memset(ggml_cpu_skip_cnt, 0, sizeof ggml_cpu_skip_cnt);
 +    memset(ggml_cpu_skip_total, 0, sizeof ggml_cpu_skip_total);
++    memset(ggml_cpu_prof_adv, 0, sizeof ggml_cpu_prof_adv);
 +    ggml_cpu_anon_hit = ggml_cpu_anon_routed = ggml_cpu_anon_copies = ggml_cpu_anon_dtok = 0;
 +    memset(ggml_cpu_prof_kept, 0, sizeof ggml_cpu_prof_kept);
 +    memset(ggml_cpu_prof_ktok, 0, sizeof ggml_cpu_prof_ktok);
@@ -1742,7 +1750,7 @@ index ab82e3d6c..b5bc9bc71 100644
  static thread_ret_t ggml_graph_compute_thread(void * data) {
      struct ggml_compute_state * state = (struct ggml_compute_state *) data;
      struct ggml_threadpool    * tp    = state->threadpool;
-@@ -3126,6 +4275,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3126,6 +4283,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
      GGML_PRINT_DEBUG("thread #%d compute-start cplan %p last-graph %d\n", state->ith, (const void *)cplan, state->last_graph);
  #endif
  
@@ -1765,7 +1773,7 @@ index ab82e3d6c..b5bc9bc71 100644
      for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
          struct ggml_tensor * node = cgraph->nodes[node_n];
  
-@@ -3139,12 +4304,65 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3139,12 +4312,65 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
          }
  
          // TODO: move fused-op detection into ggml_graph_plan so fusion decisions are made once at planning time
@@ -1778,14 +1786,14 @@ index ab82e3d6c..b5bc9bc71 100644
 +        const bool prof = ggml_cpu_prof_this && state->ith == 0;
 +        const bool mmid = node->op == GGML_OP_MUL_MAT_ID;
 +        const int64_t t0 = (prof || (ggml_cpu_prof_this && mmid)) ? ggml_time_us() : 0;
-+#if !defined(_WIN32)
-+        if (ggml_cpu_expert_io && state->ith == 0 && mmid) {
-+            ggml_cpu_expert_prefetch(cgraph, node_n);
-+        }
-+#endif
 +        if (mmid) {
 +            ggml_cpu_skip_weights_tl = ggml_cpu_expert_skip || ggml_cpu_expert_topp || ggml_cpu_expert_gap ? ggml_cpu_moe_weights(cgraph, node_n) : NULL;
 +        }
++#if !defined(_WIN32)
++        if (ggml_cpu_expert_io && state->ith == 0 && mmid) {
++            ggml_cpu_expert_prefetch(cgraph, node_n); // after the weights pointer: it applies the skip mask
++        }
++#endif
 +        if (tiny && state->ith != 0) {
 +            // thread 0 does it alone
          } else {
@@ -1836,7 +1844,7 @@ index ab82e3d6c..b5bc9bc71 100644
          }
  
          if (state->ith == 0 && cplan->abort_callback &&
-@@ -3153,8 +4371,33 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3153,8 +4379,33 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
              tp->ec    = GGML_STATUS_ABORTED;
          }
  
@@ -1871,7 +1879,7 @@ index ab82e3d6c..b5bc9bc71 100644
          }
      }
  
-@@ -3398,6 +4641,160 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3398,6 +4649,160 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
      int n_threads                               = cplan->n_threads;
      struct ggml_threadpool * threadpool = cplan->threadpool;
  
@@ -1946,7 +1954,7 @@ index ab82e3d6c..b5bc9bc71 100644
 +    const char * ssmi = getenv("GGML_SSM_INPLACE");
 +    ggml_cpu_ssm_inplace = ssmi && *ssmi ? atoi(ssmi) != 0 : 1; // Vollie: default on since r5 (bit-identical, R24)
 +    const char * cring = getenv("GGML_CONV_RING");
-+    ggml_cpu_conv_ring = cring && *cring ? atoi(cring) != 0 : 0;
++    ggml_cpu_conv_ring = cring && *cring ? atoi(cring) != 0 : 1; // Vollie: default on since r6 (bit-identical, R25)
 +    if ((ggml_cpu_expert_skip || ggml_cpu_expert_topp || ggml_cpu_expert_gap) && !ggml_cpu_budget_atexit) {
 +        ggml_cpu_budget_atexit = true;
 +        atexit(ggml_cpu_budget_print);
@@ -2032,7 +2040,7 @@ index ab82e3d6c..b5bc9bc71 100644
      bool disposable_threadpool = false;
  
      if (threadpool == NULL) {
-@@ -3455,6 +4852,29 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3455,6 +4860,29 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
  
      // don't leave affinity set on the main thread
      clear_numa_thread_affinity();
