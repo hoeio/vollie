@@ -28,7 +28,7 @@ Granite: 3253 / 0.9 GB), so the Granite estimate is optimistic by an unknown amo
 
 ## 2. Measured facts that drive the ranking (all host, Granite, Vollie config: FA on, q8_0 KV, ctx default)
 
-PPL = wikitext-2 test, ctx 512; reference F16 with the model's 6 experts = **9.0438**; gate ≤ **9.948** (+10%).
+PPL = wikitext-2 test, ctx 512; reference F16 with the model's 6 experts = **9.0438**; gate ≤ **9.948** (+10%, the limit in force when this memo was written; since 2026-11-02 the hard limit is +20 % = ≤ 10.853, `RULES.md` §1).
 
 | config | wiki PPL | Δ vs F16 | weight MB/token | host tg64 4 thr (1 thr) | non-reclaimable RAM (host peak footprint) |
 |---|---|---|---|---|---|

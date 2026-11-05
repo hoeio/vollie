@@ -340,7 +340,7 @@ Swapping day again (swapfree 0-351 MB, 18-1,390 majflt per token); official base
 
 - **The skip rule, three thresholds on the device:** `MUL_MAT_ID` falls by 0.87 × the skipped share at every
   threshold — 115: −25 to −32 % at share 27 % (k̄ 4.33); 130: −34 % at 39 % (k̄ 3.61); 140: −40 % at 46 %
-  (k̄ 3.20). Always-on 115 over a 200-token story: **14.2 tok/s printed vs 10.2 control (×1.40)**, steady
+  (k̄ 3.20). Always-on 115 over a 200-token story: **14.2 tok/s printed vs 10.2 control (×1.40; withdrawn in R25, see §12)**, steady
   profile 60.8 ms (16.4 tok/s) vs 79-86. Official 32 with skip: 11.3 vs 7.1 / 5.3. The 54-58 ms band was
   missed narrowly (60-62) on a day that fails its clean precondition.
 - **SSM state round trip (`GGML_SSM_INPLACE`, bit-exact): −4.5 ms** in its own ops (`CPY` −3.3, `SSM_SCAN`
@@ -390,7 +390,7 @@ token level, 2 misses (the printed skip-118 story, the warm-up size).
   default on; (2) Tom checks whether `EXPERT_IO`'s `MADV_WILLNEED` is issued before the skip decision (if so,
   the runtime reads ≈ 30 % of expert rows it never multiplies — an exact cut of bytes/token and of the
   swapping-day printed number); (3) Bonnie's memo on the dense `MUL_MAT` byte term inside the rules and the
-  frozen file (round-6 pre-registration); (4) waits and madvise-off-compute-threads after (2).
+  frozen file (round-6 pre-registration); (4) waits and madvise-off-compute-threads after (2). [Item (4) madvise closed by R27, §13.]
 
 ## 13. Round 6 answers (R27, 2026-11-05; details `03_final.md` "R27 — round-6 device results", JSON `reports/device/r6_2026-11-05.json`, pre-registration memo `05_compute_less.md` §7.8)
 

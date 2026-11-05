@@ -3,8 +3,8 @@
 Question (owner, `04_campaign.md` §9): which tokens, layers, experts or operations can be left uncomputed —
 or computed once and reused — with a quality cost inside the gate, by a rule that does not depend on this
 model or this phone? Every number below is **host** (M4 Pro, wikitext-2 test, ctx 512, 60-chunk screens
-unless stated; raw logs `lab/logs/r21/`) or **estimated** from the R18/R20 device profiles. Nothing here
-was run on the phone.
+unless stated; raw logs `lab/logs/r21/`) or **estimated** from the R18/R20 device profiles. Nothing in §0-§4
+was run on the phone; §5-§7 add the device scorecards and pre-registrations of rounds 3-6 (R23-R27), scored in `03_final.md`.
 
 ## 0. The arithmetic the ranking is measured against
 
@@ -762,7 +762,7 @@ take the measured skip-115 steady 60.8 and subtract only the exact `SSM_INPLACE`
 k̄) → **56.3**; for 130 / 140 scale the measured 21.1 by k̄ (the steady fault term on the skip side was ≈ 0.6-3 ms,
 small enough to scale with it) → 18.6 / 16.5 → **53.8 / 51.7**. Clean-day sanity check against r4: control steady
 82.1 vs clean 67.6 + ILP − … → the day's fault tax at k = 6 is ≈ 13-15 ms on the steady state, ≈ 3-5 ms at k̄ 4.1
-(21.1 measured vs 19.6 + F-model 19.6); the skip's super-linear printed gain (×1.40 at −29 % slots) is this
+(21.1 measured vs 19.6 + F-model 19.6); the skip's super-linear printed gain (×1.40 at −29 % slots; **withdrawn in R25**: it was the control's bad page-cache day, the in-run ABBA gives ×1.12-1.15) is this
 coupling, and it is real for the user on bad days.
 
 ### 7.4 What reaches 20 tok/s printed (200-token story, `_benchPrompt`-style greedy)
@@ -775,8 +775,8 @@ with the expert bytes of the first window: linear in slots, 130 → ≈ 6.0, 140
 | threshold (PPL) | clean day steady → **printed** | r4-like day steady → **printed** | with waits −1.0 and F = 0 (best corner), clean |
 |---|---|---|---|
 | 115 (+1.79 %, approved) | 54.2 → 55.8 ms = **17.9 tok/s** | 56.3 → 65.6 = **15.2** | 52.6 → 54.2 = 18.5 |
-| 130 (+3.60 %, owner's call) | 51.5 → 53.1 = **18.8** | 53.8 → 61.2 = **16.3** | 49.6 → 51.2 = 19.5 |
-| 140 (+5.20 %, owner's call) | 49.9 → 51.5 = **19.4** | 51.7 → 57.9 = **17.3** | 47.9 → 49.5 = **20.2** |
+| 130 (+3.60 % as written; +3.67 % over 9.6051, corrected in R25; owner's call) | 51.5 → 53.1 = **18.8** | 53.8 → 61.2 = **16.3** | 49.6 → 51.2 = 19.5 |
+| 140 (+5.20 % as written; +5.25 % over 9.6051, corrected in R25; owner's call) | 49.9 → 51.5 = **19.4** | 51.7 → 57.9 = **17.3** | 47.9 → 49.5 = **20.2** |
 | control k 6 (round-5 defaults) | 61.4 → 63.0 = 15.9 | 77.6 → 94.2 = 10.6 | — |
 
 Reading: **20 printed needs all three of a clean day, SKIP 140 and the waits lever (or F ≈ 0)**; 130 tops at
@@ -880,6 +880,8 @@ at 0.3 µs is only 0.3 ms — the tiny-op cost is the per-op imbalance on 1,092 
 | **vanilla official 32** | r4-like **3.5-5.5** (prefill is fault-bound either way; decode all in the warm-up regime); clean 8-10.5. R7's 3.4 (D1, 4t, tiny 0) is the only vanilla-ish device anchor and is consistent | — |
 | warm-up (window 1 − steady, skip 118) | clean ≤ 3 ms (≤ 0.5/token over 200); r4-like 18-28 ms (5.5-8.5/token); 118's fewer bytes → ≈ 7 % less than 115 | clean penalty > 5 ms with ≤ 100 minflt/token → DVFS term exists, lever 7 reopens |
 | `mhz_blocks` | cpu4 2,112 / cpu7 2,035 from block 1 on, block 0 at most lower | lower clocks persisting into block ≥ 2 → lever 7 live |
+
+*[Closed by R27, 2026-11-05: `eio 0` costs +0.85 ms steady and ×9.6 faults, thread 0 is not slow; see `03_final.md` R27. Kept below as written.]*
 
 **`EXPERT_IO` thread-0 madvise (next exact lever, cannot be A/B'd in one run).** Host: with eio 1 thread 0's
 `mmid_thr` is +10 % (7724 vs 6890-7081 µs); device triples show thread 0 +6-10 % in every run (eio 1 saved). With
