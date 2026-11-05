@@ -421,6 +421,6 @@ itself, **1 falsified**.
   (madvise: no; prefetch bytes: unresolved by this instrument). Under the +2 % budget only waits (−0.8 to −1.5)
   are left as exact crumbs; the dense `MUL_MAT` byte term is the only path to 20 inside the rules. **Round 7
   (not built):** (1) per-ABBA-block `getrusage` faults in `cpu-prof` (Tom, exact instrument) + kit r7 with
-  `EXPERT_SKIP:0:118` ABBA at eio 1 and eio 0; (2) Bonnie's dense `MUL_MAT` byte memo (§8), including the
+  `EXPERT_SKIP:0:118` ABBA at eio 1 and eio 0; (2) Bonnie's dense `MUL_MAT` byte memo (`05_compute_less.md` §8 (owed by Bonnie, round 7; not yet written)), including the
   repaired two-stage lm_head screen (126 MB Q6_K ≈ 6 of the 25 ms); (3) waits only if (2) finds nothing bigger.
   Closed: madvise off the compute threads, `EXPERT_IO=0`, steady numbers quoted without their clock.
