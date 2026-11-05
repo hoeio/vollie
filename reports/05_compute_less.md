@@ -1045,6 +1045,24 @@ beats 118, which (iii) is allowed to say); it settles the eio-1 fault question w
 head2 standalone at −1.8 to −2.6 as the generalizable dense-byte result. It does not reach 20 printed; nothing in it was
 expected to.
 
+### 7.10 Round-8 pre-registration (frozen by Clyde 2026-11-06, before any build; draft and arithmetic in `reports/memos/dense_bytes_device.md` §6; all *estimated*)
+
+Scope, in order — **a cost measurement before any lever claim**: (i) ABBA `HEAD2:0:2048` with a **repacked Q4_0 screen** (`GGML_HEAD2_Q=q4_0`, Tom's
+repack of the anon copy, made at load or before `blk=0`, never in a B block) on skip 118 (over budget, research row, scored on the new `head=` line,
+fault-matched: B majflt/token ≤ A + 10, else not quoted); (ii) full-set PPL gate of 117 + Q4_0/2048 (est. 9.788 ± 0.002), 116 + (9.780), 118 + (9.796,
+reported only, never pre-registered as the pair), en.txt alongside, greedy-32 identical; (iii) the combo ABBA 118 → 117 + Q4_0/2048 **only if (i) passes**.
+Bonnie's bands for (i), `head` B − A: **B (screen at the byte rate, s ≤ 3.9): −1.4 to −2.3 at 1,555 / −1.6 to −2.3 at 2,112; A (s = 4.9-5.9 like the
+Q2_K kernels): −0.7 to +1.1 at 1,555 / −0.9 to −1.7 at 2,112.** Passes = `head` ≤ −1.2 at the run's clock. **Falsifier (Bonnie's, adopted verbatim):**
+"`head` B − A > −0.7 ms at 1,555 MHz (or > −0.9 at 2,112), fault-matched — the repacked Q4_0 screen is compute-bound on the A78 like the Q2_K one
+(per-row ratio ≥ 4.9), so no runtime-requantised screen of any type beats the stock head here." Requant + repack ≤ 2 s on the device (falsified above).
+
+**Where Clyde disagrees (written down before the run).** Bonnie expects B for the screen and A for the gather, central ≈ −1.5. I expect **A**: R29 measured
+s = 4.9-5.9 on the only two kernels we have device numbers for, and the M4's 1.17 for the repacked screen is ±0.07 from the stock A-side head in Tom's own
+repack ABBA, i.e. the host cannot tell the repacked screen from the stock head either. My central is **−0.5 at 1,555**, i.e. the falsifier fires, and the
+lesson generalises: a requantised screen pays only where the screen kernel is at least 2 × cheaper per MAC than the stock one *on the device*. Pre-registered
+either way: round 8 does not reach 20 (best case 18.3-19.2 clean); the combo (iii) is worth −1.0 to −2.2 under B and nothing under A. `ssm_out` re-laid copy:
+Bonnie withdrew −1.5..−2.0 (fp32 axpy +2 to +5, dead; fp16 + LUT unbuilt, on paper only) — not in round 8; its order is microbench → 565-chunk simulation → spec.
+
 ## 8. The dense `MUL_MAT` bytes: where the other ≈ 19 ms is and what can skip it (Bonnie; in progress, 2026-11-05; all *host* unless labelled)
 
 **Inventory (`lab/logs/r27/dense/inventory.txt`, exact bytes of the served file).** Read every token: **562.5 MB** =
@@ -1123,3 +1141,19 @@ vs r6, no A/B bias) as long as swap is exhausted (swapfree 0: anon cannot leave)
 A blocks and faulted back on the B side (≤ 18 k faults per run if fully evicted each time): pre-registered caveat for (iv) — majflt B/A expected
 **0.9-1.1** (expert bytes identical, dense shared); B/A > 1.3 *with* swapfree > 200 MB is the copy swapping, not the lever, and the fault ratio of (iv)
 is then not quoted. Items (i)/(ii) are unaffected (no copy in those runs, unless Tom allocates at load for every run — then say so in the card).
+
+**§8 addendum (after R29, 2026-11-06; full arithmetic in `reports/memos/dense_bytes_device.md`).** R29 made the dense-byte
+rule a *device* number: the stock head is 6.5-7.0 ms at both clocks (18.9 GB/s, bytes only) and the Q2_K head2 kernels cost
+4.9-5.9 × the M4 per row at 1,555 (the stock Q6_K bounds its own kernel at ≤ 3.9). Re-priced with op = max(bytes/18.9 GB/s,
+M4 compute × s) + gather × s: (1) **repacked Q4_0 screen, M 2,048** — byte floor 89.3 MB = 4.72 ms, best case −2 ms; at 1,555
+`head` Δ **−1.4 to −2.3 if s ≤ 3.9 (B)**, **−0.7 to +1.1 if s = 4.9-5.9 (A)**, disjoint → one fault-matched ABBA decides;
+PPL 117 + ≈ 9.788 (margin 0.009), 116 + 9.780, 118 + 9.796 (coin flip, gate it, do not pre-register it); requant ≈ 0.6-0.9 s
+*estimated* on the device. (2) **`ssm_out` re-laid copy: my −1.5 to −2.0 is withdrawn** — the column-skip axpy cannot use `sdot`
+(per-(channel, block) scales force float accumulation); fp32 ≈ 0.94 NEON instr/MAC → 6.8-9.2 ms vs the stock 3.9-5.1 (**+2 to
++5, dead**); an fp16-accumulate + `tbl` LUT kernel (≈ 0.31 instr/MAC, unbuilt) would be −1.0 to −2.4 on paper with two unpriced
+numerics changes (copy requant + fp16 sums). Order before any spec: model-free host microbench of the axpy variants → the owed
+60/565-chunk simulation with fp16 modelled → `GGML_SSMOUT_COLSKIP`. (3) Ranking: Q4_0/2048 on 117 > nothing under +2 % >
+`ssm_out`; even the best case lands at 18.3-19.2 tok/s clean, not 20. Round-8 draft (memo §6): (i) cost-only ABBA on `head=`
+with the falsifier "`head` B − A > −0.7 at 1,555 (> −0.9 at 2,112), fault-matched → closed"; (ii) full-set gate of 117 + (and
+116 +, 118 +); (iii) the combo ABBA only if (i) passes (`head` ≤ −1.2). Serving caveat: side B reads 8.7 % of the Q6_K tensor
+per token and the rest goes cold on thrashing days (r7 majflt B/A 3.25-3.97) — the lever is clean-day-only as built.
