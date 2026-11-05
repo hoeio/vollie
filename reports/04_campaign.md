@@ -429,3 +429,31 @@ itself, **1 falsified**.
   budget after a result lands on its other side would dirty the research, and the rules are public. Round-7 item (2)
   is therefore: `GGML_HEAD2=<M>` built (default off, bit-identical when off), full-set PPL of 116/117 + head2 vs 118
   alone, the fastest under 9.797 into kit r7 as an ABBA item, pre-registered net −1.0 to −1.7 ms/token (*estimated*).
+
+## 14. Round 7 answers (R29, 2026-11-06; details `03_final.md` "R29 — round-7 device results", JSON `reports/device/r7_2026-11-06.json`, pre-registration `05_compute_less.md` §7.9 + amendment)
+
+The worst memory state yet (file cache 25-813 MB at run start, minflt 770-1,760 per token, swapfree 0) at the same
+1,555 MHz cap as r6: control steady **97.1 ms / 9.09 printed** (r6 74.6 / 12.05 at the same clock). No absolute
+band scorable; the ABBA items are, and side A carried 26 majflt/token so the fault instrument is conclusive.
+
+- **The R27 falsified item is resolved: the skip-aware read-ahead works.** In-run per-block faults, `EXPERT_SKIP:0:118`:
+  majflt B/A **0.642** at eio 1 (band 0.6-1.0; falsifier ≥ 1.2 never came close), **0.557** at eio 0 (band 0.55-0.80);
+  minflt 0.556 / 0.547. The skip removes **45 % of the faulting pages for 30 % of the slots**: the dropped low-weight
+  slots are the cold tail of the expert working set. R27's 1.55 was the start-state gap. No bug.
+- **head2 is closed as built.** Standalone 118 → 118 + Q2_K/8192: `MUL_MAT` **+11.5 ± 4.0** (pre-registered −2.0 to −2.6,
+  amended −0.2 to +1.2, falsifier > −1.3). The kit combo 116 + Q2_K/16384: `MUL_MAT` +13.8 ± 5.1, head op 6.9 → 16.6.
+  Fault-free (eio 0 windows) the head2 op is **12.2 ms vs the stock 6.7** — and the stock head is clock-flat at 6.5-7.0
+  from 2,112 to 1,555 MHz (18.9 GB/s, the ridge), so the +5.5 is kernel compute: the device/M4 per-row ratio for the
+  Q2_K screen + gather is **4.9-5.9**, not the 2-3 the amendment assumed. The bytes argument and the PPL result (R28)
+  stand; the kernel does not. **118 stays served.** Requant 5.2-5.5 s on the device, inside TTFT.
+- **Two levers grew on the bad day:** skip 118 ABBA −10.5 → **−24.7 ms** (coefficient 1.17 of its 29.8 % share);
+  `EXPERT_IO=1` worth **+66 ms/token** steady and 2.8 tok/s printed (control 97.1 / 9.09 vs eio 0 163.0 / 6.25; R27
+  +0.85 on a milder day); skip at eio 0 −61.5. Vanilla llama.cpp same day 5.04 printed vs Vollie 9.09 (**×1.80**; r5 1.42,
+  r6 1.35 — stock pays the eio-0 fault cost on top of the exact stack).
+- **Where 20 stands:** unmoved — 118 alone, clean-day estimate ≈ 18 tok/s at 2,112. The dense-byte path now carries a
+  measured device constraint: whatever reads fewer bytes must run at the byte rate on the A78. **Round 8 (not built):**
+  (1) Bonnie re-prices §8 (ssm_out re-laid copy) and the one head2 variant with host evidence (repacked Q4_0 screen, M 2,048,
+  skip 117, est. ≈ 9.789) against device kernel costs; (2) Tom, only after (1): a Q4_0-screen kernel-timing ABBA and the
+  full-set PPL of 117 + Q4_0/2048; (3) the requant off the TTFT path if anything survives. Closed: head2 Q2_K/Q3_K at any M,
+  the 116 + Q2_K/16384 combo, the s = 2-3 assumption, the eio-1 prefetch question.
+
