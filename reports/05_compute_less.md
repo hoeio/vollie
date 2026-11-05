@@ -1095,3 +1095,31 @@ copy alone is ≤ +0.1 % and copy + skip ≤ the stock 9.8702, run the full set 
 (`GGML_SSMOUT_COLSKIP=<thr>`, input-major copy at first use, axpy kernel, bit-identical when unset; check: PPL at thr 0 ==
 the copy's host number, profiled `MUL_MAT` −1.5 to −2.0 on one ABBA). (c) `down_shexp` at 0.01 (−0.3 % PPL, 24 % of 36 MB
 ≈ 0.4 ms) rides the same kernel if (a) works. Status: (a) not started; this section is the owed memo's first half.
+
+**Amendment, host data of 2026-11-05 evening (Tom's host ABBA, M4, 3 threads, 4 × 300 tokens, `lab/logs/r27/head2/abba_head2_parse.txt`; written before the build freezes).**
+Host says head2 is *slower* everywhere: `MUL_MAT` Δ 118 + Q2_K/8192 **+0.83 ± 0.01**, 116/117 + Q3_K/8192 +1.45, 116/117 + Q2_K/16384 +1.32/+1.33.
+Head op alone, no-repack (the phone's path): stock Q6_K **1.73**, Q2_K/8192 **2.02** (+17 %), Q2_K/16384 **2.50** (+45 %); screen-only Q2_K 1.37 / Q3_K 1.95 /
+Q4_0 1.24 (repacked stock 1.17); select + exact recompute of 8,192 rows ≈ 0.64 ms = 0.06 ms per 1,000 rows = **3.4 × the stock per-row cost** (strided gather,
+no row interleave). So my "screen compute +0.3..+0.7" was wrong: the Q2_K screen's compute ≈ the whole stock head's, and the recompute is not a crumb.
+*Re-derivation for the device.* Scaling s = A78(2,112)/M4 per-row compute ratio: ≥ 2 (clock 2.1 vs 4.4 GHz alone) and ≤ 3.0, else the stock head
+(1.73 × s ≥ 5.2 ms) would already be compute-bound on the device, contradicting R27's dense ×1.08 at ×0.736 clock; **s = 2-3, stated**. The head sits on
+the ridge, so time ≈ max(bytes, compute) (additive with 25 % compute would put the stock head at 8.7-10.4 ms, above R20's ≈ 6; rejected). At 2,112:
+stock max(5.2, 3.5-5.2) = 5.2-5.5; Q2_K/8192 max(2.5, 4.0-6.1) = **4.0-6.1 → Δ −1.5 to +0.6**; Q2_K/16384 max(2.9, 5.0-7.5) → **Δ −0.5 to +2.0**.
+At 1,555 (compute × 1.36, bytes × 1.09): stock 5.7-7.1; Q2_K/8192 5.5-8.3 → **Δ −0.2 to +1.2**; Q2_K/16384 6.8-10.2 → **+1.0 to +3.1**.
+(1) **Item (iv) does not stand: the band narrows and crosses zero, −1.5 to +0.6 at 2,112 (central ≈ −0.5), −0.2 to +1.2 at 1,555.** The falsification
+line stays as written (`MUL_MAT` > −1.3 → lever closed on this device): under the amended band I now *expect* it to fire. What would revive it is
+implementation, not bytes: the bytes argument (126 → 61 MB) is untouched; the 3.4 × per-row recompute and the Q2_K screen kernel (1.37 vs a 0.6-0.8
+byte-rate floor on the M4) are kernel costs. If the recompute ran at the stock per-row cost (8 % of a stock pass at M = 8,192) the band would return to
+−1.0 to −2.0 at 2,112; that is Tom's call after the device number, not before.
+(2) **Kit choice (iii) = 116 + Q2_K/16384 (9.7842) on host evidence**; my (iii-c) 117 + Q3_K/8192 pick is not supported (the Q3_K screen is the slowest
+kernel on the host, 1.95, and I had priced it as equal). Amended (iii) prediction: `MUL_MAT` **−0.5 to +2.0** (2,112) / +1.0 to +3.1 (1,555), give-back
++0.3 to +0.7 → **net −0.2 to +2.7, central ≈ +1 — the combo most likely loses to 118 alone**; scored on the `MUL_MAT` line; falsified if `MUL_MAT` < −1.0
+(then s < 2 and the byte model wins after all). I disagree with M = 16,384 as a *speed* setting on these numbers (its recompute alone is 55 % of a stock
+pass in compute), but it is the only Q2_K setting that fits the budget on 116, so the kit measures it as a budget-legal item; 118 stays served unless the
+device says otherwise. Requant 1.2 s once per kit: must happen at load or in the dropped warm-up block (blk 0), not in the first B block (blk 2 would
+carry +150 ms/token at 8 tokens/block and the parser would print it as the knob).
+(3) **ABBA artefact, faults.** The 71 MB anon copy exists on both sides, so it displaces 71 MB of file cache *equally* (both sides' majflt rise a little
+vs r6, no A/B bias) as long as swap is exhausted (swapfree 0: anon cannot leave). On a day with swapfree > 200 MB the copy can be swapped out during the
+A blocks and faulted back on the B side (≤ 18 k faults per run if fully evicted each time): pre-registered caveat for (iv) — majflt B/A expected
+**0.9-1.1** (expert bytes identical, dense shared); B/A > 1.3 *with* swapfree > 200 MB is the copy swapping, not the lever, and the fault ratio of (iv)
+is then not quoted. Items (i)/(ii) are unaffected (no copy in those runs, unless Tom allocates at load for every run — then say so in the card).
