@@ -30,7 +30,8 @@ def abba_summary(runs):
     """Per side mean ± sd over blocks, B − A ± 1σ (blocks iid), per ABBA group (B̄ − Ā) mean ± sd; ms/token."""
     metrics = [('us/token', lambda d, o: int(d['us/token'])), ('wait', lambda d, o: int(d['wait'])),
                ('MUL_MAT_ID', lambda d, o: sum(o.get('MUL_MAT_ID', (0, 0, 0))[1:])),
-               ('MUL_MAT', lambda d, o: sum(o.get('MUL_MAT', (0, 0, 0))[1:]))] + \
+               ('MUL_MAT', lambda d, o: sum(o.get('MUL_MAT', (0, 0, 0))[1:])),
+               ('head', lambda d, o: int(d.get('head', 0)))] + \
               [(op, (lambda op: lambda d, o: sum(o.get(op, (0, 0, 0))[1:]))(op)) for op in ('SSM_SCAN', 'CPY', 'CONCAT', 'SSM_CONV')]
     rows = []
     blocks = [(ri, b) for ri, x in enumerate(runs) for b in abba_blocks(x)]
@@ -55,10 +56,13 @@ def abba_summary(runs):
     kb = [float(d['kavg']) for _, (s_, _, d, _) in blocks if s_ == 'B']
     if ka and kb:
         rows.append(('kavg', f"A {statistics.mean(ka):.2f}  B {statistics.mean(kb):.2f} (min {min(kb):.2f} max {max(kb):.2f})"))
-    aa = [int(d['adv']) for _, (s_, _, d, _) in blocks if s_ == 'A' and 'adv' in d]  # r6: expert slices read ahead per token
-    ab = [int(d['adv']) for _, (s_, _, d, _) in blocks if s_ == 'B' and 'adv' in d]
-    if aa and ab:
-        rows.append(('adv', f"A {statistics.mean(aa):.1f}  B {statistics.mean(ab):.1f}  B/A {statistics.mean(ab)/statistics.mean(aa) if statistics.mean(aa) else float('nan'):.3f}"))
+    # per token: r6 adv = expert slices read ahead; r7 majflt / minflt = the process's page faults during that side's graphs
+    for key in ('adv', 'majflt', 'minflt'):
+        aa = [float(d[key]) for _, (s_, _, d, _) in blocks if s_ == 'A' and key in d]
+        ab = [float(d[key]) for _, (s_, _, d, _) in blocks if s_ == 'B' and key in d]
+        if aa and ab:
+            ma, mb = statistics.mean(aa), statistics.mean(ab)
+            rows.append((key, f"A {ma:.1f}  B {mb:.1f}  B/A {mb/ma if ma else float('nan'):.3f}"))
     return rows
 
 def main():
@@ -127,7 +131,7 @@ def main():
         for line in lines[-2:] if x['phase'] == 'ab' else lines[-1:]:
             d, o = prof_fields(line)
             mmid = o.get('MUL_MAT_ID', (0, 0, 0))
-            print(f"  {x['phase']:8s} {x['name'][:30]:30s} {d.get('ab','  ')} eio={d.get('eio')} adv={d.get('adv')} anon={d.get('anon')} anon_mb={d.get('anon_mb')} kavg={d.get('kavg')} "
+            print(f"  {x['phase']:8s} {x['name'][:30]:30s} {d.get('ab','  ')} eio={d.get('eio')} adv={d.get('adv')} prof majflt={d.get('majflt')} minflt={d.get('minflt')} head={d.get('head')} anon={d.get('anon')} anon_mb={d.get('anon_mb')} kavg={d.get('kavg')} "
                   f"ilp={d.get('ilp')} pf={d.get('pf')} us/token={d.get('us/token')} MUL_MAT_ID {mmid[1]/1000:.1f}+{mmid[2]/1000:.1f} ms  "
                   f"majflt/tok={(x.get('majflt') or 0)/tok if tok else float('nan'):.1f} minflt/tok={(x.get('minflt') or 0)/tok if tok else float('nan'):.0f}")
     print('\n== best per setting (phases threads/baseline/release/spec)')
