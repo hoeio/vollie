@@ -116,6 +116,7 @@ Index (R-number order). Every R has either a row in the table below or a `###` s
 | R24 | round 4: pre-registration, build, device results | `### R24` |
 | R25 | round 5: build, device results (vanilla vs Vollie) | `### R25` |
 | R26-R27 | round 6: build (R26), device results (R27) | `### R26-R27` |
+| R28 | two-stage lm_head (host) | `### R28` |
 
 Summary table, one row per iteration (R1-R23):
 
@@ -430,7 +431,26 @@ Open after R25 (round 6, in order): (1) `GGML_CONV_RING` default on (exact, −0
 
 *Where 20 stands (device, this day; 1,555 MHz).* Steady at 118: **63.7 ms = 15.7 tok/s**; printed 12.7. Clock-corrected to 2,112 (*estimated*, dense held at 23.1, compute × 0.76): **≈ 54-56 ms = 18 tok/s**, the same place R25 put it (55.4). Round 6 moved the steady token by its pre-registered −1 (CONV_RING, now in the default) and nothing else: the madvise lever is dead (0 instead of −0.4 to −1.0), the skip-aware prefetch is bit-identical and reads 30 % fewer advised bytes (`adv` 720 → 505) but its printed-number effect could not be seen through the 354 MB start-state gap. Exact crumbs left under the +2 % budget: waits −0.8 to −1.5 (Vollie waits 5-7 ms/token steady, 746 barriers). The dense `MUL_MAT` (23-25 ms) remains the only block large enough for the last 4-6 ms and the clock test now *shows* it is bandwidth-bound.
 
-Open after R27 (round 7, in order, nothing built): (1) **instrument, exact** — per-ABBA-block `getrusage` majflt/minflt in the `cpu-prof ab=` line, so skip vs control bytes-touched is measured in-run like everything else (the eio-1 2×2 is the one falsified item and per-run majflt cannot settle it); kit r7 = `EXPERT_SKIP:0:118` ABBA with faults per side, at eio 1 and eio 0; (2) **Bonnie: the dense `MUL_MAT` byte memo (`05_compute_less.md` §8 (owed by Bonnie, round 7; not yet written))**, now including the fixed two-stage lm_head screen (the lm_head is 126 MB Q6_K ≈ 6 ms of the 25) — the only path to 20 that is left inside the rules; (3) waits −0.8 to −1.5 only if (2) finds nothing bigger. Closed by R27: madvise off the compute threads (thread 0 is not slow), `EXPERT_IO=0` (costs +0.85 steady, ×9.6 faults), any steady number quoted without its clock.
+Open after R27 (round 7, in order, nothing built): (1) **instrument, exact** — per-ABBA-block `getrusage` majflt/minflt in the `cpu-prof ab=` line, so skip vs control bytes-touched is measured in-run like everything else (the eio-1 2×2 is the one falsified item and per-run majflt cannot settle it); kit r7 = `EXPERT_SKIP:0:118` ABBA with faults per side, at eio 1 and eio 0; (2) **Bonnie: the dense `MUL_MAT` byte memo (`05_compute_less.md` §8 (part done: the lm_head half is R28 / reports/memos/head2stage_fix.md; the remaining ≈ 19 ms of dense products still owed))**, now including the fixed two-stage lm_head screen (the lm_head is 126 MB Q6_K ≈ 6 ms of the 25) — the only path to 20 that is left inside the rules; (3) waits −0.8 to −1.5 only if (2) finds nothing bigger. Closed by R27: madvise off the compute threads (thread 0 is not slow), `EXPERT_IO=0` (costs +0.85 steady, ×9.6 faults), any steady number quoted without its clock.
+
+### R28 — two-stage lm_head (host, 2026-11-05; Bonnie; memo `reports/memos/head2stage_fix.md`, raw `lab/logs/r27/head2stage/`, three `results.csv` rows)
+
+**All numbers *host* (PPL exact, full wikitext-2 565 chunks) or *estimated* (device ms from the R25/R27 dense-byte rate 0.041-0.046 ms/MB).**
+
+*The 2026-11-04 screen was broken, not negative.* Its logits route inverted a capped log-softmax (the dump floors at max − 16 nats; 92 % of entries sit on the floor) → an ill-posed fit for h; its hidden-state route scored all 511 positions of each chunk instead of the second half and used fp32 activations where ggml uses Q8_K-quantised h. Fixed, the reference reproduces `llama-perplexity` chunk by chunk ([1] 5.5137 [2] 7.3175 [8] 9.2129 [32] 8.8666; 60 chunks 9.8702; **565 chunks 9.6051 = the stock gate**). The SVD screens really are dead: `token_embd`'s spectrum is flat (rank 512 = 51 % energy), a missed token sits 15-25 nats below its logit.
+
+*The lever.* A low-bit copy of the tied head (runtime requant of `token_embd`, served file untouched, +50-87 MB anon) scores all 100,352 rows; the top-M rows are recomputed with the exact Q6_K kernel; the rest keep the screen logit. Bytes read per token for the head: 126.4 MB Q6_K → screen + M × 1,260 B.
+
+| screen | M | PPL (565 chunks) | Δ vs 9.6051 | argmax recall (144,075 pos.) | bytes/token | device Δ *estimated*, net of screen compute, gather and top-M select |
+|---|---|---|---|---|---|---|
+| Q2_K 50.6 MB | 4,096 | 9.6499 | +0.467 % | 1.0000 | 55.7 MB | — |
+| **Q2_K** | **8,192** | **9.6237** | **+0.193 %** | 1.0000 | 60.9 MB | **−2.0 to −2.5 ms** |
+| Q2_K | 16,384 | 9.6108 | +0.059 % | 1.0000 | 71.2 MB | −1.8 to −2.2 |
+| Q3_K 66.2 MB | 8,192 | 9.6078 | +0.028 % | 1.0000 | 76.6 MB | −1.5 to −2.0 |
+| Q4_0 86.7 MB | 2,048 | 9.6062 | +0.011 % | 1.0000 | 89.3 MB | ≤ −1.5 |
+| screens alone | — | +52 % / +12.8 % / +4.25 % | fail the gate | | | |
+
+*Verdict.* **The first lever that cuts dense `MUL_MAT` bytes inside the rules and the frozen file; it generalises (any tied or untied head, any device). Alone it passes every gate (9.6237 ≤ 9.797) and is greedy-identical on 144 k positions. But it does not stack with skip 118 under the +2 % budget**: 118 sits at 9.7952 (+1.98 %), so 118 + Q2_K/8192 ≈ **9.814 (+2.18 %)** *estimated* (deltas add in log space to first order; to be measured, not assumed). Inside the budget the only combination is skip **116** (9.7787) + Q3_K/8192 ≈ 9.781 or + Q2_K/16384 ≈ 9.785, net ≈ −1.0 to −1.7 ms after giving back 0.5-0.8 ms of expert savings. **Owner's decision, with numbers (CLAUDE.md §1: beyond +2 % → ask):** (A) stay at +2 %: 118 alone, or 116 + head2 for ≈ −1 to −1.7 ms; (B) raise the speed-rule budget to **+2.25 % (≤ 9.821)**: 118 + Q2_K/8192 for ≈ −2.0 to −2.5 ms *estimated*, PPL to be measured on the full set before any build. Tom's spec (`GGML_HEAD2=<M>`, memo "Spec for Tom") is ready either way; its device check is one ABBA on the profiled `MUL_MAT` sum, pre-registered at −2.0 to −2.5.
 
 ## 6. What worked, what didn't
 
