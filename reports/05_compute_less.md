@@ -972,3 +972,126 @@ exact-crumb and page-cache round). What it can settle is (a) whether the madvise
 (b) whether the skip run's bad printed number in R25 was prefetch (the 2×2) or day state, and (c) a third
 device confirmation of the skip rule at −7 to −9. The number for the owner stays: **118 prints 17.5-18.3 on a
 clean day and 12.5-15.5 on an r5-like one; 20 needs §8 (part done: the lm_head half is R28 / reports/memos/head2stage_fix.md; the remaining ≈ 19 ms of dense products still owed).**
+
+### 7.9 Round-7 pre-registration (kit r7 as scoped; 2026-11-05 evening, before Tom's build is frozen; all *estimated* unless labelled)
+
+Inputs: R27 device block (clock 1,555 MHz, r5-like day), R28 and `reports/memos/head2stage_fix.md`, Tom's built-runtime
+gate on the full set (`lab/logs/r27/head2/queue-*.out`, 565 chunks, *host*, exact): head2 Q2_K/8192 alone **9.6237** (= my
+replay → the runtime screen is validated), 116 + Q3_K/8192 **9.7810**, 116 + Q2_K/16384 **9.7842**, 117 + Q3_K/8192 **9.7896**,
+117 + Q2_K/16384 **9.7930**, all ≤ 9.797 (118 alone 9.7952); host faults replay `kit_runs_r7_faults.txt` (per-block `majflt=`
+/ `minflt=` fields present, A minflt 254.9 → B 212.4, B/A 0.833). Round-7 scope, in order: (i) ABBA `EXPERT_SKIP:0:118` at
+eio 1 with per-block `getrusage` faults; (ii) the same at `GGML_EXPERT_IO=0`; (iii) ABBA 118 → the fastest combo under
+budget (Tom's host timing picks it; all four are predicted here); (iv) ABBA 118 → 118 + head2 Q2_K/8192 (over budget at
+≈ 9.814 *estimated*, never served: the standalone, generalizable measurement of the lever). Threshold stays 118 for serving.
+
+**Clock-correction rule (stated before the run; checked on R25 ↔ R27).** Split the steady token into dense `MUL_MAT`
+D and the rest R. R25/R27 give D = 23.1 at 2,112 and 25.0-25.4 at 1,555 (×0.736): an additive fit D = 17.3 + 5.8 × (2,112/f)
+(bandwidth part 17.3 ms fixed, compute part 5.8 ms ∝ 1/f, 25 % of D at 2,112, 31 % at 1,555). R scaled ×1.19 (38.3 / 32.3)
+for a 1/0.736 = ×1.36 clock, i.e. ≈ 0.6 of R is clock-bound → R(f) ∝ (2,112/f)^0.6. Rule: **D₂₁₁₂ = 17.3 + (D − 17.3) × f/2,112;
+R₂₁₁₂ = R × (f/2,112)^0.6; steady₂₁₁₂ = D₂₁₁₂ + R₂₁₁₂.** Check: R27 skip 118 63.7 (D 25.4, R 38.3) → 23.3 + 31.9 = **55.2** vs R25
+55.4; R27 control 74.6 → 23.0 + 41.3 = **64.3** vs R25 62-66. ABBA deltas correct the same way by their kind: expert/skip Δ ∝
+(2,112/f)^0.6-1.0 (R27 −10.5 at 1,555 → −7.7 to −8.6 at 2,112, R25 −7.6/−8.3); byte Δ (head2, any dense-byte lever) ∝ the byte
+rate 0.0411 → 0.0447 ms/MB, i.e. ×1.09 at 1,555, nearly flat. Steady numbers are compared only after correction to 2,112 and
+only within ±10 %; every number below is given at both clocks; the kit's `mhz_blocks` says which column applies.
+
+**Expert give-back of 116 / 117 vs 118.** Host full-set k̄ 4.07 / 4.02 / 3.98 (R25 threshold edge) → slots removed 1.93 / 1.98
+/ 2.02, i.e. 116 removes 0.955 ×, 117 0.980 × what 118 removes. Device ABBA at 118: −10.5 ms for 1.79 slots at 1,555 (5.9 ms
+per slot, waits included), −7.6/−8.3 for ≈ 1.8 slots at 2,112 (4.4 per slot). Give-back: **116 +0.3 to +0.7 ms, 117 +0.1 to
++0.4** (both clocks; the upper edges are the 1,555 column).
+
+**head2 on the ridge.** Byte term = bytes saved × byte rate: Q2_K/8192 saves 65.5 MB → −2.7 (2,112) / −2.9 (1,555); Q2_K/16384
+55.2 MB → −2.3 / −2.5; Q3_K/8192 49.8 MB → −2.0 / −2.2. Against it, all clock-bound (×1.36 at 1,555): the screen's compute
+is not hidden any more once the head's bytes halve (the head's compute share is 22.5 % of D's 5.8 ms = 1.3 ms at 2,112, 1.8 at
+1,555; the Q2_K/Q3_K `vec_dot` is not cheaper per MAC than Q6_K's) → +0.3 to +0.5 / +0.4 to +0.7; the M-row gather (random
+1,260 B reads, page-cache hot) +0.3 to +0.6 at 8,192, +0.5 to +0.9 at 16,384; top-M select over 100,352 floats +0.2 to +0.4
+single-threaded. Everything lands inside the profiled `MUL_MAT` line (Tom's spec runs it inside the op), so the scored line is
+`MUL_MAT` and the token Δ is the same number plus noise. If the requant is lazy (first use), it falls in the ABBA's dropped
+warm-up block; a story-200 window-1 penalty of +1 to +3 s would show it — pre-registered as a cost of the build, not the lever.
+
+| item (B − A as the parser prints it; ms/token) | prediction at 2,112 MHz | at 1,555 MHz | falsified if |
+|---|---|---|---|
+| (i) `EXPERT_SKIP:0:118` ABBA, eio 1 (fourth confirmation + faults) | `MUL_MAT_ID` −7.5 to −9, token −7 to −9.5, share 28-33 %, k̄ 4.0-4.4, coeff 0.9-1.0, `adv` B/A 0.68-0.72; **majflt B/A 0.6-1.0 on an r5-like day** (≥ 20 majflt/token on side A), **minflt B/A 0.78-0.90** | `MUL_MAT_ID` −9.5 to −12, token −9 to −12.5; faults the same ratios | majflt B/A ≥ 1.2 with side A ≥ 20/token; minflt B/A > 0.95 or < 0.65 |
+| (ii) same ABBA at `GGML_EXPERT_IO=0` | timing as (i) ± 1 (eio 0 cost +0.85 on both sides cancels); **majflt B/A 0.55-0.80**, absolute majflt/token on side B ≥ 2 × side B of (i) on a comparable day; minflt as (i) | same | majflt B/A > 0.95 (the mask is not reducing bytes touched) or < 0.4 |
+| (iii-a) 118 → 116 + Q3_K/8192 (9.7810) | head −1.3 to −1.8, give-back +0.3 to +0.6 → **net −0.7 to −1.5**; `MUL_MAT` −1.3 to −1.8, `MUL_MAT_ID` +0.3 to +0.6 | head −1.4 to −1.9, give-back +0.4 to +0.7 → net −0.7 to −1.5 | `MUL_MAT` < −2.3 or > −0.8 |
+| (iii-b) 118 → 116 + Q2_K/16384 (9.7842) | head −1.2 to −1.8 → **net −0.6 to −1.5** | net −0.6 to −1.5 | `MUL_MAT` < −2.4 or > −0.7 |
+| (iii-c) **118 → 117 + Q3_K/8192 (9.7896) — expected winner** | head −1.3 to −1.8, give-back +0.1 to +0.3 → **net −1.0 to −1.7** | net −1.0 to −1.8 | `MUL_MAT` < −2.3 or > −0.8 |
+| (iii-d) 118 → 117 + Q2_K/16384 (9.7930) | head −1.2 to −1.8 → **net −0.9 to −1.7** | net −0.9 to −1.7 | `MUL_MAT` < −2.4 or > −0.7 |
+| (iv) 118 → 118 + Q2_K/8192 (standalone head2; ≈ 9.814 est., over budget, research row) | `MUL_MAT` **−1.8 to −2.4**; token the same ± noise; `MUL_MAT_ID` 0 ± 0.3; k̄, share, `adv` unchanged | `MUL_MAT` **−2.0 to −2.6** | `MUL_MAT` > −1.3 (the screen's compute or the gather eats the bytes: lever ≤ 1 ms, closed) or < −3.2 (the byte model is wrong the other way — then re-price every dense-byte lever upward) |
+| story 200 · the served config (118 or the winner), always-on | steady 53-55 (118) / 51.5-54 (winner); printed 17.5-18.3 clean, 12.5-15.5 r5-like | steady 62-65 / 60.5-64; printed r5-like 12-15 | steady (corrected to 2,112) > 57 on a run with ≤ 10 majflt/token |
+| `mhz_blocks` | 2,112 / 2,035 | 1,555 | a run whose two story-run clocks differ by > 10 % is scored only on its ABBA items |
+
+**Why (iii-c).** The four combos sit within 0.4 ms of each other, inside the device ABBA's ±2.5 token σ; only the
+`MUL_MAT` line (σ ≈ 0.3 on own-ops lines, R27) can rank them, and even there 117 vs 116 differs by one 0.2-ms give-back and
+Q3_K/8192 vs Q2_K/16384 by a gather of 8,192 more rows against 15.6 MB fewer screen bytes — a wash. So I expect Tom's host
+timing to pick on noise unless it repeats ≥ 4 ABBA runs; 117 + Q3_K/8192 is my pick because it gives back the least expert
+saving (0.1-0.3) and reads the fewest random rows, with 0.0074 of PPL margin under 9.797 (117 + Q2_K/16384 has 0.004 — the
+full set is deterministic, so legal, but en.txt should be printed alongside). **Pre-registered regardless of which Tom
+picks: the winner's net is −0.6 to −1.8 ms, i.e. steady at 2,112 goes 53.5-55 → 52-54.5 = 18.3-19.2 clean, and 20 printed is
+still 2-4 ms away** — §8 (the other 436 MB of dense bytes) is where that has to come from, not from this round.
+
+**What the faults instrument must show (the R27 falsification, settled in-run).** Side A advises 720 slices/token (243 MB),
+side B ≈ 505 (170 MB); dense bytes (562 MB, read every token, page-cache hot) are shared. On an r5-like day (≥ 20 majflt/token
+on side A) the eio-1 prefetch is **working** if majflt B/A ∈ 0.6-1.0 *and* side B's majflt/token at eio 1 ≤ 0.6 × side B's at
+eio 0 (R27 per-run: 59 vs 152 = 0.39; the eio-0 run is the reference for "all expert faults synchronous"). It is **dead or
+harmful** if majflt B/A ≥ 1.2 at eio 1 with the blocks interleaved (no start-state gap left to blame: 11 blocks of 8 tokens per
+side, alternating) — then the skip-aware `need[]` set drops experts the skip still reads, i.e. the advice set is wrong and
+Tom gets a bug, not a lever. Inconclusive if side A < 10 majflt/token (clean day: both sides read from cache; say so and
+score only the timing). minflt is the control that the instrument counts: B/A 0.78-0.90 on both days (host 0.833; 30 % fewer
+expert pages touched, dense pages shared). A ratio of 1.0 ± 0.05 on minflt would mean the counter is per-process cumulative
+and not reset per block — a parser bug, to be checked before any fault number is quoted.
+
+Verdict pre-registered: round 7 moves the served steady by the combo's −0.6 to −1.8 (or 0 if Tom's timing shows no combo
+beats 118, which (iii) is allowed to say); it settles the eio-1 fault question with an exact instrument; and it measures
+head2 standalone at −1.8 to −2.6 as the generalizable dense-byte result. It does not reach 20 printed; nothing in it was
+expected to.
+
+## 8. The dense `MUL_MAT` bytes: where the other ≈ 19 ms is and what can skip it (Bonnie; in progress, 2026-11-05; all *host* unless labelled)
+
+**Inventory (`lab/logs/r27/dense/inventory.txt`, exact bytes of the served file).** Read every token: **562.5 MB** =
+`ssm_in` Q4_0 200.6 (36 × 5.57) + `token_embd` Q6_K 126.4 (head; R28) + `ssm_out` Q4_0 95.6 (36 × 2.65) + shared-expert
+`gate/up/down_shexp` 101.8 + attention q/k/v/o 14.2 (4 layers) + `ffn_gate_inp` F32 15.7 + norms/conv/ssm small 3.4.
+At the device byte rate (0.0411 ms/MB at 2,112 MHz, R25; 0.0447 at 1,555, R27): `ssm_in` ≈ 8.2-9.0 ms, head 5.2-5.7,
+`ssm_out` 3.9-4.3, shexp 4.2-4.6, rest ≈ 1.4. Head2 (R28) takes 55-65 MB of the head; the "other 19 ms" is `ssm_in` +
+`ssm_out` + shexp = 398 MB ≈ 16.4-17.8 ms, and the router/norm crumbs.
+
+**Method (`lab/tools/dense_colskip.py`, machine-independent).** For a dense product y = W x, zeroing the inputs with
+|x_k| < thr × max|x| (per token) *is* what skipping the weight columns k computes, so the PPL of that in-place edit (cb_eval
+hook on the product's input, llama-perplexity scoring, ctx 512, second half) is the PPL of the runtime lever; thr 0
+reproduces 9.2129 / 9.8702 at 8 / 60 chunks (`colskip_base8.txt`). `COLSKIP_BLOCK=32` restricts the mask to whole Q4_0
+blocks (32 consecutive channels all small) = what the served file's layout can skip without a copy.
+
+| target (bytes/token) | thr | zeroed fraction (per element) | PPL 60 chunks (base 9.8702) | note |
+|---|---|---|---|---|
+| `ssm_out` 95.6 MB | 0.005 / **0.01** / 0.02 / 0.05 / 0.1 | 0.32 / **0.46** / 0.61 / 0.81 / 0.92 | 9.7298 / **9.5937 (−2.8 %)** / 9.5753 (−3.0 %) / 10.9438 / 30.98 | en.txt 26 chunks: none 11.1001, 0.01 **10.8360**, 0.02 10.9825 — same sign on the second text |
+| `ssm_out`, random control | 0.01 | 0.52 (same fraction, random positions) | 9,106 | the small-magnitude selection is the whole effect |
+| `ssm_out`, **block-32 mask** (8 chunks, base 9.2129) | 0.01 / 0.02 / 0.05 | **0.007 / 0.027 / 0.117** | 9.2036 / 9.2355 / 9.1638 | `colskip8_blk32_*`: the sparsity is unstructured; ≤ 12 % of blocks skippable |
+| `ssm_in` 200.6 MB | 0.01 / 0.02 | 0.145 / 0.278 | 9.9015 (+0.3 %) / 10.0416 (+1.7 %) | the post-norm residual is dense |
+| `down_shexp` 36 MB | 0.01 / 0.02 / 0.05 | 0.24 / 0.37 / 0.60 | 9.8395 / 9.8727 / 9.9276 | the swiglu output is sparse-ish; ≤ 36 MB at stake |
+| `up_shexp` rows by silu(gate) | 0.02 / 0.05 / 0.1 | 0.15 / 0.33 / 0.54 | 10.0309 / 10.4547 / 11.83 | dead |
+| `attn_out` 5.3 MB | 0.01 / 0.05 | 0.10 / 0.43 | 9.8684 / 9.8622 | too few bytes to matter |
+| head (per element) | 0.01 | 0.38 | 10.3353 (+4.7 %) | dead; head2 (R28) is the head lever |
+| all targets | 0.01 / 0.02 | 0.23 / 0.35 | 10.2142 / 18.42 | the sum is not the parts: `ssm_in` + head dominate the loss |
+
+**Reading.** (1) The only dense input with *usable* sparsity is `ssm_out`'s (the gated, normed SSM output: 46 % of its
+3,072 channels are < 1 % of the token's max), and skipping them does not cost PPL on either text — it *lowers* it by
+2.8 % on 60 chunks and 2.4 % on en.txt. I do not trust a PPL gain until the full 565-chunk set says the same (queued below);
+the random control (9,106) says the selection is real, not a scoring artefact, and thr 0 reproduces the gate to four
+decimals. (2) **It is not skippable in the served layout**: Q4_0 blocks run along the input dimension, so a skipped channel
+saves 4 bits out of every 18-byte block in every row — nothing at cache-line granularity — and whole-block sparsity is
+0.7-12 %. The lever therefore needs an **input-major re-laid copy of `ssm_out`** built at load (95.6 MB anon, served file
+untouched, like head2's screen): each input channel's 1,536 weights contiguous (48 Q4_0 blocks = 864 B), the kernel an
+axpy over the kept channels (y += x_k · W[:, k]), bytes read ∝ kept fraction. *Estimated* at thr 0.01: 95.6 → 52 MB,
+**−1.8 to −2.0 ms byte term**, compute −46 % of this product's MACs (it is on the ridge, so bytes are what pay), minus the
+per-token mask build (3,072 compares, ≈ 0) — honest **−1.5 to −2.0 ms/token**, both clocks. Risk to price before any spec:
+re-laying Q4_0 along the other axis re-quantises (dequant → quant with new 32-groups along outputs) and the PPL of *that*
+copy is unmeasured; it could be done as Q8_0 input-major (191 MB, kept 46 % = 88 MB ≈ 95.6 → no byte gain) — so the
+re-laid copy must be Q4_0 or Q4_1 and its own PPL must pass. (3) `ssm_in` (the biggest dense block, 200 MB) has no cheap
+input sparsity: 15 % at +0.3 % PPL = 30 MB ≈ 1.2 ms for a third of the whole skip budget — not worth a copy; its bytes can
+only move with a budgeted requant (D-series showed Q3_K/IQ-type dense fails on one text) — closed unless a new idea.
+
+**Next (host, in order).** (a) `dense_colskip.py` with a simulated re-laid Q4_0 copy of `ssm_out` (dequant, re-quant along
+outputs, patch the weights in the loaded model through the same hook) at thr 0 (copy's own PPL) and 0.01, 60 chunks → if the
+copy alone is ≤ +0.1 % and copy + skip ≤ the stock 9.8702, run the full set with en.txt; (b) only then a spec for Tom
+(`GGML_SSMOUT_COLSKIP=<thr>`, input-major copy at first use, axpy kernel, bit-identical when unset; check: PPL at thr 0 ==
+the copy's host number, profiled `MUL_MAT` −1.5 to −2.0 on one ABBA). (c) `down_shexp` at 0.01 (−0.3 % PPL, 24 % of 36 MB
+≈ 0.4 ms) rides the same kernel if (a) works. Status: (a) not started; this section is the owed memo's first half.
