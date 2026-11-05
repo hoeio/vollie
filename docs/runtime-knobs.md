@@ -24,9 +24,9 @@ per op type, sorted by cost: `count per token : µs computing + µs waiting`. A 
 kernel shows as computing time on the thread that took it; pair the line with major-fault counts
 (`/proc/self/stat`) to tell flash reads from arithmetic.
 
-## Round-1 knobs (app 2.2.6+29, research kit `r1`; see the campaign report)
+## Round-1 knobs (defaults as stated per knob)
 
-All off unless set; checked bit-identical at `-ub 1`, `-ub 32`, `-b 512` unless marked otherwise.
+Introduced in app 2.2.6+29 (research kit `r1`; see the campaign report). Off unless marked default on; checked bit-identical at `-ub 1`, `-ub 32`, `-b 512` unless marked otherwise.
 
 | variable | values | effect | status |
 |---|---|---|---|
