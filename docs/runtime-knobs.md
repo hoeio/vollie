@@ -2,7 +2,7 @@
 
 Environment variables read by `ggml_graph_compute` before every graph, so an app can change them
 between generations (`setenv`; `runtime/dart` has setters) without reloading the model. Unset or 0
-means stock behaviour. None changes results; each was checked bit-identical with
+means stock behaviour, except for the knobs marked default on below (`GGML_MMID`, `GGML_Q3K_X4`, `GGML_Q3K_ILP`, `GGML_SSM_INPLACE`, `GGML_CONV_RING`), where `0` switches them off. None changes results; each was checked bit-identical with
 `llama-perplexity` at `-ub 1`, `-ub 32` and `-b 512`.
 
 | variable | values | effect | measured |
@@ -30,17 +30,17 @@ All off unless set; checked bit-identical at `-ub 1`, `-ub 32`, `-b 512` unless 
 
 | variable | values | effect | status |
 |---|---|---|---|
-| `GGML_MMID` | bit mask, **default 3** (`''` = unset) | one-token `MUL_MAT_ID`: **1** no barrier inside the op (each thread quantizes the activation row and builds the expert map itself); **2** 32-row chunks claimed dynamically through per-expert counters that thread 0 resets before the preceding barrier (needs 1) | bit-identical; device pending |
-| `GGML_Q3K_X4` | `1` (**default**), `0` | Q3_K expert rows four at a time sharing the activation loads (`ggml_vec_dot_q3_K_q8_K_x4`) | bit-identical; device pending |
+| `GGML_MMID` | bit mask, **default 3** (`''` = unset) | one-token `MUL_MAT_ID`: **1** no barrier inside the op (each thread quantizes the activation row and builds the expert map itself); **2** 32-row chunks claimed dynamically through per-expert counters that thread 0 resets before the preceding barrier (needs 1) | bit-identical; device: with `GGML_Q3K_X4`, −8.3 %/token (R18) |
+| `GGML_Q3K_X4` | `1` (**default**), `0` | Q3_K expert rows four at a time sharing the activation loads (`ggml_vec_dot_q3_K_q8_K_x4`) | bit-identical; device: with `GGML_MMID=3`, −8.3 %/token (R18) |
 | `GGML_EXPERT_SKIP` | permille | an expert whose normalized routing weight is below this is not computed (its rows are zero); `GGML_EXPERT_SKIP_RENORM=1` rescales the remaining weights | **not bit-exact**; host wikitext-2 60 chunks: stock 9.870, 30 → 9.874, 60 → 9.845, 100 → 9.916, 150 (renorm) → 13.63; only ~1% of routed experts fall under 0.06 |
-| `GGML_HELPER_CPUS` | `0-3`, `0,1,2,3` | cores for the next-layer expert-guess helper thread (re-read per job; `''` = every core) | device pending |
-| `GGML_REPACK_RELEASE` | `1` (at load) | after a tensor is repacked, `MADV_PAGEOUT` (fallback `MADV_COLD`/`DONTNEED`) its memory-mapped source pages so the page cache can hold experts instead | device pending (RssFile after load) |
+| `GGML_HELPER_CPUS` | `0-3`, `0,1,2,3` | cores for the next-layer expert-guess helper thread (re-read per job; `''` = every core) | device R18: 4 threads + helper on an A55 no better than 3 threads; closed |
+| `GGML_REPACK_RELEASE` | `1` (at load) | after a tensor is repacked, `MADV_PAGEOUT` (fallback `MADV_COLD`/`DONTNEED`) its memory-mapped source pages so the page cache can hold experts instead | device R18: inconclusive (noise) |
 | `GGML_BARRIER_BENCH` | n | once per distinct value: n empty barriers before the first op of the next one-token graph; prints `cpu-bench barriers=n threads=t us/barrier=x` | measurement |
 | `GGML_CPU_AB` | `knob:NAME:A:B[,NAME:A:B…]` | generic in-generation A/B over TINY_OP, MMID, Q3K_VEC, Q3K_X4, Q3K_ILP, SSM_INPLACE, CONV_RING, EXPERT_SKIP. **ABBA since round 5** (`knob:` mode only): warm-up tokens, then blocks in A B B A order, one `cpu-prof ab= blk=` line per block; the parser reports B − A ± 1σ over post-warm-up blocks | measurement |
 | `GGML_CPU_AB_WARM` | tokens, default 16 | warm-up tokens before the first ABBA block | measurement |
 | `GGML_CPU_AB_BLOCK` | tokens, default 8 | tokens per ABBA block | measurement |
 | `GGML_SSM_INPLACE` | **default on** since round 5 (empty = unset = on), `0` = off | the one-token `SSM_SCAN` writes its new state straight into the recurrent-cache slot; the state `CPY` node is dropped | bit-identical |
-| `GGML_CONV_RING` | default off | the one-token `SSM_CONV` reads the old conv state and x in place and shifts the state into the cache itself; the 36 `CONCAT` and 36 conv `CPY` ops are dropped (nodes 1911 → 1839); single sequence, K = 1, d_conv = 4 only, else stock path | bit-identical; host −1.2 ms/token on its own ops (noisy) |
+| `GGML_CONV_RING` | **default on** since round 6 (empty = unset = on), `0` = off | the one-token `SSM_CONV` reads the old conv state and x in place and shifts the state into the cache itself; the 36 `CONCAT` and 36 conv `CPY` ops are dropped (nodes 1911 → 1839); single sequence, K = 1, d_conv = 4 only, else stock path | bit-identical; host −1.2 ms/token on its own ops (noisy) |
 | `GGML_EXPERT_LOG` | `1` | lab: prints the routed expert ids per layer per token (`eid …`) | measurement |
 
 `cpu-prof` lines now carry `x4= mmid= skip=<t>/<share>% mmid_thr=<µs per thread inside MUL_MAT_ID>`.

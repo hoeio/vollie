@@ -6,7 +6,7 @@
 
 **Here / not here:** Here: CPU-module patches, build script, on-device research kit and parser, perplexity gate, the full log with raw device JSON (`reports/device/`). Not here: the Flutter app, CI, releases. The evidence is the device JSONs and the pre-registered predictions scored against them.
 
-**Store builds lag.** The store version of the app can be behind the builds measured here, because store review takes time (on 2026-11-04 the store version is 2.1.10, per the owner; its numbers are the last column of the table below). The other numbers come from builds the owner measured: the app's own speed test before 2.2.6+29, research-kit APKs from 2.2.6+29 on (latest: 2.2.10+33, kit r5).
+**Store builds lag.** The store version of the app can be behind the builds measured here, because store review takes time (on 2026-11-04 the store version is 2.1.10, per the owner; its numbers are the last column of the table below). The other numbers come from builds the owner measured: the app's own speed test before 2.2.6+29, research-kit APKs from 2.2.6+29 on (latest: 2.2.11+34, kit r6).
 
 Research and runtime code for running an LLM well on an 8 GB Android phone with llama.cpp. It
 comes from Vollie, an on-device assistant. Its model files are on Hugging Face in
@@ -76,11 +76,11 @@ CPU only, relative or machine-independent only.
 
 Sync-skipping around small ops: tiny ops run on one thread without a sync of all threads (R3, R7;
 barrier latency measured at 0.3 µs in R18 — the waits are imbalance, not sync cost). Page-cache-aware
-expert prefetch of exactly the routed experts, plus next-layer expert guessing a layer early (R12-R13;
+expert prefetch of the routed experts that are not skipped (skip-aware since R26), plus next-layer expert guessing a layer early (R12-R13;
 85 % right on the device). Faster NEON Q3_K dot, dynamic 32-row expert chunks and a 4-row Q3_K kernel
-(R15, R17-R20). SSM state updated in place instead of copied (R24, bit-identical). Router-weight
+(R15, R17-R20). SSM state and conv state updated in place instead of copied (R24-R27, bit-identical). Router-weight
 expert skip: experts with a small normalised router weight are not computed, under the +2 % PPL budget
-(R21-R25; threshold 118 since round 5, 115 before). What was tried and closed (4 compute threads, helper on an A55, n-gram and
+(R21-R27; threshold 118 since round 5, 115 before). What was tried and closed (4 compute threads, helper on an A55, n-gram and
 draft-model speculation, early exit, hot-expert cache) is in the log with numbers. Findings in the
 order they were made: [docs/findings.md](docs/findings.md).
 
