@@ -971,4 +971,4 @@ Verdict pre-registered: round 6 does not move the steady number by more than the
 exact-crumb and page-cache round). What it can settle is (a) whether the madvise lever exists (`eio 0` clean row),
 (b) whether the skip run's bad printed number in R25 was prefetch (the 2×2) or day state, and (c) a third
 device confirmation of the skip rule at −7 to −9. The number for the owner stays: **118 prints 17.5-18.3 on a
-clean day and 12.5-15.5 on an r5-like one; 20 needs §8 (owed by Bonnie, round 7; not yet written).**
+clean day and 12.5-15.5 on an r5-like one; 20 needs §8 (part done: the lm_head half is R28 / reports/memos/head2stage_fix.md; the remaining ≈ 19 ms of dense products still owed).**
