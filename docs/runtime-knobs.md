@@ -41,7 +41,12 @@ Introduced in app 2.2.6+29 (research kit `r1`; see the campaign report). Off unl
 | `GGML_CPU_AB_BLOCK` | tokens, default 8 | tokens per ABBA block | measurement |
 | `GGML_SSM_INPLACE` | **default on** since round 5 (empty = unset = on), `0` = off | the one-token `SSM_SCAN` writes its new state straight into the recurrent-cache slot; the state `CPY` node is dropped | bit-identical |
 | `GGML_CONV_RING` | **default on** since round 6 (empty = unset = on), `0` = off | the one-token `SSM_CONV` reads the old conv state and x in place and shifts the state into the cache itself; the 36 `CONCAT` and 36 conv `CPY` ops are dropped (nodes 1911 → 1839); single sequence, K = 1, d_conv = 4 only, else stock path | bit-identical; host −1.2 ms/token on its own ops (noisy) |
+| `GGML_HEAD2` | rows `M` (0 / unset = off) | two-stage output head: a cheap copy (type `GGML_HEAD2_Q`) screens all rows, the top-`M` rows are recomputed exactly from the stock head; default off, bit-identical when off | **not bit-exact**; host wikitext-2 PPL +0.19 % at `GGML_HEAD2_Q=q2_k`, `M`=8,192 (9.6237 vs 9.6051), argmax-identical; `reports/memos/head2stage_fix.md` |
+| `GGML_HEAD2_Q` | `q2_k` (default) / `q3_k` / `q4_0` | type of the screening copy made at the first head op | only with `GGML_HEAD2`; `reports/memos/head2stage_fix.md` |
+| `GGML_HEAD2_BATCH` | `1` | test only (`llama-perplexity`): the same two-stage head per column at batch > 1, so the full-set gate can be run | only with `GGML_HEAD2`; `reports/memos/head2stage_fix.md` |
 | `GGML_EXPERT_LOG` | `1` | lab: prints the routed expert ids per layer per token (`eid …`) | measurement |
+
+`cpu-prof` lines also carry `head2= head= majflt= minflt=` (head2: ops on the two-stage head; head: head time; majflt / minflt: `getrusage` page faults per profiling window, and per side of an ABBA block in `ab=` lines).
 
 `cpu-prof` lines now carry `x4= mmid= skip=<t>/<share>% mmid_thr=<µs per thread inside MUL_MAT_ID>`.
 
