@@ -457,3 +457,24 @@ band scorable; the ABBA items are, and side A carried 26 majflt/token so the fau
   full-set PPL of 117 + Q4_0/2048; (3) the requant off the TTFT path if anything survives. Closed: head2 Q2_K/Q3_K at any M,
   the 116 + Q2_K/16384 combo, the s = 2-3 assumption, the eio-1 prefetch question.
 
+## 15. Round 8 answers (R31, 2026-11-06; details `03_final.md` "R31 — round-8 device results", JSON `reports/device/r8_2026-11-06.json`, pre-registration `05_compute_less.md` §7.10 + amendment)
+
+First clean day since r5: 2,112 / 2,035 MHz at every sample, 3-11 majflt/token on the ABBA sides. Every pre-registered item hit.
+
+- **The two-stage head passes on the device.** `HEAD2:0:2048` with a repacked Q4_0 screen on skip 118: `head` **5.62 → 3.92 = −1.70 ± 0.13 ms**
+  (pass line ≤ −1.2; falsifier > −0.9 did not fire), `MUL_MAT` −1.65 ± 0.41, fault-matched (majflt 2.8 → 3.9). The screen reads 89.3 MB in 3.92 ms =
+  22.8 GB/s, the same byte rate as the stock head (126.4 MB / 5.62 = 22.5): the `sdot` 4x4 gemv is at the ridge where the Q2_K kernel (R29) was not.
+  Bonnie's band B held; Clyde's pre-registered −0.5 central was wrong. Requant + repack 0.23-0.34 s once per session.
+- **The budget-legal pair wins on both axes.** 118 → 117 + q4_0/2048 ABBA: `head` −1.60 ± 0.14, `MUL_MAT` −1.73 ± 0.93. PPL **9.7886 (+1.91 %)** vs
+  118 alone 9.7952 — lower PPL and faster. Always-on steady **53.0 ms = 18.9 tok/s** (best window 52.4 = 19.1), printed **16.79**; skip 118 same day
+  55.1 / 14.40 (R25 55.4); control 62.0 / 14.14; official 32: combo **16.37**, 118 14.48. **Recommended as the new served default** (owner's call for the
+  store; the r9 kit carries it). Risks: +87 MB anon; on thrashing days the Q6_K rows go cold (R29).
+- **Skip 118 fifth confirmation, clean day:** token −7.90 ± 2.12, `MUL_MAT_ID` −8.28 ± 1.14 (R25 −7.6/−8.3), coeff 0.93; majflt B/A 0.876, minflt 0.790
+  (the host-derived band holds on a clean day; r7's 0.556 was the cold tail).
+- **Vanilla same day:** 8.50 official, 10.66 printed / 80.2 steady → ratio 1.33 / 1.29 (just under 1.35; stock pays no fault cost on a clean day; exact
+  stack −18 ms/token).
+- **Where 20 stands:** 52.4-53.0 ms steady at 2,112 = 18.9-19.1 profile, printed 16.8; gap to 20 printed ≈ 2.4-3 ms/token plus a fault-free run.
+  **Round 9 (not scoped):** Bonnie ranks the last 3 ms with device-priced kernels — the head further (M 1,024; a byte-rate 2-bit gemv if ggml has one for
+  dotprod), whole-tensor repacked lower-bit copies of `shexp` (101.8 MB) / `ssm_in` (200.6 MB) under the remaining 0.09 % of budget, waits 3-5 ms. Tom
+  after Bonnie. Closed: "requantised screens lose on the device" (R29) → corrected to "non-byte-rate screens lose"; 118 as the served threshold.
+
