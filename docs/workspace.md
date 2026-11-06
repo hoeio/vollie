@@ -14,4 +14,4 @@ The tools and the paths inside `reports/` refer to this layout (none of it is in
 
 In the reports, `vollie/lib/...`, `vollie/tool/...` and `vollie/third_party/llamadart` are files of
 the Vollie app, which is not in this repository; their serving parts are in `runtime/dart`,
-`android/` and `patches/llamadart`. `lab/tiny-op.patch` is `patches/llama.cpp/0001-cpu-runtime.patch`.
+`android/` and `patches/llamadart`. `lab/tiny-op.patch` is `patches/llama.cpp/0001-cpu-runtime.patch`, `lab/granite-rollback.patch` is `0002-granite-rollback.patch`, `lab/sampler-bypass.patch` is `0003-sampler-bypass.patch`.

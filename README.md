@@ -113,7 +113,7 @@ row in `reports/results.csv` and one entry in the R-log, appended, never rewritt
 ```sh
 git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
 git checkout $(cat ../vollie/patches/llama.cpp/BASE)
-git apply ../vollie/patches/llama.cpp/0001-cpu-runtime.patch
+for p in 0001-cpu-runtime 0002-granite-rollback 0003-sampler-bypass; do git apply ../vollie/patches/llama.cpp/$p.patch; done
 ../vollie/android/build_cpu.sh . out/        # libggml-cpu-android_armv8.2_2.so
 ```
 
