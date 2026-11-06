@@ -54,7 +54,7 @@ draft back — draft-model speculation fails on the first rejection (round 1, R1
 
 ## llama.cpp — `llama.cpp/0003-sampler-bypass.patch` (base: `llama.cpp/BASE`)
 
-Exact fast path for the repetition-penalty sampler when candidates are the full vocabulary in order; enabled per generation by `VOLLIE_SAMPLER_BYPASS=1`; greedy text identical. One hunk in `src/llama-sampler.cpp`; like `0002` it lives in `libllama.so`. Apply order: `0001`, `0002`, `0003` (they touch different files).
+Exact fast path for the repetition-penalty sampler when candidates are the full vocabulary in order; enabled per generation by `VOLLIE_SAMPLER_BYPASS=1`; greedy text identical. Two hunks in `src/llama-sampler.cpp`; like `0002` it lives in `libllama.so`. Apply order: `0001`, `0002`, `0003` (they touch different files).
 
 ## llamadart — `llamadart/0001-setthreads-extra-buffers.patch` (base: `llamadart/BASE`)
 
