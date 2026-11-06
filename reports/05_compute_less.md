@@ -1211,3 +1211,82 @@ numerics changes (copy requant + fp16 sums). Order before any spec: model-free h
 with the falsifier "`head` B − A > −0.7 at 1,555 (> −0.9 at 2,112), fault-matched → closed"; (ii) full-set gate of 117 + (and
 116 +, 118 +); (iii) the combo ABBA only if (i) passes (`head` ≤ −1.2). Serving caveat: side B reads 8.7 % of the Q6_K tensor
 per token and the rest goes cold on thrashing days (r7 majflt B/A 3.25-3.97) — the lever is clean-day-only as built.
+
+## 9. Round 10 — the expert kernel itself (Bonnie, 2026-11-06 evening; memo `reports/memos/expert_kernel.md`; raw `lab/logs/r33/q3k_kernel/bonnie_disasm/`)
+
+**Question.** The owner ruled kernel work in-rule. `MUL_MAT_ID` is 19.3 ms at 116-120 µs/slot against a 44.5 µs byte floor (*device*, r8 w5-6, 160-164
+slots). Is the 2.5 × instruction issue, memory, or the scale handling — and what slot time can a dotprod-only Q3_K gemv on the A78 reach?
+
+**Method (host, machine-independent).** Disassembled the compiled `ggml_vec_dot_q3_K_q8_K_x4` (ILP path, the served default) in `build-888`
+(`armv8.2-a+dotprod+fp16`, Apple clang) and in the r9 APK's `libggml-cpu-android_armv8.2_2.so` (NDK clang; Tom's dump) and counted the
+instruction mix per 256-weight row-block; same for `ggml_gemv_q4_0_4x4_q8_0` (R31's byte-rate head kernel). Cost model = NEON ops / 2 ASIMD pipes
+(Cortex-A78) × 3,072 row-blocks per thread per slot at 2,112 MHz.
+
+**Numbers.** Per row-block, both builds: **183-185 instructions, 140-143 NEON-ALU** (3-bit unpack 74 = 53 %, `sdot` 16 = 11 %, per-16 scale tree
+`addp`/`mul`/`mla`/`sshll` 24 = 17 %, compiler `movi` zeroing 16 = 11 %, scale unpack 7, float 3), 15 loads, 3 stores. NEON-issue floor **70-71.5
+cycles**; measured **80-82** (116-120 µs/slot) → **87-89 % of the issue floor**; loads 7.5 cycles, front end 46 — neither binds; the weight stream
+runs at 8.7 GB/s (38 % of the byte rate); the Q8_K activation (1.75 KB) sits in L1. Q4_0 4x4 gemv: 33 instructions / 128 MACs, 22 NEON = 0.17
+ops/MAC vs Q3_K 0.55 → its compute (32 µs at Q4_0 bytes) sits under its 58 µs byte floor, which is why R31 saw the byte rate.
+
+**Verdict.** The 2.5 × is **instruction issue** (2.3 × of the 2.6) plus 0.3 × stalls; not the activation re-read, not the `hmask` stream, and the scale
+handling is 17 % of it. §6.2's "120 ops, 94 % of floor" is corrected to 140 / 88 %: the compiler adds 16 `movi` and 6 in-loop widens.
+
+**Floors per slot** (*estimated*): bytes **42-45 µs**; `sdot` 11.6; in-place unpack with dotprod only (`and`+`bic`+`sub`+1.5 shifts per 16 weights, tree
+→ `mla` by lane) **≈ 108-110 NEON/row-block → 78-80 ideal, 87-90 at the measured issue efficiency**. **A Q3_K kernel reading the served bytes cannot
+reach the byte rate on a 2-pipe dotprod core** (every alternative extraction costed in the memo is ≥ 6 ops / 16 w). Target **85-95 µs/slot** →
+**−3.4 to −5.1 ms/token** → steady 47.9-49.6 → printed fault-free **19.7-20.4** (20.0 needs slot ≤ 91 µs). The cross is inside the band but not
+safe; (c′) + fused gate/up (−0.4..−0.7) gives 19.9-20.7.
+
+**Ranked options.** (1) **in-register rewrite** of the x4 kernel (no per-`sdot` `movi`, scales widened once per block, `bic`+`shl` h-term, `addp` tree
+→ `mla` by lane, no spills; pinned codegen): −20..−25 % per row, bytes unchanged, **bit-identical**, `GGML_Q3K_KERN=1` at `ggml-cpu.c:1802`.
+(2) fused gate+up(+GLU) per expert, −0.4..−0.7 ms/token, exact. (3) **exact 4-bit 4x4 container** (Q3_K values as nibbles, Q4_0 sign trick, per-16
+int8 scales, `sshr #4` per block): ≈ 40 NEON/row-block → 28 µs compute under a 59 µs byte floor → **62-68 µs/slot = the byte rate, −45 %**, exact,
++33 % bytes — needs the copy: all experts 3.45 GB (R9 OOM), a 16/layer LRU (862 MB, hit 0.64-0.78) nets 85-95 = no better than (1) on this
+phone; **the byte-rate expert kernel for ≥ 12 GB phones.** (4) Tom's per-slice repack uncached: ≥ 125 µs, slower; in-register interleave 0 ± 5 %.
+(5) int8 reference: host diagnostic (≈ 3-4 × per row cache-hot), device byte-bound at 2.7 MB/slot. (6) more ILP on the current kernel: −0..−10 %.
+
+**Pre-registration draft (Clyde freezes; ABBA 88/side on 117 + head2; all *estimated*).** (i) `Q3K_KERN:0:1`: `MUL_MAT_ID` compute B − A at 2,112
+**−3.4 to −5.1 ms** (−21..−31 µs/slot via `kavg × 40`), central −4.2; **pass ≤ −3.0; falsified > −2.0** (in-place Q3_K closed, only (3) remains);
+at 1,555 band −4.2..−6.9, pass ≤ −3.7, falsified > −2.5; wait / `MUL_MAT` 0 ± 0.3; fault-matched or unscorable; "byte rate reached" = slot ≤ 52 µs
+(not expected). (ii) `MMID_FUSE:0:1` if built: wait −0.2..−0.4, `GLU` −0.3..−0.4, token −0.4..−0.7, falsified > 0. (iii) always-on default + (i)
+[+ (ii)]: steady **47.9-49.6** [47.5-49.2] at 2,112 on ≤ 10 majflt/token, printed 19.7-20.4 [19.9-20.7], falsified > 50.5. Identity before the
+build: 10⁵ random row-quads bitwise equal old vs new (K 512 and 1,536); PPL chunks 1-3 at −ub 1 / −ub 32 / −b 512 equal to the r9 default to all
+printed digits; greedy 32 identical; the device build's inner loop shows ≤ 2 `movi` and no `str q` per half-loop. Slots for Tom's host numbers:
+`[T1]` ns/row-block old vs rewrite (expected ratio 0.75-0.80 on the 4-pipe M4), `[T2]` int8 reference ratio, `[T3]` per-slice repack µs/slot.
+
+### 9.9 Round-10 pre-registration (frozen by Clyde 2026-11-06 night, before any build; inputs: Bonnie §9 / `reports/memos/expert_kernel.md`, Tom `lab/logs/r33/q3k_kernel/README.md`; all *estimated* unless labelled)
+
+**What the audit settled (host disassembly of the served kernel, device-asm identical):** the phone's expert path already is a 4-row `sdot` kernel
+(`vec_dot_q3_K_q8_K_x4`, ILP); per 256-weight row-block it issues 140-143 NEON ops (3-bit unpack 53 %, scale tree 17 %, compiler `movi` zeroing 11 %,
+`sdot` 11 %), and at 2 NEON pipes that is 87-89 % of the issue floor at the measured 116-120 µs/slot (*device*). Loads, front end and bytes (8.7 GB/s,
+38 % of the byte rate) are not binding. **A Q3_K kernel reading the served bytes cannot reach the byte rate on a 2-pipe dotprod core** (every 3-bit
+extraction costs ≥ 4.5 ops/16 weights against the ≈ 3.8 slots the byte rate leaves). R33's "−6 to −8 ms at the byte rate" is withdrawn; the honest
+bytes-unchanged prize is the issue count: Tom's best bit-identical prototype (a3) 471 vs 562 NEON ops per 4-row block (−16 %), Bonnie's codegen
+target 108-115 per row-block (−20..−25 %).
+
+Items (ABBA 88 tokens/side on the served default 117 + head2 + sampler fast path; every number with its `mhz_blocks`):
+- **(i) `Q3K_KERN:0:1`** — the in-register x4 rewrite (Tom's (a3): 4×4 `trn` interleave, `sdot` by lane, accumulator seeded at −4·bsum, no `addp` tree;
+  plus Bonnie's codegen items: no per-`sdot` `movi`, scales widened once per block outside the row loop, `mla` by lane, no accumulator spills; device inner
+  loop checked for ≤ 2 `movi` and no `str q` per half-loop). **Bit-identical** (integer reorder only, float tail unchanged): 10⁵ random row-quads bitwise
+  equal at K 512 and 1,536, PPL chunks 1-3 at −ub 1 / −ub 32 / −b 512 equal to the r9 default to all digits, greedy 32 identical on the kit prompts.
+  `MUL_MAT_ID` compute B − A at 2,112: **−2.5 to −5.1 ms** (−15 to −31 µs/slot via k̄ × 40; Tom central −2.2, Bonnie −4.2, **Clyde −3.5**); **pass ≤ −3.0**
+  (the count model delivers); −1.5..−3.0 reported (codegen lost part of it, iterate); **falsified > −1.5** (the kernel is not issue-bound as modelled →
+  in-place Q3_K closed). Wait / `MUL_MAT` / `head` 0 ± 0.3; k̄ / share / `adv` unchanged; fault-matched or unscorable. At 1,555: band ×1.24-1.36.
+- **(ii) `MMID_FUSE:0:1`** (gate + up (+ GLU) of the same expert in one pass sharing the activation; exact) — only if Tom builds it in ≤ 1 day: token
+  −0.4 to −0.7, `GLU` −0.3..−0.4, wait −0.2..−0.4; falsified > 0.
+- **(iii) device kernel microbench inside the kit** (`cpu-bench` lines, 1 thread, cache-hot expert slices, K 1,536 and 512, ns/row): old x4, new (i),
+  int8 pre-expanded reference (Tom's (b), the "unpack-free" floor), Q4_0x4 gemv (the byte-rate reference), and **a scalar-assisted unpack prototype
+  (Tom's idea: part of the 3-bit extraction on the A78's four integer units, bytes handed to NEON through L1)**. Pre-registered expectations: old/Q4_0x4
+  ≈ 2.9-3.2 (host 2.9-3.0); new/old 0.75-0.85; int8/old 0.40-0.45 (compute-bound reference); scalar-assisted/old **< 0.75 would open a round 11 below the
+  NEON floor**, ≥ 0.85 closes it. These are cost measurements, not levers; they price the 4-bit container (Bonnie's option 3, byte-rate but +33 % bytes,
+  3.45 GB anon → only for ≥ 12 GB phones or a 16/layer LRU) without building it.
+- Always-on: default + (i) [+ (ii)] story 200 and official 32 with the day's default control: steady **48.0-50.5 [47.5-50.0]** at 2,112 on ≤ 10
+  majflt/token, printed fault-free **19.5-20.3**; falsified > 51.0. **20 printed is a coin flip on the better half of the band on a clean day; it is not
+  pre-registered as reached.**
+
+**Where Clyde stands.** I expect (i) to pass (both the host prototype and the disassembly say the same thing from two directions; central −3.5); I expect
+the always-on to land 48.5-49.5 at 2,112 and printed 19.6-20.0 on a clean day — i.e. 20 touched or just missed, decided by the day's faults more than by
+the kernel. I expect the scalar-assisted microbench to come back ≥ 0.85 (the integer units cannot feed NEON through L1 faster than NEON unpacks) — Tom
+disagrees and that is why it is measured. Generalisation claim if (i) passes: a −20 % Q3_K dot for every 2-pipe dotprod arm64 core (A76-A78, A710),
+exact, no memory; the byte-rate expert kernel for this model class exists only as a 4-bit container on phones with ≥ 12 GB.
+
