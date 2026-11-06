@@ -1054,7 +1054,7 @@ reported only, never pre-registered as the pair), en.txt alongside, greedy-32 id
 Bonnie's bands for (i), `head` B − A: **B (screen at the byte rate, s ≤ 3.9): −1.4 to −2.3 at 1,555 / −1.6 to −2.3 at 2,112; A (s = 4.9-5.9 like the
 Q2_K kernels): −0.7 to +1.1 at 1,555 / −0.9 to −1.7 at 2,112.** Passes = `head` ≤ −1.2 at the run's clock. **Falsifier (Bonnie's, adopted verbatim):**
 "`head` B − A > −0.7 ms at 1,555 MHz (or > −0.9 at 2,112), fault-matched — the repacked Q4_0 screen is compute-bound on the A78 like the Q2_K one
-(per-row ratio ≥ 4.9), so no runtime-requantised screen of any type beats the stock head here." Requant + repack ≤ 2 s on the device (falsified above).
+(per-row ratio ≥ 4.9), so no runtime-requantised screen of any type beats the stock head here." Second, separate line: requant + repack of the copy **≤ 2 s on the device** (Bonnie est. 0.6-0.9 s); > 2 s falsifies the "cheap copy" assumption, not the lever. Scoring gaps (from the memo): `head` in −0.7..−1.2 = reported, not served, no combo; side A > 10 majflt/token on every block = unscorable, say so.
 
 **Where Clyde disagrees (written down before the run).** Bonnie expects B for the screen and A for the gather, central ≈ −1.5. I expect **A**: R29 measured
 s = 4.9-5.9 on the only two kernels we have device numbers for, and the M4's 1.17 for the repacked screen is ±0.07 from the stock A-side head in Tom's own
@@ -1062,6 +1062,8 @@ repack ABBA, i.e. the host cannot tell the repacked screen from the stock head e
 lesson generalises: a requantised screen pays only where the screen kernel is at least 2 × cheaper per MAC than the stock one *on the device*. Pre-registered
 either way: round 8 does not reach 20 (best case 18.3-19.2 clean); the combo (iii) is worth −1.0 to −2.2 under B and nothing under A. `ssm_out` re-laid copy:
 Bonnie withdrew −1.5..−2.0 (fp32 axpy +2 to +5, dead; fp16 + LUT unbuilt, on paper only) — not in round 8; its order is microbench → 565-chunk simulation → spec.
+
+**Amendment after Tom's host build (R30, same day, before the phone run).** Host select + 2,048 exact rows measured **0.20 ms**, not 0.12 → both device bands move up by ≈ +0.3 to +0.5 at 1,555 (A −0.4 to +1.6, B −1.1 to −1.8); the falsifier (−0.7) and pass (−1.2) lines stay as frozen. Host op 0.86 vs stock 1.73 (−0.87); PPL gate passed on the full set: 117 + q4_0r/2048 **9.7886**, 116 + 9.7800, 118 + 9.7969 (reported only). Requant + repack host 45 ms → device ≈ 0.2-0.3 s *estimated*. The repacked screen is not bit-identical to the plain Q4_0 screen (accumulation order, max 1.6e-7 relative), chunk-1 PPL equal to 4 digits — the gate above is the served-path number.
 
 ## 8. The dense `MUL_MAT` bytes: where the other ≈ 19 ms is and what can skip it (Bonnie; in progress, 2026-11-05; all *host* unless labelled)
 
