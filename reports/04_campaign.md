@@ -478,3 +478,23 @@ First clean day since r5: 2,112 / 2,035 MHz at every sample, 3-11 majflt/token o
   dotprod), whole-tensor repacked lower-bit copies of `shexp` (101.8 MB) / `ssm_in` (200.6 MB) under the remaining 0.09 % of budget, waits 3-5 ms. Tom
   after Bonnie. Closed: "requantised screens lose on the device" (R29) → corrected to "non-byte-rate screens lose"; 118 as the served threshold.
 
+## 16. Round 9 answers (R33, 2026-11-06; details `03_final.md` "R33 — round-9 device results", JSON `reports/device/r9_2026-11-06.json`, pre-registration `05_compute_less.md` §7.11 + amendment). **End of the +2 % campaign.**
+
+A thrashing afternoon again (file cache 30-1,247 MB at run start, 13-47 majflt/token on the ABBA sides, always-on runs capped at 1,555 MHz);
+the ABBA items ran at 2,112 and are scored, the absolutes are not.
+
+- **Chunking is closed.** `MM_CHUNK:64:16` (exact): `MUL_MAT` wait **+0.70 ± 0.27**, compute **+0.74 ± 0.47**, token +4.2 ± 4.4 — both falsifiers
+  fired. The dense wait is barrier count and arrival skew, not chunk-tail imbalance.
+- **The sampler fast path is the exact win of the round.** Outside-graph cost **1.90 → 1.13 ms/token** (llamadart sampling 0.96 → 0.20), greedy
+  text identical in all four runs; ≈ +1.4 % printed at any steady. `DENSE_WILLNEED` did not shorten window 1 on a thrashing day (+6.6 both ways).
+- **The 4-layer Q4_0 expert copy is dead on both axes:** full-set gate 9.8048 (R32) and a device Δ of −0.26 ± 4.0 on a run whose A side thrashed on
+  every block (unscorable by the pre-registered rule). Copy 340 MB, requant 0.9-1.2 s.
+- Skip 118 control, thrashing day: −42 ± 20 ms (r7 pattern), fault ratios 0.44-0.53 (cold tail); `adv` 0.701 for the sixth time.
+- **Where 20 stands — the result for the +2 % budget:** served **117 + head2 q4_0/2048 + sampler fast path** (PPL 9.7886); clean-day steady
+  52.4-53.0 ms at 2,112 (R31) = **18.9-19.1 tok/s profile**, fault-free printed ≈ **18.5-18.7** (*estimated*), measured printed 16.8 (R31, 26 majflt/token)
+  and 12.6 (R33, 1,555 MHz thrashing). **20 printed is not reached inside +2 %**, as pre-registered in §7.11: needs steady ≤ 48.9, and nothing exact or
+  budget-legal is left — dense bytes at the byte rate everywhere, the expert kernel's byte excess only purchasable with PPL the budget no longer has,
+  chunking closed, remaining waits = barrier count. Vanilla same phone/file 9.0-10.7 printed over the last three run days vs Vollie 11.3-16.8.
+- **Outside the rules, for the owner (not proposed):** a byte-rate Q3_K expert gemv (−6 to −8 ms, kernel work, generalises); a budget ≈ +2.6 % for the
+  expert copy; a served file with Q4_0 experts. Each is a different campaign.
+
