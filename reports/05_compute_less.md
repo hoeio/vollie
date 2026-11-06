@@ -1065,6 +1065,41 @@ Bonnie withdrew −1.5..−2.0 (fp32 axpy +2 to +5, dead; fp16 + LUT unbuilt, on
 
 **Amendment after Tom's host build (R30, same day, before the phone run).** Host select + 2,048 exact rows measured **0.20 ms**, not 0.12 → both device bands move up by ≈ +0.3 to +0.5 at 1,555 (A −0.4 to +1.6, B −1.1 to −1.8); the falsifier (−0.7) and pass (−1.2) lines stay as frozen. Host op 0.86 vs stock 1.73 (−0.87); PPL gate passed on the full set: 117 + q4_0r/2048 **9.7886**, 116 + 9.7800, 118 + 9.7969 (reported only). Requant + repack host 45 ms → device ≈ 0.2-0.3 s *estimated*. The repacked screen is not bit-identical to the plain Q4_0 screen (accumulation order, max 1.6e-7 relative), chunk-1 PPL equal to 4 digits — the gate above is the served-path number.
 
+### 7.11 Round-9 pre-registration (frozen by Clyde 2026-11-06 afternoon, before any build; Bonnie's memo `reports/memos/last_3ms.md`; all *estimated* unless labelled)
+
+**The gap, corrected (Bonnie, from the r8 JSON, *device*).** Outside-graph cost = decode wall − Σ windows − 7 × steady = **1.63 ms/token** (sampler chain + non-graph
+decode + Dart stream). 20 printed needs steady ≤ 48.4 at that overhead, i.e. ≈ 4.6 ms below today's 53.0 plus a fault-free run; R31's "2.4-3 ms" was the
+gap to 20 *profile*. Steady breakdown (w5-6): `MUL_MAT` 22.0 + 1.8 wait (525 MB at 23.9 GB/s = byte rate), `MUL_MAT_ID` 19.3 + 0.75 (164 slots × 116 µs; the
+Q4_0x4 byte floor is 58 µs → the Q3_K expert kernel is 2.5 × above bytes), `SSM_SCAN` 2.7, small ops 3.4 + 0.5, dispatch 1.6-1.7. Kernel inventory for dotprod
+arm64: repacked Q4_0 / IQ4_NL / MXFP4 / Q8_0 / Q4_K-Q6_K / Q1_0; no Q2_K or Q3_K repack → every 2-bit screen is dead by PPL (Q2_0 needs M ≫ 4,096), all dense
+tensors but the head and the F32 router are already Q4_0 → whole-tensor dense copies are dead. **Pre-registered verdict: 20 printed is not reachable inside +2 %
+by this arithmetic (exact rows −1.5 to −3.0 → 18.8-19.4 fault-free; + the 4-layer expert copy 19.1-19.7); the all-layer Q4_0 expert copy measured +0.56 % on the
+full set (9.6590), so n = 8 fails on 117.** Round 9 measures the three items that are exact or gate-able, and that is the result either way.
+
+Items (ABBA 88 tokens/side, on the new default 117 + head2 q4_0/2048; every number with its `mhz_blocks`):
+- **(i) `MM_CHUNK:64:16`** (rows per chunk at nr1 == 1 in `mul_mat` and `mul_mat_id`; exact — one dst row is one full-K `vec_dot` on one thread). `MUL_MAT` wait
+  1.7-1.9 → Δ **−0.5 to −1.1**; `MUL_MAT_ID` wait −0.1 to −0.3; `MUL_MAT` compute 0 ± 0.3; `head` 0 ± 0.1; token −0.4 to −1.4. **Passes ≤ −0.5 on the `MUL_MAT`
+  wait column; falsified > −0.2** (the wait is not chunk-tail → chunking closed) **or `MUL_MAT` compute > +0.4** (prefetcher penalty → try 32). Identity before the
+  build: PPL chunks 1-3 and greedy 32 equal to the default to the last digit (host).
+- **(ii) `EXPERT_Q4_LAYERS:0:4`** (static repacked Q4_0x4 copy of the experts of 4 layers, ≈ 351 MB anon, made before `blk=0`; numerics, budgeted — R31's kernel
+  class applied to the one op above the byte rate). `MUL_MAT_ID` compute Δ **−0.66 to −0.98** (16.4 slots × 40-60 µs); wait 0 ± 0.3; `MUL_MAT` 0 ± 0.3; k̄ / share /
+  `adv` unchanged; requant line ≤ 1.5 s (falsified > 3 s); fault-matched B majflt ≤ A + 10, ratio not quoted with swapfree 0. **Passes ≤ −0.6; falsified > −0.4**
+  (the small-op gemv is not in the head's class → the expert-copy family is closed on this device). **Gate before the kit, full set:** 117 + head2 + 4-layer copy
+  ≤ 9.797 (expected 9.7886 × 1.00056 ≈ 9.794, margin 0.003); > 9.797 → n = 2 (≈ 9.791) or dropped. Which 4 layers: Tom picks by the R25 per-layer slot counts
+  (most-routed), stated in the card.
+- **(iii) printed overhead** (exact; llamadart/Dart): sampler bypass at temp ≤ 0 (keep penalties, drop top-k / top-p / temp — same argmax, greedy text identical)
+  + `GGML_DENSE_WILLNEED=1` once per prompt (562 MB dense advised at load). Story 200: outside-graph per token 1.63 → **≤ 1.2** (Δ −0.3 to −0.6); `MUL_MAT` window-1
+  excess ≤ +1.0 over steady (r8 +2.2). **Falsified if the gap stays > 1.4** (the overhead is the stream / isolate, not sampling).
+- Always-on: 117 + head2 + (i) + (iii) story 200 and official 32 with the day's 117 + head2 control; steady **51.5-52.5** at 2,112 on an r8-like day (hit band
+  51.0-53.0), printed fault-free 18.6-19.0; falsified > 53.5 on a run with ≤ 10 majflt/token.
+
+**Where Clyde stands.** I take all three. On (i) I expect the pass (R18 named the waits as imbalance; 64-row chunks over 265 ops with 3 threads is exactly a tail
+problem; central −0.8). On (ii) I expect the pass on the kernel line too (R31 proved the class) but I expect the **gate** to be the problem: the n = 4 estimate
+assumes the +0.56 % is linear in layers, and the most-routed layers may carry more than their share of it — central 9.795, a coin flip against 9.797; if it fails
+on 117 the item runs on 116 + head2 (9.7800) as a research row, not a served candidate. On (iii) agreed. Pre-registered regardless: **round 9 ends with 20 printed
+not reached inside +2 %**, best fault-free ≈ 19.1-19.7, and that is reported as the campaign's result for this budget; what lies beyond needs a budget the owner
+has declined to move (R28) or a different expert kernel (Q3_K at the byte rate — kernel work, out of the campaign's scope unless the owner opens it).
+
 ## 8. The dense `MUL_MAT` bytes: where the other ≈ 19 ms is and what can skip it (Bonnie; in progress, 2026-11-05; all *host* unless labelled)
 
 **Inventory (`lab/logs/r27/dense/inventory.txt`, exact bytes of the served file).** Read every token: **562.5 MB** =
