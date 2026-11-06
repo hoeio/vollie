@@ -426,7 +426,7 @@ index cfbbf6617..dba0e085f 100644
  static inline svuint32_t ggml_decode_q4scales_and_mins_for_mmla(const uint32_t * vx_scales) {
      const svbool_t pg_all   = svptrue_pat_b32(SV_VL4);
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index ab82e3d6c..b00e0b186 100644
+index ab82e3d6c..ba49efbdb 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -197,6 +197,8 @@ typedef void * thread_ret_t;
@@ -438,7 +438,7 @@ index ab82e3d6c..b00e0b186 100644
  #include <unistd.h>
  
  #endif
-@@ -1252,6 +1254,227 @@ static void ggml_compute_forward_mul_mat_one_chunk(
+@@ -1252,6 +1254,256 @@ static void ggml_compute_forward_mul_mat_one_chunk(
      }
  }
  
@@ -454,6 +454,9 @@ index ab82e3d6c..b00e0b186 100644
 +// the head or the type changes), into anonymous memory; the served file is untouched. Cost for Granite-4.0-H-Tiny's
 +// 100,352 x 1,536 Q6_K head (126.4 MB): Q2_K 50.6 MB, Q3_K 66.2 MB, Q4_0 86.7 MB resident; the load time is printed
 +// once under GGML_CPU_PROF ("cpu-prof head2 requant ...").
++// Vollie r8: q4_0 also repacks the copy into the 4-row interleave the stock Q4_0 weights get with extra buffers (A78:
++// 4x4 dotprod gemv, M4: 4x8 i8mm; repack.cpp ggml_cpu_head2_q4_0_*); same size, layout only. q4_0_plain (test only)
++// keeps r7's row-major Q4_0 copy with the vec_dot screen, for the repacked-vs-plain logits check.
 +// GGML_HEAD2_BATCH=1 (test only, for llama-perplexity): the same per column at ne11 > 1, so the full-set gate can be
 +// run at -b 512; each column gets exactly what a one-token graph would compute from that hidden state.
 +static bool    ggml_cpu_prof_on; // Vollie: defined with its knob below
@@ -464,6 +467,11 @@ index ab82e3d6c..b00e0b186 100644
 +static const struct ggml_tensor * ggml_cpu_head2_plain = NULL; // this graph's token_embd (GET_ROWS src0), see below
 +static const void * ggml_cpu_head2_key = NULL; // the data the copy was made from
 +static enum ggml_type ggml_cpu_head2_qtype = GGML_TYPE_COUNT;
++static bool    ggml_cpu_head2_rp = false; // GGML_HEAD2_Q=q4_0: repack the copy (when this CPU has the 4-row gemv)
++static int     ggml_cpu_head2_il = 0;     // the copy's interleave: 0 = plain rows, 4 / 8 = block_q4_0x4 groups
++int  ggml_cpu_head2_q4_0_il(void);                                                              // repack.cpp
++void ggml_cpu_head2_q4_0_pack4(void * dst, const void * src, int64_t nb, int il);                 // repack.cpp
++void ggml_cpu_head2_q4_0_gemv(int il, int n, float * s, const void * vx, const void * vy, int nc); // repack.cpp
 +static char *  ggml_cpu_head2_q   = NULL; // the copy, rows of ggml_row_size(type, ne00)
 +static char *  ggml_cpu_head2_act = NULL; // per column: Q8 activations for src0's vec_dot, then the screen's if different
 +static size_t  ggml_cpu_head2_act_cap = 0;
@@ -516,7 +524,8 @@ index ab82e3d6c..b00e0b186 100644
 +    }
 +    const int ith = params->ith, nth = params->nth;
 +    const size_t qrow = ggml_row_size(st, ne00);
-+    if (ggml_cpu_head2_key != src0->data || ggml_cpu_head2_qtype != st) {
++    const int il = st == GGML_TYPE_Q4_0 && ggml_cpu_head2_rp && nr % 4 == 0 && ne00 % 8 == 0 ? ggml_cpu_head2_q4_0_il() : 0;
++    if (ggml_cpu_head2_key != src0->data || ggml_cpu_head2_qtype != st || ggml_cpu_head2_il != il) {
 +        // the copy: rows split across the threads, dequantised (to_float) and requantised without an imatrix
 +        const int64_t t0 = ggml_time_us();
 +        if (ith == 0) {
@@ -528,18 +537,32 @@ index ab82e3d6c..b00e0b186 100644
 +        float * f = malloc(ne00*sizeof(float));
 +        GGML_ASSERT(f);
 +        const ggml_to_float_t to_float = ggml_get_type_traits(et)->to_float;
-+        for (int64_t r = ith*nr/nth; r < (ith + 1)*nr/nth; r++) {
-+            to_float((const char *) src0->data + r*src0->nb[1], f, ne00);
-+            ggml_quantize_chunk(st, f, ggml_cpu_head2_q + r*qrow, 0, 1, ne00, NULL);
++        if (il) { // 4 rows at a time: quantise into a 4-row scratch, interleave into the copy (whole groups per thread)
++            char * t4 = malloc(4*qrow);
++            GGML_ASSERT(t4);
++            for (int64_t g = ith*(nr/4)/nth; g < (ith + 1)*(nr/4)/nth; g++) {
++                for (int i = 0; i < 4; i++) {
++                    to_float((const char *) src0->data + (4*g + i)*src0->nb[1], f, ne00);
++                    ggml_quantize_chunk(st, f, t4 + i*qrow, 0, 1, ne00, NULL);
++                }
++                ggml_cpu_head2_q4_0_pack4(ggml_cpu_head2_q + 4*g*qrow, t4, ne00/ggml_blck_size(st), il);
++            }
++            free(t4);
++        } else {
++            for (int64_t r = ith*nr/nth; r < (ith + 1)*nr/nth; r++) {
++                to_float((const char *) src0->data + r*src0->nb[1], f, ne00);
++                ggml_quantize_chunk(st, f, ggml_cpu_head2_q + r*qrow, 0, 1, ne00, NULL);
++            }
 +        }
 +        free(f);
 +        ggml_barrier(params->threadpool);
 +        if (ith == 0) {
 +            ggml_cpu_head2_key   = src0->data;
 +            ggml_cpu_head2_qtype = st;
++            ggml_cpu_head2_il    = il;
 +            if (ggml_cpu_prof_on) {
-+                fprintf(stderr, "cpu-prof head2 requant %s -> %s rows=%lld threads=%d copy_mb=%.1f ms=%.1f\n", ggml_type_name(et),
-+                        ggml_type_name(st), (long long) nr, nth, qrow*nr/1e6, (ggml_time_us() - t0)/1e3);
++                fprintf(stderr, "cpu-prof head2 requant %s -> %s%s rows=%lld threads=%d copy_mb=%.1f ms=%.1f\n", ggml_type_name(et),
++                        ggml_type_name(st), il == 8 ? "x4x8" : il == 4 ? "x4x4" : "", (long long) nr, nth, qrow*nr/1e6, (ggml_time_us() - t0)/1e3);
 +            }
 +        }
 +    }
@@ -583,11 +606,17 @@ index ab82e3d6c..b00e0b186 100644
 +    ggml_barrier(params->threadpool);
 +    // stage 1: the screen over every row, rows split across the threads, blocks of 64 rows x every column
 +    const ggml_vec_dot_t sdot = type_traits_cpu[st].vec_dot, edot = type_traits_cpu[et].vec_dot;
-+    for (int64_t r0 = ith*nr/nth, r1 = (ith + 1)*nr/nth; r0 < r1; r0 += 64) {
++    // (repacked: whole 4-row groups per thread, one gemv per 64 rows)
++    const int64_t sr0 = il ? 4*(ith*(nr/4)/nth) : ith*nr/nth, sr1 = il ? 4*((ith + 1)*(nr/4)/nth) : (ith + 1)*nr/nth;
++    for (int64_t r0 = sr0; r0 < sr1; r0 += 64) {
 +        for (int64_t c = 0; c < nc; c++) {
 +            float * d = (float *) ((char *) dst->data + c*dst->nb[1]);
 +            const char * a = ggml_cpu_head2_act + c*(erow + srow) + (srow ? erow : 0);
-+            for (int64_t r = r0; r < MIN(r0 + 64, r1); r++) {
++            if (il) {
++                ggml_cpu_head2_q4_0_gemv(il, ne00, d + r0, ggml_cpu_head2_q + r0*qrow, a, MIN(r0 + 64, sr1) - r0);
++                continue;
++            }
++            for (int64_t r = r0; r < MIN(r0 + 64, sr1); r++) {
 +                sdot(ne00, d + r, 0, ggml_cpu_head2_q + r*qrow, 0, a, 0, 1);
 +            }
 +        }
@@ -666,7 +695,7 @@ index ab82e3d6c..b00e0b186 100644
  void ggml_compute_forward_mul_mat(
          const struct ggml_compute_params * params,
                struct ggml_tensor * dst) {
-@@ -1480,6 +1703,8 @@ struct mmid_row_mapping {
+@@ -1480,6 +1732,8 @@ struct mmid_row_mapping {
      int32_t i2;
  };
  
@@ -675,7 +704,7 @@ index ab82e3d6c..b00e0b186 100644
  static void ggml_compute_forward_mul_mat_id_one_chunk(
      struct ggml_tensor * dst,
      const struct ggml_tensor * src0,
-@@ -1533,7 +1758,15 @@ static void ggml_compute_forward_mul_mat_id_one_chunk(
+@@ -1533,7 +1787,15 @@ static void ggml_compute_forward_mul_mat_id_one_chunk(
  
                  float * dst_col = (float *) ((char *) dst->data + (i1*nb1 + i2*nb2));
  
@@ -692,7 +721,7 @@ index ab82e3d6c..b00e0b186 100644
                      vec_dot(ne00, &tmp[ir0 - iir0], 0, src0_cur + ir0*nb01, 0, src1_col, 0, 1);
                  }
  
-@@ -1551,6 +1784,368 @@ static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
+@@ -1551,6 +1813,368 @@ static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
      return ptr;
  }
  
@@ -1061,7 +1090,7 @@ index ab82e3d6c..b00e0b186 100644
  static void ggml_compute_forward_mul_mat_id(
          const struct ggml_compute_params * params,
                struct ggml_tensor * dst) {
-@@ -1571,6 +2166,13 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1571,6 +2195,13 @@ static void ggml_compute_forward_mul_mat_id(
      enum ggml_type    const vec_dot_type    = type_traits_cpu[type].vec_dot_type;
      ggml_from_float_t const from_float      = type_traits_cpu[vec_dot_type].from_float;
  
@@ -1075,7 +1104,7 @@ index ab82e3d6c..b00e0b186 100644
      // we don't support permuted src0 or src1
      GGML_ASSERT(nb00 == ggml_type_size(type));
      GGML_ASSERT(nb10 == ggml_type_size(src1->type));
-@@ -1644,21 +2246,10 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1644,21 +2275,10 @@ static void ggml_compute_forward_mul_mat_id(
      }
  
      if (ith == 0) {
@@ -1100,7 +1129,7 @@ index ab82e3d6c..b00e0b186 100644
  
      // reset current_chunk
      for (int cur_a = ith; cur_a < n_as; cur_a += nth) {
-@@ -1668,6 +2259,7 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1668,6 +2288,7 @@ static void ggml_compute_forward_mul_mat_id(
  
      ggml_barrier(params->threadpool);
  
@@ -1108,7 +1137,7 @@ index ab82e3d6c..b00e0b186 100644
      for (int cur_a = 0; cur_a < n_as; ++cur_a) {
          const int64_t cne1 = matrix_row_counts[cur_a];
  
-@@ -1680,7 +2272,7 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1680,7 +2301,7 @@ static void ggml_compute_forward_mul_mat_id(
              continue;
          }
  
@@ -1117,7 +1146,7 @@ index ab82e3d6c..b00e0b186 100644
          const void * wdata = (src1->type == vec_dot_type) ? src1->data : params->wdata;
          const size_t row_size = ggml_row_size(vec_dot_type, ne10);
  
-@@ -1720,7 +2312,7 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1720,7 +2341,7 @@ static void ggml_compute_forward_mul_mat_id(
              const int64_t ir1_start = dr1 * ith1;
              const int64_t ir1_end = MIN(ir1_start + dr1, nr1);
  
@@ -1126,7 +1155,7 @@ index ab82e3d6c..b00e0b186 100644
                  dst, src0, src1, ids, cur_a,
                  ir0_start, ir0_end, ir1_start, ir1_end,
                  src0_cur, matrix_rows, row_size, src1_cont, wdata
-@@ -1744,6 +2336,11 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
+@@ -1744,6 +2365,11 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
          return;
      }
  
@@ -1138,7 +1167,7 @@ index ab82e3d6c..b00e0b186 100644
      // extra_buffer op?
      if (ggml_cpu_extra_compute_forward(params, tensor)) {
          return;
-@@ -2902,6 +3499,10 @@ struct ggml_cplan ggml_graph_plan(
+@@ -2902,6 +3528,10 @@ struct ggml_cplan ggml_graph_plan(
                          if (src1->type != vec_dot_type) {
                              cur += ggml_row_size(vec_dot_type, ggml_nelements(src1)) + sizeof(int64_t);
                          }
@@ -1149,7 +1178,7 @@ index ab82e3d6c..b00e0b186 100644
                          // matrix_row_counts
                          cur += n_as * sizeof(int64_t) + sizeof(int64_t);
                          // matrix_rows
-@@ -3064,40 +3665,843 @@ struct ggml_cplan ggml_graph_plan(
+@@ -3064,40 +3694,843 @@ struct ggml_cplan ggml_graph_plan(
  // Returns the number of nodes skipped by fusion (>=1), or 0 if no fusion was applied.
  static bool ggml_cpu_disable_fusion = false;  // initialized once in ggml_cpu_init(), read-only afterwards
  
@@ -1166,8 +1195,9 @@ index ab82e3d6c..b00e0b186 100644
      if (ggml_cpu_disable_fusion || cplan->use_ref) {
 -        return 0;
 +        return false;
-+    }
-+
+     }
+ 
+-    struct ggml_tensor * node = cgraph->nodes[node_n];
 +    const struct ggml_tensor * node = cgraph->nodes[node_n];
 +    const enum ggml_op fuse_ops[] = { GGML_OP_RMS_NORM, GGML_OP_MUL };
 +    if (node->op != GGML_OP_RMS_NORM || !ggml_can_fuse(cgraph, node_n, fuse_ops, 2)) {
@@ -1283,7 +1313,19 @@ index ab82e3d6c..b00e0b186 100644
 +            (long long) ggml_cpu_budget_skipped,
 +            ggml_cpu_budget_tok ? (double) (ggml_cpu_budget_routed - ggml_cpu_budget_skipped) / ggml_cpu_budget_tok : 0.0);
 +}
-+
+ 
+-    if (node->op == GGML_OP_RMS_NORM) {
+-        // RMS_NORM + MUL fusion
+-        const enum ggml_op fuse_ops[] = { GGML_OP_RMS_NORM, GGML_OP_MUL };
+-        if (ggml_can_fuse(cgraph, node_n, fuse_ops, 2)) {
+-            struct ggml_tensor * mul_node = cgraph->nodes[node_n + 1];
+-            const struct ggml_tensor * mul_w = (mul_node->src[0] == node)
+-                ? mul_node->src[1] : mul_node->src[0];
+-            if (node->src[0]->type  == GGML_TYPE_F32 &&
+-                mul_node->type      == GGML_TYPE_F32 &&
+-                mul_w->type         == GGML_TYPE_F32 &&
+-                mul_w->ne[0]        == node->ne[0]   &&
+-                mul_w->nb[0]        == sizeof(float)) {
 +// Vollie: env GGML_SSM_INPLACE (default on since r5, "" = unset = on, 0 = off; bit-identical: the same floats land in the same cache
 +// bytes, only the 1.5 MB/layer bounce through the scan output and back is gone). For a one-token,
 +// one-sequence, no-snapshot SSM_SCAN whose final state is CPY'd straight into the recurrent cache
@@ -1299,7 +1341,9 @@ index ab82e3d6c..b00e0b186 100644
 +static inline const struct ggml_tensor * ggml_cpu_base(const struct ggml_tensor * t) {
 +    return t->view_src ? t->view_src : t;
 +}
-+
+ 
+-                ggml_compute_forward_rms_norm_mul_fused(params, node, mul_node);
+-                return 1;
 +static void ggml_cpu_ssm_apply(struct ggml_cgraph * g) {
 +    ggml_cpu_ssm_n = 0;
 +    for (int j = 0; j < g->n_nodes && ggml_cpu_ssm_n < 64; j++) {
@@ -1350,21 +1394,20 @@ index ab82e3d6c..b00e0b186 100644
 +                    ggml_cpu_ssm_cpy[p]  = ggml_cpu_ssm_cpy[ggml_cpu_ssm_n];
 +                }
 +                break;
-+            }
-+        }
-+    }
+             }
+         }
+     }
 +    static int logged = 0;
 +    if (!logged++) {
 +        fprintf(stderr, "ssm-inplace layers=%d\n", ggml_cpu_ssm_n); // once per process
-     }
++    }
 +    for (int p = 0; p < ggml_cpu_ssm_n; p++) {
 +        void * dst = ggml_cpu_ssm_cpy[p]->src[1]->data;
 +        memcpy((char *) ggml_cpu_ssm_scan[p]->op_params + 8, &dst, sizeof(dst));
 +        ggml_cpu_ssm_cpy[p]->flags &= ~GGML_TENSOR_FLAG_COMPUTE;
 +    }
 +}
- 
--    struct ggml_tensor * node = cgraph->nodes[node_n];
++
 +static void ggml_cpu_ssm_undo(void) {
 +    for (int p = 0; p < ggml_cpu_ssm_n; p++) {
 +        memset((char *) ggml_cpu_ssm_scan[p]->op_params + 8, 0, sizeof(void *));
@@ -1372,19 +1415,7 @@ index ab82e3d6c..b00e0b186 100644
 +    }
 +    ggml_cpu_ssm_n = 0;
 +}
- 
--    if (node->op == GGML_OP_RMS_NORM) {
--        // RMS_NORM + MUL fusion
--        const enum ggml_op fuse_ops[] = { GGML_OP_RMS_NORM, GGML_OP_MUL };
--        if (ggml_can_fuse(cgraph, node_n, fuse_ops, 2)) {
--            struct ggml_tensor * mul_node = cgraph->nodes[node_n + 1];
--            const struct ggml_tensor * mul_w = (mul_node->src[0] == node)
--                ? mul_node->src[1] : mul_node->src[0];
--            if (node->src[0]->type  == GGML_TYPE_F32 &&
--                mul_node->type      == GGML_TYPE_F32 &&
--                mul_w->type         == GGML_TYPE_F32 &&
--                mul_w->ne[0]        == node->ne[0]   &&
--                mul_w->nb[0]        == sizeof(float)) {
++
 +// Vollie: env GGML_CONV_RING (default on since r6, "" = unset = on, 0 = off; bit-identical, R25). One-token Mamba2 conv: stock builds
 +// conv_x = CONCAT(old conv state, x^T), CPYs conv_x's last d_conv-1 columns into the conv cache, and
 +// SSM_CONV dots conv_x with the weights. Here SSM_CONV reads the old state and x where they already
@@ -1404,9 +1435,7 @@ index ab82e3d6c..b00e0b186 100644
 +    const char * pa = a->data, * pb = b->data;
 +    return pa && pb && pa < pb + ggml_nbytes(b) && pb < pa + ggml_nbytes(a);
 +}
- 
--                ggml_compute_forward_rms_norm_mul_fused(params, node, mul_node);
--                return 1;
++
 +static void ggml_cpu_conv_apply(struct ggml_cgraph * g) {
 +    ggml_cpu_conv_n = 0;
 +    for (int j = 0; j < g->n_nodes && ggml_cpu_conv_n < 64; j++) {
@@ -1438,8 +1467,8 @@ index ab82e3d6c..b00e0b186 100644
 +                     ggml_nelements(n->src[1]) == ggml_nelements(st) && !ggml_cpu_overlaps(n->src[1], st) &&
 +                     !ggml_cpu_overlaps(n->src[1], xt);
 +                if (ok) { cp = n; cpi = k; }
-             }
-         }
++            }
++        }
 +        ok = ok && cp;
 +        for (int k = ci + 1; ok && k <= j; k++) { // the old state and x survive until sc, the cache is not read early
 +            const struct ggml_tensor * n = g->nodes[k];
@@ -1459,7 +1488,7 @@ index ab82e3d6c..b00e0b186 100644
 +            ggml_cpu_conv_cat[ggml_cpu_conv_n] = cc;
 +            ggml_cpu_conv_cpy[ggml_cpu_conv_n++] = cp;
 +        }
-     }
++    }
 +    static int logged = 0;
 +    if (!logged++) {
 +        fprintf(stderr, "conv-ring layers=%d\n", ggml_cpu_conv_n); // once per process
@@ -1505,7 +1534,7 @@ index ab82e3d6c..b00e0b186 100644
 +
 +// Per-thread compute time inside MUL_MAT_ID (GGML_CPU_PROF): shows imbalance between cores.
 +static struct { int64_t us; char pad[56]; } ggml_cpu_prof_mmid_thr[GGML_MAX_N_THREADS];
- 
++
 +#define GGML_CPU_RANDOM_MAX 1024
 +static struct { const void * data; size_t size; } ggml_cpu_random_done[GGML_CPU_RANDOM_MAX];
 +static int ggml_cpu_random_n = 0;
@@ -1579,7 +1608,7 @@ index ab82e3d6c..b00e0b186 100644
 +        }
 +    }
 +}
-+
+ 
 +static uint64_t ggml_cpu_pred_take(const void * key) {
 +    for (int i = 0; i < GGML_CPU_PRED_KEYS && ggml_cpu_pred_masks[i].key; i++) {
 +        if (ggml_cpu_pred_masks[i].key == key) {
@@ -2011,7 +2040,7 @@ index ab82e3d6c..b00e0b186 100644
  static thread_ret_t ggml_graph_compute_thread(void * data) {
      struct ggml_compute_state * state = (struct ggml_compute_state *) data;
      struct ggml_threadpool    * tp    = state->threadpool;
-@@ -3126,6 +4530,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3126,6 +4559,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
      GGML_PRINT_DEBUG("thread #%d compute-start cplan %p last-graph %d\n", state->ith, (const void *)cplan, state->last_graph);
  #endif
  
@@ -2034,7 +2063,7 @@ index ab82e3d6c..b00e0b186 100644
      for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
          struct ggml_tensor * node = cgraph->nodes[node_n];
  
-@@ -3139,12 +4559,65 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3139,12 +4588,65 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
          }
  
          // TODO: move fused-op detection into ggml_graph_plan so fusion decisions are made once at planning time
@@ -2105,7 +2134,7 @@ index ab82e3d6c..b00e0b186 100644
          }
  
          if (state->ith == 0 && cplan->abort_callback &&
-@@ -3153,8 +4626,36 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3153,8 +4655,36 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
              tp->ec    = GGML_STATUS_ABORTED;
          }
  
@@ -2143,7 +2172,7 @@ index ab82e3d6c..b00e0b186 100644
          }
      }
  
-@@ -3398,6 +4899,186 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3398,6 +4928,187 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
      int n_threads                               = cplan->n_threads;
      struct ggml_threadpool * threadpool = cplan->threadpool;
  
@@ -2222,8 +2251,9 @@ index ab82e3d6c..b00e0b186 100644
 +    const char * h2 = getenv("GGML_HEAD2"), * h2q = getenv("GGML_HEAD2_Q"), * h2b = getenv("GGML_HEAD2_BATCH");
 +    ggml_cpu_head2_m = h2 && *h2 ? atoll(h2) : 0; // Vollie: off unless set (NOT bit-exact, R28)
 +    ggml_cpu_head2_type = !h2q || !*h2q || strcmp(h2q, "q2_k") == 0 ? GGML_TYPE_Q2_K : strcmp(h2q, "q3_k") == 0 ? GGML_TYPE_Q3_K :
-+                          strcmp(h2q, "q4_0") == 0 ? GGML_TYPE_Q4_0 : GGML_TYPE_COUNT;
-+    GGML_ASSERT(ggml_cpu_head2_type != GGML_TYPE_COUNT && "GGML_HEAD2_Q: q2_k, q3_k or q4_0");
++                          strcmp(h2q, "q4_0") == 0 || strcmp(h2q, "q4_0_plain") == 0 ? GGML_TYPE_Q4_0 : GGML_TYPE_COUNT;
++    GGML_ASSERT(ggml_cpu_head2_type != GGML_TYPE_COUNT && "GGML_HEAD2_Q: q2_k, q3_k, q4_0 or q4_0_plain");
++    ggml_cpu_head2_rp = h2q && strcmp(h2q, "q4_0") == 0; // Vollie r8: q4_0 = repacked screen
 +    ggml_cpu_head2_batch = h2b && *h2b && atoi(h2b) != 0;
 +    if ((ggml_cpu_expert_skip || ggml_cpu_expert_topp || ggml_cpu_expert_gap) && !ggml_cpu_budget_atexit) {
 +        ggml_cpu_budget_atexit = true;
@@ -2313,7 +2343,7 @@ index ab82e3d6c..b00e0b186 100644
 +        // Vollie: GGML_HEAD2 off (and no HEAD2 A/B): drop the head copy so it does not outlive its run; an ABBA run keeps
 +        // it on side A (prep). ponytail: the ~1.2 MB select scratch stays until exit
 +        free(ggml_cpu_head2_q);
-+        ggml_cpu_head2_q = NULL; ggml_cpu_head2_key = NULL; ggml_cpu_head2_qtype = GGML_TYPE_COUNT;
++        ggml_cpu_head2_q = NULL; ggml_cpu_head2_key = NULL; ggml_cpu_head2_qtype = GGML_TYPE_COUNT; ggml_cpu_head2_il = 0;
 +    }
 +    const int64_t prof_t0 = ggml_cpu_prof_this ? ggml_time_us() : 0;
 +    int64_t flt0[2] = {0, 0}; // Vollie: faults during this graph go to its A/B side (blocks never split a graph)
@@ -2330,7 +2360,7 @@ index ab82e3d6c..b00e0b186 100644
      bool disposable_threadpool = false;
  
      if (threadpool == NULL) {
-@@ -3455,6 +5136,34 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3455,6 +5166,34 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
  
      // don't leave affinity set on the main thread
      clear_numa_thread_affinity();
@@ -2507,7 +2537,7 @@ index 93ea7eeff..5efc0a101 100644
  void ggml_vec_dot_q5_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
  void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
 diff --git a/ggml/src/ggml-cpu/repack.cpp b/ggml/src/ggml-cpu/repack.cpp
-index 2632ae3a0..dc2b0da70 100644
+index 2632ae3a0..0613cf523 100644
 --- a/ggml/src/ggml-cpu/repack.cpp
 +++ b/ggml/src/ggml-cpu/repack.cpp
 @@ -17,6 +17,7 @@
@@ -2526,6 +2556,37 @@ index 2632ae3a0..dc2b0da70 100644
      GGML_UNUSED(buffer);
  }
  
+@@ -5253,3 +5255,30 @@ ggml_backend_buffer_type_t ggml_backend_cpu_repack_buffer_type(void) {
+ 
+     return &ggml_backend_cpu_buffer_type_repack;
+ }
++
++// Vollie: GGML_HEAD2_Q=q4_0 (ggml-cpu.c ggml_cpu_head2): the screen copy in the 4-row interleave the stock Q4_0
++// weights get with extra buffers (same choice as ggml_repack_get_optimal_repack_type: i8mm -> 4x8, dotprod -> 4x4;
++// the A78 takes 4x4). Returns the interleave (8 or 4), 0 when this CPU has no 4-row Q4_0 gemv.
++// ponytail: the 8x8 (AVX2 / SVE-256) layout is not offered; those CPUs keep the plain Q4_0 screen.
++extern "C" int ggml_cpu_head2_q4_0_il(void);
++extern "C" int ggml_cpu_head2_q4_0_il(void) {
++    return ggml_cpu_has_neon() && ggml_cpu_has_matmul_int8() ? 8 : ggml_cpu_has_neon() && ggml_cpu_has_dotprod() ? 4 : 0;
++}
++// 4 plain Q4_0 rows (src, nb blocks each, consecutive) -> nb block_q4_0x4 at dst
++extern "C" void ggml_cpu_head2_q4_0_pack4(void * dst, const void * src, int64_t nb, int il);
++extern "C" void ggml_cpu_head2_q4_0_pack4(void * dst, const void * src, int64_t nb, int il) {
++    const block_q4_0 * s = (const block_q4_0 *) src;
++    block_q4_0x4 * d = (block_q4_0x4 *) dst;
++    block_q4_0 tmp[4];
++    for (int64_t x = 0; x < nb; x++) {
++        for (int i = 0; i < 4; i++) {
++            tmp[i] = s[x + i*nb];
++        }
++        d[x] = make_block_q4_0x4(tmp, il);
++    }
++}
++// s[0..nc) = rows (packed, nc % 4 == 0) . vy (one plain Q8_0 row of n)
++extern "C" void ggml_cpu_head2_q4_0_gemv(int il, int n, float * s, const void * vx, const void * vy, int nc);
++extern "C" void ggml_cpu_head2_q4_0_gemv(int il, int n, float * s, const void * vx, const void * vy, int nc) {
++    (il == 8 ? ggml_gemv_q4_0_4x8_q8_0 : ggml_gemv_q4_0_4x4_q8_0)(n, s, 0, vx, vy, 1, nc);
++}
 diff --git a/ggml/src/ggml-cpu/vollie-release.h b/ggml/src/ggml-cpu/vollie-release.h
 new file mode 100644
 index 000000000..d8f6c5361
