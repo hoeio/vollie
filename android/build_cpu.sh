@@ -1,8 +1,9 @@
 #!/bin/sh
 # Builds llama.cpp's CPU module for armv8.2-a+dotprod+fp16 phones (Snapdragon 888 class:
 # Cortex-X1/A78, no i8mm/SVE) as the runtime-selectable variant android_armv8.2_2, with
-# KleidiAI like the stock Android bundles. Use a checkout with patches/llama.cpp applied.
-# Also builds libllama.so (for patches/llama.cpp/0002-granite-rollback.patch; see README.md here).
+# KleidiAI like the stock Android bundles. Use a checkout with patches/llama.cpp applied in order:
+# 0001-cpu-runtime.patch, 0002-granite-rollback.patch, 0003-sampler-bypass.patch (the last two act on libllama.so).
+# Also builds libllama.so (carries 0002 and 0003; see README.md here).
 # usage: android/build_cpu.sh <llama.cpp checkout> [outdir]    env: ANDROID_NDK_HOME, KLEIDI=ON|OFF
 set -eu
 SRC=$(cd "$1" && pwd); OUT=${2:-out}; mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
