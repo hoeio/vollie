@@ -6,7 +6,7 @@
 
 **Here / not here:** Here: CPU-module patches, build script, on-device research kit and parser, perplexity gate, the full log with raw device JSON (`reports/device/`). Not here: the Flutter app, CI, releases. The evidence is the device JSONs and the pre-registered predictions scored against them.
 
-**Store builds lag.** The store version of the app can be behind the builds measured here, because store review takes time (on 2026-11-04 the store version is 2.1.10, per the owner; its numbers are the last column of the table below). The other numbers come from builds the owner measured: the app's own speed test before 2.2.6+29, research-kit APKs from 2.2.6+29 on (latest: 2.2.12+35, kit r7).
+**Store builds lag.** The store version of the app can be behind the builds measured here, because store review takes time (on 2026-11-04 the store version is 2.1.10, per the owner; its numbers are the last column of the table below). The other numbers come from builds the owner measured: the app's own speed test before 2.2.6+29, research-kit APKs from 2.2.6+29 on (latest: 2.2.13+36, kit r8).
 
 Research and runtime code for running an LLM well on an 8 GB Android phone with llama.cpp. It
 comes from Vollie, an on-device assistant. Its model files are on Hugging Face in
