@@ -1100,6 +1100,23 @@ on 117 the item runs on 116 + head2 (9.7800) as a research row, not a served can
 not reached inside +2 %**, best fault-free ≈ 19.1-19.7, and that is reported as the campaign's result for this budget; what lies beyond needs a budget the owner
 has declined to move (R28) or a different expert kernel (Q3_K at the byte rate — kernel work, out of the campaign's scope unless the owner opens it).
 
+**Amendment after Tom's host build (R32, 2026-11-06 evening, before the phone run).** (ii)'s full-set gate **fails at every slice**: 117 + head2 + 4 layers
+(39, 38, 9, 31 — the most-routed at skip 117) **9.8048**, + 2 layers (39, 38) **9.8014**, 116 + head2 + 4 layers **9.7977** (by 0.0007), and a different four
+(9, 31, 33, 32) 9.8018. A 4-layer Q4_0 expert slice costs **+0.13 to +0.17 % on top of skip 117**, ≈ 3 × the linear "4/40 of +0.56 %" estimate — the skip and the
+requant compound (the skipped low-weight slots were absorbing part of the requant error in the all-layer probe). **Clyde's coin-flip call was wrong in the same
+direction as Bonnie's estimate: both too optimistic.** (ii) is therefore **dropped as a served candidate; it runs in kit r9 at n = 4 as an over-budget research
+row only** (the kernel-class measurement: pass ≤ −0.6 / falsified > −0.4 on `MUL_MAT_ID` compute stands, with "passes" now meaning "the class generalises",
+not "serve it"). Host ABBA for it: `MUL_MAT_ID` −0.38 ± 0.07, token −0.41 (M4; the host expert kernel is not 2.5 × above bytes, so the device band stays as
+written). Copy 339.7 MB, requant + repack 210-220 ms host → ≈ 0.9-1.0 s device *estimated*. (i) on the host: bit-identical at 16 / 32 / 64 (PPL chunks 1-3 at
+all three batch settings, greedy 32), but **slower on the M4** (64 → 16 `MUL_MAT` +1.67, `MUL_MAT_ID` +0.51, wait −0.14; 64 → 32 +0.54 / +0.09 / −0.07): the M4's
+waits are 0.43 ms, so it can show the per-chunk overhead but not the device's 1.8 ms of tail; ships as pre-registered, the compute > +0.4 falsifier is live.
+(iii): the skipped samplers cost nothing measurable; the real outside-graph cost is the **repetition-penalty sampler's hash lookup over all 100,352 candidates per
+token** — Tom added an exact fast path (visit only the ≤ 64 penalised tokens when the candidates are the full vocabulary in order; `VOLLIE_SAMPLER_BYPASS=1`,
+patch `lab/sampler-bypass.patch`): host sampling 0.43 → 0.10 ms/token. Greedy text identical to the full chain in all six host replays; story 200 has a near-tie at
+token 8 that the host and the A78 resolve differently (f16 vs q8_0 KV), so the kit records `text` and `sample_ms` per run and the device checks itself. The (iii)
+band (1.63 → ≤ 1.2) stands. New default applied at load with a one-token warm-up (load ≈ +1 s; chat and the speed test now run 117 + head2).
+
+
 ## 8. The dense `MUL_MAT` bytes: where the other ≈ 19 ms is and what can skip it (Bonnie; in progress, 2026-11-05; all *host* unless labelled)
 
 **Inventory (`lab/logs/r27/dense/inventory.txt`, exact bytes of the served file).** Read every token: **562.5 MB** =

@@ -23,6 +23,19 @@ def abba_blocks(x):
         out.append((m.group(1), int(m.group(2)), d, o))
     return out
 
+def outside_graph(x):
+    """r9: ms per printed token spent outside the profiled graphs of an always-on story run with 6 windows:
+    (decode wall − Σ windows − tokens not profiled × steady) / intervals, decode wall = duration_ms − ttft_ms, steady =
+    the last window's us/token (Bonnie, reports/memos/last_3ms.md §1). None unless the run has exactly 6 window lines."""
+    wins = [prof_fields(l)[0] for l in x.get('prof', []) if l.startswith('cpu-prof') and ' graphs=' in l and ' ab=' not in l]
+    dur, ttft, tok = x.get('duration_ms'), x.get('ttft_ms'), x.get('tokens')
+    if len(wins) != 6 or None in (dur, ttft, tok) or tok < 2: return None
+    g = sum(int(d['graphs']) for d in wins)
+    win_ms = sum(int(d['us/token']) * int(d['graphs']) for d in wins) / 1000
+    steady = int(wins[-1]['us/token']) / 1000
+    rest = (tok - 1) - g
+    return (dur - ttft - win_ms - rest * steady) / (tok - 1), dur - ttft, win_ms, rest, steady
+
 def mean_sd(v):
     return (statistics.mean(v), statistics.stdev(v) if len(v) > 1 else float('nan'))
 
@@ -52,6 +65,10 @@ def abba_summary(runs):
                             f"Δ {mb - ma:+6.2f} ± {se:4.2f}  groups {len(gd)}: Δ {gm:+6.2f} sd {gs:4.2f}"))
     nodes = {sd_: sorted({(d.get('nodes'), d.get('barriers')) for _, (s2, _, d, _) in blocks if s2 == sd_}) for sd_ in 'AB'}
     rows.append(('nodes/bar', f"A {' '.join(f'{n}/{b}' for n, b in nodes['A'])}  B {' '.join(f'{n}/{b}' for n, b in nodes['B'])}"))
+    for key in ('chunk', 'expq4'):  # r9 header fields, per side (absent before r9)
+        v = {sd_: sorted({d[key] for _, (s2, _, d, _) in blocks if s2 == sd_ and key in d}) for sd_ in 'AB'}
+        if v['A'] or v['B']:
+            rows.append((key, f"A {' '.join(v['A'])}  B {' '.join(v['B'])}"))
     ka = [float(d['kavg']) for _, (s_, _, d, _) in blocks if s_ == 'A']
     kb = [float(d['kavg']) for _, (s_, _, d, _) in blocks if s_ == 'B']
     if ka and kb:
@@ -131,9 +148,27 @@ def main():
         for line in lines[-2:] if x['phase'] == 'ab' else lines[-1:]:
             d, o = prof_fields(line)
             mmid = o.get('MUL_MAT_ID', (0, 0, 0))
-            print(f"  {x['phase']:8s} {x['name'][:30]:30s} {d.get('ab','  ')} eio={d.get('eio')} adv={d.get('adv')} prof majflt={d.get('majflt')} minflt={d.get('minflt')} head={d.get('head')} anon={d.get('anon')} anon_mb={d.get('anon_mb')} kavg={d.get('kavg')} "
+            print(f"  {x['phase']:8s} {x['name'][:30]:30s} {d.get('ab','  ')} eio={d.get('eio')} adv={d.get('adv')} prof majflt={d.get('majflt')} minflt={d.get('minflt')} head={d.get('head')} chunk={d.get('chunk')} expq4={d.get('expq4')} anon={d.get('anon')} anon_mb={d.get('anon_mb')} kavg={d.get('kavg')} "
                   f"ilp={d.get('ilp')} pf={d.get('pf')} us/token={d.get('us/token')} MUL_MAT_ID {mmid[1]/1000:.1f}+{mmid[2]/1000:.1f} ms  "
                   f"majflt/tok={(x.get('majflt') or 0)/tok if tok else float('nan'):.1f} minflt/tok={(x.get('minflt') or 0)/tok if tok else float('nan'):.0f}")
+    print('\n== copies, warm-ups, willneed (r9: requant lines; a warm-up runs before a run whose copies differ from the last)')
+    for x in runs:
+        lines = [l for l in x.get('warmup', []) + x.get('prof', []) if ' requant ' in l or l.startswith('cpu-prof willneed')]
+        if lines or x.get('warmup_ms') is not None:
+            print(f"  {x['phase']:8s} {x['name'][:40]:40s} warmup_ms={x.get('warmup_ms')}")
+            for l in lines: print('      ' + l)
+    print('\n== outside the graph (story runs with 6 windows; ms per printed token; decode wall = duration − ttft)')
+    for x in runs:
+        o = outside_graph(x)
+        if o:
+            sm = x.get('sample_ms'); tok = x.get('tokens') or 0
+            smp = f"; llamadart sample {sm / tok:.2f} ms/token" if sm is not None and tok else ''
+            print(f"  {x['phase']:8s} {x['name'][:40]:40s} outside {o[0]:5.2f} ms/token  (decode wall {o[1]:.1f} − windows {o[2]:.1f} − {o[3]} × steady {o[4]:.1f}){smp}")
+    print('\n== reply text (first 80 chars; exact knobs must print the text of the same config without them; r9 sample_ms = llamadart sampling + piece time)')
+    for x in runs:
+        if x.get('text') is not None:
+            sm = x.get('sample_ms'); tok = x.get('tokens') or 0
+            print(f"  {x['phase']:8s} {x['name'][:52]:52s} {'' if sm is None or not tok else f'sample {sm / tok:.2f} ms/tok ':20s}{x['text']!r}")
     print('\n== best per setting (phases threads/baseline/release/spec)')
     best = {}
     for x in runs:
