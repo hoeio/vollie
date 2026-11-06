@@ -36,6 +36,15 @@ def outside_graph(x):
     rest = (tok - 1) - g
     return (dur - ttft - win_ms - rest * steady) / (tok - 1), dur - ttft, win_ms, rest, steady
 
+def bench_ratios(line):
+    """r10: the pre-registered ratios of one 'cpu-bench q3k' line (§9.9 (iii))."""
+    d = dict(re.findall(r'(\w+)=([^\s]+)', line))
+    try:
+        o, n, i8, q4, sc = (float(d[k]) for k in ('old', 'new', 'int8', 'q4x4', 'scalar'))
+    except (KeyError, ValueError):
+        return 'ratios: missing fields'
+    return f"new/old {n/o:.3f}  int8/old {i8/o:.3f}  scalar/old {sc/o:.3f}  old/q4x4 {o/q4:.2f}"
+
 def mean_sd(v):
     return (statistics.mean(v), statistics.stdev(v) if len(v) > 1 else float('nan'))
 
@@ -65,7 +74,7 @@ def abba_summary(runs):
                             f"Δ {mb - ma:+6.2f} ± {se:4.2f}  groups {len(gd)}: Δ {gm:+6.2f} sd {gs:4.2f}"))
     nodes = {sd_: sorted({(d.get('nodes'), d.get('barriers')) for _, (s2, _, d, _) in blocks if s2 == sd_}) for sd_ in 'AB'}
     rows.append(('nodes/bar', f"A {' '.join(f'{n}/{b}' for n, b in nodes['A'])}  B {' '.join(f'{n}/{b}' for n, b in nodes['B'])}"))
-    for key in ('chunk', 'expq4'):  # r9 header fields, per side (absent before r9)
+    for key in ('chunk', 'expq4', 'kern', 'fuse'):  # r9/r10 header fields, per side (absent before r9 / r10)
         v = {sd_: sorted({d[key] for _, (s2, _, d, _) in blocks if s2 == sd_ and key in d}) for sd_ in 'AB'}
         if v['A'] or v['B']:
             rows.append((key, f"A {' '.join(v['A'])}  B {' '.join(v['B'])}"))
@@ -148,9 +157,15 @@ def main():
         for line in lines[-2:] if x['phase'] == 'ab' else lines[-1:]:
             d, o = prof_fields(line)
             mmid = o.get('MUL_MAT_ID', (0, 0, 0))
-            print(f"  {x['phase']:8s} {x['name'][:30]:30s} {d.get('ab','  ')} eio={d.get('eio')} adv={d.get('adv')} prof majflt={d.get('majflt')} minflt={d.get('minflt')} head={d.get('head')} chunk={d.get('chunk')} expq4={d.get('expq4')} anon={d.get('anon')} anon_mb={d.get('anon_mb')} kavg={d.get('kavg')} "
+            print(f"  {x['phase']:8s} {x['name'][:30]:30s} {d.get('ab','  ')} eio={d.get('eio')} adv={d.get('adv')} prof majflt={d.get('majflt')} minflt={d.get('minflt')} head={d.get('head')} chunk={d.get('chunk')} expq4={d.get('expq4')} kern={d.get('kern')} anon={d.get('anon')} anon_mb={d.get('anon_mb')} kavg={d.get('kavg')} "
                   f"ilp={d.get('ilp')} pf={d.get('pf')} us/token={d.get('us/token')} MUL_MAT_ID {mmid[1]/1000:.1f}+{mmid[2]/1000:.1f} ms  "
                   f"majflt/tok={(x.get('majflt') or 0)/tok if tok else float('nan'):.1f} minflt/tok={(x.get('minflt') or 0)/tok if tok else float('nan'):.0f}")
+    bench = [l for x in runs for l in x.get('prof', []) if l.startswith('cpu-bench q3k ')]
+    if bench:
+        print('\n== cpu-bench (r10: 1-thread kernel timing, cache-hot synthetic expert slices, ns/row; device-measured)')
+        for l in bench:
+            print('  ' + l)
+            print('    ' + bench_ratios(l))
     print('\n== copies, warm-ups, willneed (r9: requant lines; a warm-up runs before a run whose copies differ from the last)')
     for x in runs:
         lines = [l for l in x.get('warmup', []) + x.get('prof', []) if ' requant ' in l or l.startswith('cpu-prof willneed')]

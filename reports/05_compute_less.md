@@ -1290,3 +1290,17 @@ the kernel. I expect the scalar-assisted microbench to come back ≥ 0.85 (the i
 disagrees and that is why it is measured. Generalisation claim if (i) passes: a −20 % Q3_K dot for every 2-pipe dotprod arm64 core (A76-A78, A710),
 exact, no memory; the byte-rate expert kernel for this model class exists only as a 4-bit container on phones with ≥ 12 GB.
 
+**Amendment after Tom's build (R34, 2026-11-06 night, before the phone run).** The device assembly of `GGML_Q3K_KERN=1` (NDK 28.2, the shipped module) issues
+**377 NEON ops per 4-row block vs 562** (−33 %; `movi` 69 → 0, no spills; four 2-register `tbl` may be 2 µops each → ≈ 381), below the frozen ≤ 480 and
+below Bonnie's 432-460 (108-115 per row-block): the NDK would not keep the intrinsics clean, so the block loop is generated asm (`lab/logs/r34/gen_kern.py`)
+with in-place value build (2-3 ops/16 w), scales folded into `ssubl` and pre-shifted so one `sshr #4` replaces the per-group shift-backs. Bit-identical: 2 × 10⁵
+random row-quads 0 differ, PPL chunks 1-3 at all three batch settings equal to r9 on every digit (stock and served default), greedy 32 identical. Host: ns per
+row-block 7.8 → 5.86 (**0.74-0.75**, at the lower edge of the 0.75-0.85 band); host ABBA `MUL_MAT_ID` 6.53 → 5.69 = **−0.85 ± 0.05** (−13 %; the M4 has 4 NEON
+pipes, so the host under-shows an issue-bound gain). **Band moved up, thresholds unchanged:** at the device's 87-89 % issue efficiency and 377/562 of the ops,
+slot ≈ 78-84 µs → `MUL_MAT_ID` compute B − A at 2,112 **−3.0 to −6.5 ms** (Clyde central now **−4.5**; Bonnie's −4.2 stands; Tom's host ratio says −3.0);
+pass ≤ −3.0, falsified > −1.5 as frozen. Always-on: steady **46.5-50.0** at 2,112 on ≤ 10 majflt/token, printed fault-free **19.7-21.0**; falsified > 51.0.
+**20 printed is now in the better half of the band on a clean day, still not pre-registered as reached** (the day's faults decide the last 0.5 tok/s).
+(ii) `MMID_FUSE` not built (> 1 Tom-day: shared chunk counters, barrier removal, skip bookkeeping) — dropped from round 10. (iii) the device `cpu-bench` carries
+`exact_*` flags; the scalar-assisted prototype is bit-identical; host ratios new/old 0.75 / int8/old 0.52 / scalar/old 0.71 (K 1,536) — the M4 numbers do not
+transfer, the A78 line decides; `cpu=` says which core ran it (cpu7 is the X1 with 4 NEON pipes: a bench on cpu7 is reported, not scored).
+
