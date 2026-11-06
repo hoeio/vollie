@@ -548,7 +548,9 @@ Open after R31 (round 9, in order): (1) **Bonnie: the last 2.4-3 ms** — rank w
 
 *What would reach 20, outside the current rules (for the owner, not proposed):* (a) a byte-rate Q3_K expert gemv on the A78 (kernel work; the expert op is 19-21 ms at 2.5 × its byte floor — the single largest term, −6 to −8 ms if it reached the byte rate; generalises to every Q3_K MoE on dotprod CPUs); (b) a budget of ≈ +2.6 % (116 + head2 + the 4-layer copy at 9.7977 fits +2.0 %; 8 layers ≈ +2.1-2.2 %, est. −1.3 to −2.0 ms); (c) a served file with Q4_0 experts (the owner froze the file). Each is a different campaign.
 
-Open after R33: none under the current rules. Bookkeeping: the r9 default (117 + head2 + bypass) is the research build's served config; the owner decides the store build; Annie mirrors R33 and sets the README "latest" to r9. Closed by R33: `MM_CHUNK` (any value ≠ 64), the dense-wait-as-imbalance hypothesis, the 4-layer expert copy, `DENSE_WILLNEED` as a window-1 lever (kept as a harmless knob).
+**Correction, same night (owner's ruling, 2026-11-06): "If you are staying inside the rules, everything is allowed." Kernel work on the runtime is *inside* the rules — the paragraph above misfiled (a). (a) is round 10: a byte-rate Q3_K expert gemv on the A78, exact up to float order like R30's repacked screen, served file / budget / threshold unchanged. (b) and (c) remain the owner's call. Clyde's error, logged.**
+
+Open after R33 (corrected): **round 10 = the Q3_K expert kernel** (Bonnie memo `reports/memos/expert_kernel.md`, Tom kernel audit + host prototypes `lab/logs/r33/q3k_kernel/`), plus the exact graph crumbs if they fit the kit. Nothing else under the current rules. Bookkeeping: the r9 default (117 + head2 + bypass) is the research build's served config; the owner decides the store build; Annie mirrors R33 and sets the README "latest" to r9. Closed by R33: `MM_CHUNK` (any value ≠ 64), the dense-wait-as-imbalance hypothesis, the 4-layer expert copy, `DENSE_WILLNEED` as a window-1 lever (kept as a harmless knob).
 
 ## 6. What worked, what didn't
 

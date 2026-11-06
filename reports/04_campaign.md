@@ -495,6 +495,7 @@ the ABBA items ran at 2,112 and are scored, the absolutes are not.
   and 12.6 (R33, 1,555 MHz thrashing). **20 printed is not reached inside +2 %**, as pre-registered in §7.11: needs steady ≤ 48.9, and nothing exact or
   budget-legal is left — dense bytes at the byte rate everywhere, the expert kernel's byte excess only purchasable with PPL the budget no longer has,
   chunking closed, remaining waits = barrier count. Vanilla same phone/file 9.0-10.7 printed over the last three run days vs Vollie 11.3-16.8.
-- **Outside the rules, for the owner (not proposed):** a byte-rate Q3_K expert gemv (−6 to −8 ms, kernel work, generalises); a budget ≈ +2.6 % for the
-  expert copy; a served file with Q4_0 experts. Each is a different campaign.
+- **Owner's ruling, same night: kernel work is inside the rules** ("if you are staying inside the rules, everything is allowed"). Clyde had misfiled the
+  byte-rate Q3_K expert gemv as a separate campaign; it is **round 10** (−6 to −8 ms *estimated* at the byte rate, exact up to float order, generalises to every
+  Q3_K MoE on dotprod arm64). The budget (+2.6 % for the expert copy) and the served file remain outside the rules and the owner's call.
 
