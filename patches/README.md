@@ -52,6 +52,10 @@ draft back — draft-model speculation fails on the first rejection (round 1, R1
 `libllama.so`, not the CPU module, so an app on a prebuilt llama.cpp bundle has to rebuild that library
 (`android/README.md`).
 
+## llama.cpp — `llama.cpp/0003-sampler-bypass.patch` (base: `llama.cpp/BASE`)
+
+Exact fast path for the repetition-penalty sampler when candidates are the full vocabulary in order; enabled per generation by `VOLLIE_SAMPLER_BYPASS=1`; greedy text identical. One hunk in `src/llama-sampler.cpp`; like `0002` it lives in `libllama.so`. Apply order: `0001`, `0002`, `0003` (they touch different files).
+
 ## llamadart — `llamadart/0001-setthreads-extra-buffers.patch` (base: `llamadart/BASE`)
 
 For apps using the [llamadart](https://pub.dev/packages/llamadart) Flutter bindings:

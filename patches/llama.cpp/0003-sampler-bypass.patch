@@ -1,0 +1,44 @@
+diff --git a/src/llama-sampler.cpp b/src/llama-sampler.cpp
+index 521c5718e..c018c5d71 100644
+--- a/src/llama-sampler.cpp
++++ b/src/llama-sampler.cpp
+@@ -2953,6 +2953,15 @@ static void llama_sampler_penalties_accept(struct llama_sampler * smpl, llama_to
+ #endif
+ }
+ 
++// Vollie: env VOLLIE_SAMPLER_BYPASS=1 (unset / "" / 0 = off; bit-identical; reports/05_compute_less.md §7.11 (iii), with
++// llamadart's top-k / top-p / temp bypass at temp <= 0): when the candidates are the whole vocabulary in token order (as
++// llama_sampler_sample fills them), only the <= last_n penalised tokens are visited, instead of one count-map lookup per
++// candidate (Granite: 100,352 per token, ≈ 0.3 ms on an M4). Same entries, same arithmetic; any other layout takes the loop.
++static bool llama_sampler_vollie_bypass() {
++    const char * v = getenv("VOLLIE_SAMPLER_BYPASS");
++    return v && *v && strcmp(v, "0") != 0;
++}
++
+ static void llama_sampler_penalties_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+     auto * ctx = (llama_sampler_penalties *) smpl->ctx;
+ 
+@@ -2960,6 +2969,23 @@ static void llama_sampler_penalties_apply(struct llama_sampler * smpl, llama_tok
+         return;
+     }
+ 
++    if (llama_sampler_vollie_bypass() && cur_p->size == (size_t) ctx->n_vocab &&
++        std::all_of(ctx->token_count.begin(), ctx->token_count.end(), [cur_p](const auto & tc) {
++            return tc.first >= 0 && (size_t) tc.first < cur_p->size && cur_p->data[tc.first].id == tc.first;
++        })) {
++        for (const auto & [token, count] : ctx->token_count) {
++            llama_token_data & d = cur_p->data[token];
++            if (d.logit <= 0) {
++                d.logit *= ctx->penalty_repeat;
++            } else {
++                d.logit /= ctx->penalty_repeat;
++            }
++            d.logit -= float(count) * ctx->penalty_freq + float(count > 0) * ctx->penalty_present;
++        }
++        cur_p->sorted = false;
++        return;
++    }
++
+     // Apply frequency and presence penalties to the cur_p
+     for (size_t i = 0; i < cur_p->size; ++i) {
+         const auto token_iter = ctx->token_count.find(cur_p->data[i].id);

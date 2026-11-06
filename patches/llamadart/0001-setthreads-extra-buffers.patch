@@ -43,7 +43,7 @@ diff -ruN lib/src/backends/llama_cpp/llama_cpp_backend.dart lib/src/backends/lla
    @override
 diff -ruN lib/src/backends/llama_cpp/llama_cpp_service.dart lib/src/backends/llama_cpp/llama_cpp_service.dart
 --- lib/src/backends/llama_cpp/llama_cpp_service.dart	2026-10-22 17:36:31
-+++ lib/src/backends/llama_cpp/llama_cpp_service.dart	2026-11-02 11:09:17
++++ lib/src/backends/llama_cpp/llama_cpp_service.dart	2026-11-06 15:02:40
 @@ -4246,6 +4246,15 @@
          (!isRecurrent && !isHybrid)) {
        return;
@@ -77,7 +77,63 @@ diff -ruN lib/src/backends/llama_cpp/llama_cpp_service.dart lib/src/backends/lla
    void _freeContext(int handle) {
      _contextToModel.remove(handle);
      _activeLoras.remove(handle);
-@@ -7043,6 +7062,21 @@
+@@ -6672,6 +6691,25 @@
+     return i;
+   }
+ 
++  /// Vollie: VOLLIE_SAMPLER_BYPASS from the process environment (the app sets
++  /// it with setenv, like the CPU module's knobs), read per generation.
++  static bool _samplerBypass() {
++    final name = 'VOLLIE_SAMPLER_BYPASS'.toNativeUtf8();
++    try {
++      final v = _getenv?.call(name);
++      return v != null && v != nullptr && !const ['', '0'].contains(v.toDartString());
++    } catch (_) {
++      return false;
++    } finally {
++      malloc.free(name);
++    }
++  }
++
++  static final _getenv = Platform.isWindows
++      ? null
++      : (Platform.isAndroid ? DynamicLibrary.open('libc.so') : DynamicLibrary.process())
++          .lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>), Pointer<Utf8> Function(Pointer<Utf8>)>('getenv');
++
+   /// Helper: Initializes the sampler chain.
+   Pointer<llama_sampler> _initializeSampler(
+     GenerationParams params,
+@@ -6787,15 +6825,21 @@
+       llama_sampler_chain_add(sampler, grammarSampler);
+     }
+ 
+-    llama_sampler_chain_add(sampler, llama_sampler_init_top_k(params.topK));
+-    llama_sampler_chain_add(sampler, llama_sampler_init_top_p(params.topP, 1));
+-    if (params.minP > 0) {
+-      llama_sampler_chain_add(
+-        sampler,
+-        llama_sampler_init_min_p(params.minP, 1),
+-      );
++    // Vollie: env VOLLIE_SAMPLER_BYPASS=1 (unset / '' / 0 = off): at temp <= 0
++    // the chain below ends in greedy, which takes the argmax top-k / top-p /
++    // min-p / temp all keep, so they are skipped (penalties, suppressed tokens,
++    // grammar and budget samplers stay): the same token without the sort.
++    if (!(params.temp <= 0 && _samplerBypass())) {
++      llama_sampler_chain_add(sampler, llama_sampler_init_top_k(params.topK));
++      llama_sampler_chain_add(sampler, llama_sampler_init_top_p(params.topP, 1));
++      if (params.minP > 0) {
++        llama_sampler_chain_add(
++          sampler,
++          llama_sampler_init_min_p(params.minP, 1),
++        );
++      }
++      llama_sampler_chain_add(sampler, llama_sampler_init_temp(params.temp));
+     }
+-    llama_sampler_chain_add(sampler, llama_sampler_init_temp(params.temp));
+ 
+     if (params.temp <= 0) {
+       llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+@@ -7043,6 +7087,21 @@
          final remainingToGenerate = params.maxTokens - generatedTokens;
          final batchCapacity = math.max(1, llama_n_batch(ctx.pointer));
          final rollbackCapacity = llama_n_rs_seq(ctx.pointer);
