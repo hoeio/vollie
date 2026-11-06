@@ -1,0 +1,72 @@
+== gate: 512 rows x 1536 (Q3_K 660 B/row)
+q3_K vec_dot (stock, 1 row)           54.56 ns/row
+q3_K x4 ILP (device path)             47.80 ns/row
+  check x4 ILP                     max abs 0  max rel 0  bit-identical 512/512
+(c) x4 + bsl unpack                   48.03 ns/row
+  check (c)                        max abs 0  max rel 0  bit-identical 512/512
+(a) t4 register interleave            46.36 ns/row
+  check (a)                        max abs 0  max rel 0  bit-identical 512/512
+(a2) t4, h as its own sdot            47.87 ns/row
+  check (a2)                       max abs 0  max rel 0  bit-identical 512/512
+(a3) t4 tuned                         44.65 ns/row
+  check (a3)                       max abs 0  max rel 0  bit-identical 512/512
+  repack Q3_Kx4 (cost)                15.34 ns/row
+(a-rp) t4 on repacked copy            42.08 ns/row
+  check (a-rp)                     max abs 0  max rel 0  bit-identical 512/512
+(b) Q3_K8 int8 pre-expanded           20.75 ns/row
+  check (b)                        max abs 0  max rel 0  bit-identical 512/512
+q4_0 vec_dot (1 row)                  29.70 ns/row
+q4_0x4 gemv (repacked, sdot)          14.85 ns/row
+q6_Kx8 gemv (repacked, 8x4)           34.12 ns/row
+== up: 512 rows x 1536 (Q3_K 660 B/row)
+q3_K vec_dot (stock, 1 row)           55.89 ns/row
+q3_K x4 ILP (device path)             48.89 ns/row
+  check x4 ILP                     max abs 0  max rel 0  bit-identical 512/512
+(c) x4 + bsl unpack                   42.55 ns/row
+  check (c)                        max abs 0  max rel 0  bit-identical 512/512
+(a) t4 register interleave            47.22 ns/row
+  check (a)                        max abs 0  max rel 0  bit-identical 512/512
+(a2) t4, h as its own sdot            48.81 ns/row
+  check (a2)                       max abs 0  max rel 0  bit-identical 512/512
+(a3) t4 tuned                         40.39 ns/row
+  check (a3)                       max abs 0  max rel 0  bit-identical 512/512
+  repack Q3_Kx4 (cost)                13.25 ns/row
+(a-rp) t4 on repacked copy            36.60 ns/row
+  check (a-rp)                     max abs 0  max rel 0  bit-identical 512/512
+(b) Q3_K8 int8 pre-expanded           20.54 ns/row
+  check (b)                        max abs 0  max rel 0  bit-identical 512/512
+q4_0 vec_dot (1 row)                  34.15 ns/row
+q4_0x4 gemv (repacked, sdot)          16.87 ns/row
+q6_Kx8 gemv (repacked, 8x4)           34.25 ns/row
+== down: 1536 rows x 512 (Q3_K 220 B/row)
+q3_K vec_dot (stock, 1 row)           19.15 ns/row
+q3_K x4 ILP (device path)             16.45 ns/row
+  check x4 ILP                     max abs 0  max rel 0  bit-identical 1536/1536
+(c) x4 + bsl unpack                   14.20 ns/row
+  check (c)                        max abs 0  max rel 0  bit-identical 1536/1536
+(a) t4 register interleave            13.74 ns/row
+  check (a)                        max abs 0  max rel 0  bit-identical 1536/1536
+(a2) t4, h as its own sdot            15.47 ns/row
+  check (a2)                       max abs 0  max rel 0  bit-identical 1536/1536
+(a3) t4 tuned                         14.86 ns/row
+  check (a3)                       max abs 0  max rel 0  bit-identical 1536/1536
+  repack Q3_Kx4 (cost)                 5.11 ns/row
+(a-rp) t4 on repacked copy            14.05 ns/row
+  check (a-rp)                     max abs 0  max rel 0  bit-identical 1536/1536
+(b) Q3_K8 int8 pre-expanded            7.02 ns/row
+  check (b)                        max abs 0  max rel 0  bit-identical 1536/1536
+q4_0 vec_dot (1 row)                  11.70 ns/row
+q4_0x4 gemv (repacked, sdot)           5.63 ns/row
+q6_Kx8 gemv (repacked, 8x4)           11.11 ns/row
+== one slot (gate+up+down, 2,560 rows, 1 thread, cache-hot)
+stock vec_dot          86.0 us  (1.15x device path)
+x4 ILP (device)        74.8 us  (1.00x device path)
+(c)                    68.2 us  (0.91x device path)
+(a) t4                 69.0 us  (0.92x device path)
+repack cost            22.5 us  (0.30x device path)
+(a-rp)                 61.9 us  (0.83x device path)
+(b) Q3_K8              31.9 us  (0.43x device path)
+q4_0x4 gemv            24.9 us  (0.33x device path)
+(a2) t4h               73.3 us  (0.98x device path)
+(a3) t4 tuned          66.4 us  (0.89x device path)
+ALL CHECKS BIT-IDENTICAL

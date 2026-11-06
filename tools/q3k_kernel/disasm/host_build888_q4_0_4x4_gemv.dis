@@ -1,0 +1,59 @@
+0000000000000cbc <_ggml_gemv_q4_0_4x4_q8_0>:
+     cbc:      	add	w8, w0, #0x1f
+     cc0:      	cmp	w0, #0x0
+     cc4:      	csel	w9, w8, w0, lt
+     cc8:      	subs	w8, w6, #0x1
+     ccc:      	b.lt	0xda0 <_ggml_gemv_q4_0_4x4_q8_0+0xe4>
+     cd0:      	cmp	w0, #0x1f
+     cd4:      	b.le	0xda4 <_ggml_gemv_q4_0_4x4_q8_0+0xe8>
+     cd8:      	mov	w8, #0x0                ; =0
+     cdc:      	asr	w9, w9, #5
+     ce0:      	sub	w10, w9, #0x1
+     ce4:      	mov	w11, #0x48              ; =72
+     ce8:      	umull	x10, w10, w11
+     cec:      	add	x10, x10, #0x48
+     cf0:      	add	x11, x3, #0x28
+     cf4:      	movi.16b	v0, #0xf0
+     cf8:      	mov	x12, x9
+     cfc:      	mov	x13, x11
+     d00:      	mov	x14, x4
+     d04:      	movi.2d	v1, #0000000000000000
+     d08:      	ldp	q2, q3, [x13, #-0x20]
+     d0c:      	ldp	q4, q5, [x13]
+     d10:      	ldur	d6, [x13, #-0x28]
+     d14:      	mov	x15, x14
+     d18:      	ld1r.4h	{ v7 }, [x15], #2
+     d1c:      	ldr	q16, [x15]
+     d20:      	ldur	q17, [x14, #0x12]
+     d24:      	shl.16b	v18, v2, #0x4
+     d28:      	movi.2d	v19, #0000000000000000
+     d2c:      	sdot	v19, v18, v16[0]
+     d30:      	shl.16b	v18, v3, #0x4
+     d34:      	sdot	v19, v18, v16[1]
+     d38:      	shl.16b	v18, v4, #0x4
+     d3c:      	sdot	v19, v18, v16[2]
+     d40:      	shl.16b	v18, v5, #0x4
+     d44:      	sdot	v19, v18, v16[3]
+     d48:      	and.16b	v2, v2, v0
+     d4c:      	sdot	v19, v2, v17[0]
+     d50:      	and.16b	v2, v3, v0
+     d54:      	sdot	v19, v2, v17[1]
+     d58:      	and.16b	v2, v4, v0
+     d5c:      	sdot	v19, v2, v17[2]
+     d60:      	and.16b	v2, v5, v0
+     d64:      	sdot	v19, v2, v17[3]
+     d68:      	scvtf.4s	v2, v19, #0x4
+     d6c:      	fcvtl	v3.4s, v7.4h
+     d70:      	fcvtl	v4.4s, v6.4h
+     d74:      	fmul.4s	v3, v3, v4
+     d78:      	fmla.4s	v1, v3, v2
+     d7c:      	add	x14, x14, #0x22
+     d80:      	add	x13, x13, #0x48
+     d84:      	subs	w12, w12, #0x1
+     d88:      	b.ne	0xd08 <_ggml_gemv_q4_0_4x4_q8_0+0x4c>
+     d8c:      	str	q1, [x1], #0x10
+     d90:      	add	w8, w8, #0x4
+     d94:      	add	x11, x11, x10
+     d98:      	cmp	w8, w6
+     d9c:      	b.lt	0xcf8 <_ggml_gemv_q4_0_4x4_q8_0+0x3c>
+     da0:      	ret

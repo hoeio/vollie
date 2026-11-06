@@ -1,0 +1,26 @@
+# Bonnie 2026-11-06: instruction mix of ggml_vec_dot_q3_K_q8_K_x4 (ILP path) per region; regions = prologue(incl. skipped prfm block), half-1 r-loop (x4 per block), between, half-2 r-loop (x4), epilogue
+## host build-888 (armv8.2-a+dotprod+fp16, Apple clang), arch/arm/quants.c.o
+0x2758-0x28c8: total 93, loads 17, stores 7
+   add:16, prfm:8, ld1.16b:8, ushl.4s:8, and.16b:8, stp:7, prfum:4, ldr:4, mov.d:4, ld1r.4s:4, shl.4s:4, orr.16b:4, add.16b:4, movi.16b:3, mul:2, mov:2, cbz:1, madd:1, ldp:1
+0x28cc-0x29f4: total 75, loads 4, stores 1
+   and.16b:12, movi.2d:8, sub.16b:8, sdot.4s:8, ushr.16b:8, addp.4s:6, add:3, ldr:2, mvn.16b:2, shl.16b:2, add.16b:2, bic.16b:2, madd:1, lsl:1, ldp:1, ld1.16b:1, sshll.8h:1, sshll.4s:1, mul.4s:1, sshll2.4s:1, mla.4s:1, str:1, cmp:1, b.ne:1
+0x29f8-0x29fc: total 2, loads 0, stores 0
+   mov:2
+0x2a00-0x2b38: total 79, loads 5, stores 3
+   and.16b:12, ushr.16b:10, sub.16b:8, movi.2d:8, sdot.4s:8, addp.4s:6, ldr:3, add:2, mvn.16b:2, shl.16b:2, add.16b:2, bic.16b:2, mla.4s:2, str:2, ldp:1, lsl:1, madd:1, stur:1, ld1.16b:1, sshll2.8h:1, sshll.4s:1, sshll2.4s:1, cmp:1, b.ne:1
+0x2b3c-0x2bdc: total 41, loads 8, stores 0
+   ldr:5, add:5, fcvt:4, fmul:4, addv.4s:4, fmov:4, scvtf:4, fmadd:4, ldp:3, mul:2, cmp:1, b.ne:1
+## device build (NDK clang, libggml-cpu-android_armv8.2_2.so of the r9 APK, Tom's dump)
+0x125338-0x1254bc: total 98, loads 17, stores 9
+   add:22, prfm:8, ushl:8, ld1:8, and:8, mov:6, stp:6, prfum:4, ldr:4, ld1r:4, movi:4, shl:4, orr:4, mul:2, st1:2, str:1, cbz:1, ldp:1, madd:1
+0x1254c0-0x1255ec: total 76, loads 4, stores 1
+   and:12, movi:8, ushr:8, sub:8, sdot:8, addp:6, add:5, ldr:2, mvn:2, bic:2, shl:2, sshll:2, ldp:1, nop:1, madd:1, ld1:1, lsl:1, cmp:1, sshll2:1, mul:1, mla:1, str:1, b.ne:1
+0x1255f0-0x125608: total 7, loads 2, stores 0
+   add:2, mov:2, ld1:2, movi:1
+0x12560c-0x125748: total 80, loads 5, stores 2
+   and:12, ushr:10, movi:8, sub:8, sdot:8, addp:6, add:5, ldr:3, mvn:2, shl:2, bic:2, sshll2:2, mla:2, ldp:1, nop:1, madd:1, stp:1, ld1:1, lsl:1, cmp:1, sshll:1, str:1, b.ne:1
+0x12574c-0x1257c8: total 32, loads 8, stores 0
+   add:8, addv:4, ldr:3, ld1:3, ldp:2, zip1:2, mov:2, mul:1, cmp:1, ext:1, fcvtl:1, fmul:1, scvtf:1, fmla:1, b.ne:1
+## host build-888 ggml_gemv_q4_0_4x4_q8_0 block loop (128 MACs)
+0xd08-0xd88: total 33, loads 6, stores 0
+   sdot:8, shl.16b:4, and.16b:4, ldp:2, ldur:2, fcvtl:2, add:2, mov:1, ld1r.4h:1, ldr:1, movi.2d:1, scvtf.4s:1, fmul.4s:1, fmla.4s:1, subs:1, b.ne:1

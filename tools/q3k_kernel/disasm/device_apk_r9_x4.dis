@@ -1,0 +1,620 @@
+
+vollie/android/app/src/main/jniLibs/arm64-v8a/libggml-cpu-android_armv8.2_2.so:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+000000000012525c <ggml_vec_dot_q3_K_q8_K_x4>:
+  12525c:      	stp	d15, d14, [sp, #-0xa0]!
+  125260:      	stp	d13, d12, [sp, #0x10]
+  125264:      	stp	d11, d10, [sp, #0x20]
+  125268:      	stp	d9, d8, [sp, #0x30]
+  12526c:      	stp	x29, x30, [sp, #0x40]
+  125270:      	str	x28, [sp, #0x50]
+  125274:      	stp	x26, x25, [sp, #0x60]
+  125278:      	stp	x24, x23, [sp, #0x70]
+  12527c:      	stp	x22, x21, [sp, #0x80]
+  125280:      	stp	x20, x19, [sp, #0x90]
+  125284:      	add	x29, sp, #0x40
+  125288:      	sub	sp, sp, #0x250
+  12528c:      	mrs	x8, TPIDR_EL0
+  125290:      	add	w10, w0, #0xff
+  125294:      	lsl	x12, x3, #1
+  125298:      	ldr	x9, [x8, #0x28]
+  12529c:      	cmp	w0, #0x0
+  1252a0:      	csel	w13, w10, w0, lt
+  1252a4:      	add	x10, x2, x3
+  1252a8:      	add	x11, x2, x12
+  1252ac:      	stur	x9, [x29, #-0x48]
+  1252b0:      	adrp	x9, 0x19e000 <_ZTINSt6__ndk114codecvt_bynameIDiDu9mbstate_tEE+0x10>
+  1252b4:      	add	x12, x10, x12
+  1252b8:      	ldr	x9, [x9, #0x3b0]
+  1252bc:      	stp	x2, x10, [sp, #0x120]
+  1252c0:      	stp	x11, x12, [sp, #0x130]
+  1252c4:      	ldr	w14, [x9]
+  1252c8:      	asr	w9, w13, #8
+  1252cc:      	cbz	w14, 0x1257d0 <ggml_vec_dot_q3_K_q8_K_x4+0x574>
+  1252d0:      	movi	v0.2d, #0000000000000000
+  1252d4:      	cmp	w0, #0x100
+  1252d8:      	b.lt	0x125bac <ggml_vec_dot_q3_K_q8_K_x4+0x950>
+  1252dc:      	adrp	x14, 0x19e000 <_ZTINSt6__ndk114codecvt_bynameIDiDu9mbstate_tEE+0x10>
+  1252e0:      	adrp	x7, 0x49000
+  1252e4:      	movi	v5.16b, #0x4
+  1252e8:      	ldr	x14, [x14, #0x3b8]
+  1252ec:      	ldr	q1, [x7, #0x520]
+  1252f0:      	lsl	x0, x3, #2
+  1252f4:      	adrp	x19, 0x48000
+  1252f8:      	add	x3, sp, #0x180
+  1252fc:      	mov	x13, xzr
+  125300:      	ldr	w14, [x14]
+  125304:      	str	q1, [sp, #0x50]
+  125308:      	ldr	q1, [x19, #0xf90]
+  12530c:      	add	x15, x2, x0
+  125310:      	add	x16, x10, x0
+  125314:      	add	x17, x11, x0
+  125318:      	add	x0, x12, x0
+  12531c:      	add	x3, x3, #0x10
+  125320:      	mov	w5, #0x124              // =292
+  125324:      	mov	w6, #0x6e               // =110
+  125328:      	add	x7, sp, #0x120
+  12532c:      	sub	x19, x29, #0x90
+  125330:      	add	x20, sp, #0x140
+  125334:      	str	q1, [sp, #0x40]
+  125338:      	str	q0, [sp, #0x110]
+  12533c:      	cbz	w14, 0x125384 <ggml_vec_dot_q3_K_q8_K_x4+0x128>
+  125340:      	mul	x21, x13, x6
+  125344:      	add	x22, x15, x21
+  125348:      	add	x23, x16, x21
+  12534c:      	prfm	pldl1keep, [x22]
+  125350:      	prfm	pldl1keep, [x22, #0x40]
+  125354:      	prfum	pldl1keep, [x22, #0x6d]
+  125358:      	add	x22, x17, x21
+  12535c:      	add	x21, x0, x21
+  125360:      	prfm	pldl1keep, [x23]
+  125364:      	prfm	pldl1keep, [x23, #0x40]
+  125368:      	prfum	pldl1keep, [x23, #0x6d]
+  12536c:      	prfm	pldl1keep, [x22]
+  125370:      	prfm	pldl1keep, [x22, #0x40]
+  125374:      	prfum	pldl1keep, [x22, #0x6d]
+  125378:      	prfm	pldl1keep, [x21]
+  12537c:      	prfm	pldl1keep, [x21, #0x40]
+  125380:      	prfum	pldl1keep, [x21, #0x6d]
+  125384:      	mul	x25, x13, x6
+  125388:      	ldp	q1, q0, [sp, #0x40]
+  12538c:      	mov	x22, xzr
+  125390:      	add	x21, x2, x25
+  125394:      	add	x23, x10, x25
+  125398:      	add	x24, x11, x25
+  12539c:      	add	x26, x21, #0x68
+  1253a0:      	add	x25, x12, x25
+  1253a4:      	ldr	d16, [x21, #0x60]
+  1253a8:      	ld1r	{ v18.4s }, [x26]
+  1253ac:      	add	x26, x23, #0x68
+  1253b0:      	ldr	d17, [x23, #0x60]
+  1253b4:      	ld1r	{ v20.4s }, [x26]
+  1253b8:      	add	x26, x24, #0x68
+  1253bc:      	ldr	d19, [x24, #0x60]
+  1253c0:      	ldr	d21, [x25, #0x60]
+  1253c4:      	ld1r	{ v22.4s }, [x26]
+  1253c8:      	add	x26, x25, #0x68
+  1253cc:      	ld1r	{ v23.4s }, [x26]
+  1253d0:      	mov	v16.d[1], v16.d[0]
+  1253d4:      	mov	v17.d[1], v17.d[0]
+  1253d8:      	mov	v19.d[1], v19.d[0]
+  1253dc:      	mov	v21.d[1], v21.d[0]
+  1253e0:      	ushl	v18.4s, v18.4s, v1.4s
+  1253e4:      	ushl	v20.4s, v20.4s, v1.4s
+  1253e8:      	ushl	v22.4s, v22.4s, v1.4s
+  1253ec:      	ld1	{ v24.16b, v25.16b }, [x21]
+  1253f0:      	ushl	v23.4s, v23.4s, v1.4s
+  1253f4:      	movi	v1.16b, #0x30
+  1253f8:      	madd	x21, x13, x5, x4
+  1253fc:      	ushl	v16.4s, v16.4s, v0.4s
+  125400:      	ushl	v17.4s, v17.4s, v0.4s
+  125404:      	shl	v18.4s, v18.4s, #0x4
+  125408:      	ushl	v19.4s, v19.4s, v0.4s
+  12540c:      	ushl	v21.4s, v21.4s, v0.4s
+  125410:      	movi	v0.16b, #0xf
+  125414:      	shl	v20.4s, v20.4s, #0x4
+  125418:      	shl	v22.4s, v22.4s, #0x4
+  12541c:      	shl	v23.4s, v23.4s, #0x4
+  125420:      	and	v18.16b, v18.16b, v1.16b
+  125424:      	ld1	{ v26.16b, v27.16b }, [x23]
+  125428:      	ld1	{ v28.16b, v29.16b }, [x24]
+  12542c:      	add	x23, x21, #0x4
+  125430:      	stp	q24, q25, [sp, #0x180]
+  125434:      	add	x24, x21, #0xc4
+  125438:      	and	v16.16b, v16.16b, v0.16b
+  12543c:      	and	v17.16b, v17.16b, v0.16b
+  125440:      	and	v20.16b, v20.16b, v1.16b
+  125444:      	and	v19.16b, v19.16b, v0.16b
+  125448:      	and	v22.16b, v22.16b, v1.16b
+  12544c:      	and	v21.16b, v21.16b, v0.16b
+  125450:      	and	v23.16b, v23.16b, v1.16b
+  125454:      	movi	v0.16b, #0xe0
+  125458:      	stp	q26, q27, [sp, #0x1a0]
+  12545c:      	orr	v16.16b, v18.16b, v16.16b
+  125460:      	orr	v17.16b, v20.16b, v17.16b
+  125464:      	ld1	{ v24.16b, v25.16b, v26.16b, v27.16b }, [x23]
+  125468:      	orr	v18.16b, v22.16b, v19.16b
+  12546c:      	add	x23, x21, #0x44
+  125470:      	stp	q28, q29, [sp, #0x1c0]
+  125474:      	orr	v19.16b, v23.16b, v21.16b
+  125478:      	ld1	{ v28.16b, v29.16b, v30.16b, v31.16b }, [x23]
+  12547c:      	add	x23, x21, #0x84
+  125480:      	add	v16.16b, v16.16b, v0.16b
+  125484:      	add	v17.16b, v17.16b, v0.16b
+  125488:      	movi	v20.16b, #0x3
+  12548c:      	add	v8.16b, v18.16b, v0.16b
+  125490:      	ld1	{ v10.16b, v11.16b }, [x25]
+  125494:      	add	v9.16b, v19.16b, v0.16b
+  125498:      	ld1	{ v0.16b, v1.16b, v2.16b, v3.16b }, [x23]
+  12549c:      	add	x23, sp, #0xd0
+  1254a0:      	stp	q16, q17, [x29, #-0x90]
+  1254a4:      	stp	q10, q11, [sp, #0x1e0]
+  1254a8:      	st1	{ v0.2d, v1.2d, v2.2d, v3.2d }, [x23]
+  1254ac:      	ld1	{ v0.16b, v1.16b, v2.16b, v3.16b }, [x24]
+  1254b0:      	add	x23, sp, #0x90
+  1254b4:      	st1	{ v0.2d, v1.2d, v2.2d, v3.2d }, [x23]
+  1254b8:      	mov	x23, x3
+  1254bc:      	stp	q8, q9, [x29, #-0x70]
+  1254c0:      	ldr	x24, [x7, x22, lsl #3]
+  1254c4:      	ldp	q9, q8, [x23, #-0x10]
+  1254c8:      	nop
+  1254cc:      	madd	x24, x13, x6, x24
+  1254d0:      	movi	v11.2d, #0000000000000000
+  1254d4:      	add	x23, x23, #0x20
+  1254d8:      	mvn	v10.16b, v9.16b
+  1254dc:      	mvn	v12.16b, v8.16b
+  1254e0:      	bic	v8.16b, v5.16b, v8.16b
+  1254e4:      	add	x24, x24, #0x20
+  1254e8:      	shl	v13.16b, v10.16b, #0x2
+  1254ec:      	shl	v1.16b, v12.16b, #0x2
+  1254f0:      	ld1	{ v14.16b, v15.16b }, [x24]
+  1254f4:      	add	v2.16b, v10.16b, v10.16b
+  1254f8:      	add	v3.16b, v12.16b, v12.16b
+  1254fc:      	ushr	v10.16b, v10.16b, #0x1
+  125500:      	ushr	v12.16b, v12.16b, #0x1
+  125504:      	lsl	x24, x22, #4
+  125508:      	and	v13.16b, v13.16b, v5.16b
+  12550c:      	and	v1.16b, v1.16b, v5.16b
+  125510:      	add	x22, x22, #0x1
+  125514:      	ushr	v6.16b, v14.16b, #0x2
+  125518:      	and	v7.16b, v14.16b, v20.16b
+  12551c:      	ushr	v0.16b, v15.16b, #0x2
+  125520:      	and	v4.16b, v15.16b, v20.16b
+  125524:      	and	v2.16b, v2.16b, v5.16b
+  125528:      	and	v3.16b, v3.16b, v5.16b
+  12552c:      	ushr	v16.16b, v14.16b, #0x4
+  125530:      	ushr	v17.16b, v15.16b, #0x4
+  125534:      	ushr	v18.16b, v14.16b, #0x6
+  125538:      	and	v6.16b, v6.16b, v20.16b
+  12553c:      	sub	v7.16b, v7.16b, v13.16b
+  125540:      	and	v0.16b, v0.16b, v20.16b
+  125544:      	sub	v1.16b, v4.16b, v1.16b
+  125548:      	movi	v4.2d, #0000000000000000
+  12554c:      	ushr	v19.16b, v15.16b, #0x6
+  125550:      	and	v16.16b, v16.16b, v20.16b
+  125554:      	and	v17.16b, v17.16b, v20.16b
+  125558:      	cmp	x22, #0x4
+  12555c:      	sub	v2.16b, v6.16b, v2.16b
+  125560:      	movi	v6.2d, #0000000000000000
+  125564:      	sub	v0.16b, v0.16b, v3.16b
+  125568:      	movi	v3.2d, #0000000000000000
+  12556c:      	sdot	v11.4s, v7.16b, v24.16b
+  125570:      	bic	v7.16b, v5.16b, v9.16b
+  125574:      	and	v9.16b, v10.16b, v5.16b
+  125578:      	sdot	v4.4s, v1.16b, v25.16b
+  12557c:      	and	v1.16b, v12.16b, v5.16b
+  125580:      	sdot	v6.4s, v2.16b, v26.16b
+  125584:      	movi	v2.2d, #0000000000000000
+  125588:      	sdot	v3.4s, v0.16b, v27.16b
+  12558c:      	sub	v0.16b, v16.16b, v7.16b
+  125590:      	sub	v7.16b, v17.16b, v8.16b
+  125594:      	movi	v16.2d, #0000000000000000
+  125598:      	sub	v17.16b, v18.16b, v9.16b
+  12559c:      	movi	v18.2d, #0000000000000000
+  1255a0:      	sub	v1.16b, v19.16b, v1.16b
+  1255a4:      	movi	v19.2d, #0000000000000000
+  1255a8:      	addp	v4.4s, v11.4s, v4.4s
+  1255ac:      	addp	v3.4s, v6.4s, v3.4s
+  1255b0:      	ldr	q6, [x19, x24]
+  1255b4:      	sdot	v2.4s, v0.16b, v28.16b
+  1255b8:      	sdot	v16.4s, v7.16b, v29.16b
+  1255bc:      	sdot	v18.4s, v17.16b, v30.16b
+  1255c0:      	sdot	v19.4s, v1.16b, v31.16b
+  1255c4:      	sshll	v0.8h, v6.8b, #0x0
+  1255c8:      	addp	v1.4s, v4.4s, v3.4s
+  1255cc:      	addp	v2.4s, v2.4s, v16.4s
+  1255d0:      	sshll	v4.4s, v0.4h, #0x0
+  1255d4:      	sshll2	v0.4s, v0.8h, #0x0
+  1255d8:      	addp	v3.4s, v18.4s, v19.4s
+  1255dc:      	mul	v1.4s, v1.4s, v4.4s
+  1255e0:      	addp	v2.4s, v2.4s, v3.4s
+  1255e4:      	mla	v1.4s, v2.4s, v0.4s
+  1255e8:      	str	q1, [x20, x24]
+  1255ec:      	b.ne	0x1254c0 <ggml_vec_dot_q3_K_q8_K_x4+0x264>
+  1255f0:      	add	x24, sp, #0xd0
+  1255f4:      	movi	v30.16b, #0x3
+  1255f8:      	mov	x22, xzr
+  1255fc:      	ld1	{ v20.2d, v21.2d, v22.2d, v23.2d }, [x24]
+  125600:      	add	x24, sp, #0x90
+  125604:      	mov	x23, x3
+  125608:      	ld1	{ v8.2d, v9.2d, v10.2d, v11.2d }, [x24]
+  12560c:      	ldp	q0, q1, [x23, #-0x10]
+  125610:      	movi	v18.2d, #0000000000000000
+  125614:      	ldr	x24, [x7, x22, lsl #3]
+  125618:      	nop
+  12561c:      	madd	x24, x13, x6, x24
+  125620:      	ushr	v24.16b, v0.16b, #0x4
+  125624:      	ushr	v25.16b, v1.16b, #0x4
+  125628:      	mvn	v26.16b, v24.16b
+  12562c:      	mvn	v0.16b, v25.16b
+  125630:      	stp	q24, q25, [x23, #-0x10]
+  125634:      	add	x24, x24, #0x40
+  125638:      	add	x23, x23, #0x20
+  12563c:      	ld1	{ v1.16b, v2.16b }, [x24]
+  125640:      	lsl	x24, x22, #4
+  125644:      	add	x22, x22, #0x1
+  125648:      	shl	v3.16b, v26.16b, #0x2
+  12564c:      	add	v6.16b, v26.16b, v26.16b
+  125650:      	add	v7.16b, v0.16b, v0.16b
+  125654:      	shl	v4.16b, v0.16b, #0x2
+  125658:      	ushr	v26.16b, v26.16b, #0x1
+  12565c:      	ushr	v0.16b, v0.16b, #0x1
+  125660:      	and	v16.16b, v1.16b, v30.16b
+  125664:      	ushr	v17.16b, v1.16b, #0x2
+  125668:      	ushr	v27.16b, v2.16b, #0x2
+  12566c:      	and	v3.16b, v3.16b, v5.16b
+  125670:      	and	v19.16b, v2.16b, v30.16b
+  125674:      	ushr	v28.16b, v1.16b, #0x4
+  125678:      	and	v4.16b, v4.16b, v5.16b
+  12567c:      	and	v6.16b, v6.16b, v5.16b
+  125680:      	and	v7.16b, v7.16b, v5.16b
+  125684:      	and	v17.16b, v17.16b, v30.16b
+  125688:      	and	v27.16b, v27.16b, v30.16b
+  12568c:      	ushr	v29.16b, v2.16b, #0x4
+  125690:      	sub	v3.16b, v16.16b, v3.16b
+  125694:      	ushr	v16.16b, v1.16b, #0x6
+  125698:      	ushr	v1.16b, v2.16b, #0x6
+  12569c:      	movi	v2.2d, #0000000000000000
+  1256a0:      	sub	v4.16b, v19.16b, v4.16b
+  1256a4:      	movi	v19.2d, #0000000000000000
+  1256a8:      	sub	v6.16b, v17.16b, v6.16b
+  1256ac:      	movi	v17.2d, #0000000000000000
+  1256b0:      	sub	v7.16b, v27.16b, v7.16b
+  1256b4:      	bic	v27.16b, v5.16b, v24.16b
+  1256b8:      	and	v28.16b, v28.16b, v30.16b
+  1256bc:      	and	v26.16b, v26.16b, v5.16b
+  1256c0:      	sdot	v18.4s, v3.16b, v20.16b
+  1256c4:      	bic	v3.16b, v5.16b, v25.16b
+  1256c8:      	and	v29.16b, v29.16b, v30.16b
+  1256cc:      	and	v0.16b, v0.16b, v5.16b
+  1256d0:      	sdot	v2.4s, v4.16b, v21.16b
+  1256d4:      	cmp	x22, #0x4
+  1256d8:      	sdot	v19.4s, v6.16b, v22.16b
+  1256dc:      	sdot	v17.4s, v7.16b, v23.16b
+  1256e0:      	sub	v4.16b, v28.16b, v27.16b
+  1256e4:      	movi	v6.2d, #0000000000000000
+  1256e8:      	sub	v3.16b, v29.16b, v3.16b
+  1256ec:      	movi	v7.2d, #0000000000000000
+  1256f0:      	sub	v16.16b, v16.16b, v26.16b
+  1256f4:      	movi	v26.2d, #0000000000000000
+  1256f8:      	sub	v0.16b, v1.16b, v0.16b
+  1256fc:      	movi	v1.2d, #0000000000000000
+  125700:      	addp	v2.4s, v18.4s, v2.4s
+  125704:      	addp	v17.4s, v19.4s, v17.4s
+  125708:      	sdot	v6.4s, v4.16b, v8.16b
+  12570c:      	ldr	q4, [x19, x24]
+  125710:      	sdot	v7.4s, v3.16b, v9.16b
+  125714:      	sdot	v26.4s, v16.16b, v10.16b
+  125718:      	sdot	v1.4s, v0.16b, v11.16b
+  12571c:      	sshll2	v0.8h, v4.16b, #0x0
+  125720:      	addp	v2.4s, v2.4s, v17.4s
+  125724:      	addp	v3.4s, v6.4s, v7.4s
+  125728:      	ldr	q6, [x20, x24]
+  12572c:      	sshll	v4.4s, v0.4h, #0x0
+  125730:      	sshll2	v0.4s, v0.8h, #0x0
+  125734:      	addp	v1.4s, v26.4s, v1.4s
+  125738:      	mla	v6.4s, v2.4s, v4.4s
+  12573c:      	addp	v1.4s, v3.4s, v1.4s
+  125740:      	mla	v6.4s, v1.4s, v0.4s
+  125744:      	str	q6, [x20, x24]
+  125748:      	b.ne	0x12560c <ggml_vec_dot_q3_K_q8_K_x4+0x3b0>
+  12574c:      	mul	x22, x13, x6
+  125750:      	ldp	q0, q1, [sp, #0x160]
+  125754:      	ldp	q3, q4, [sp, #0x140]
+  125758:      	add	x13, x13, #0x1
+  12575c:      	cmp	x13, x9
+  125760:      	addv	s0, v0.4s
+  125764:      	addv	s1, v1.4s
+  125768:      	addv	s3, v3.4s
+  12576c:      	addv	s4, v4.4s
+  125770:      	add	x23, x2, x22
+  125774:      	ldr	h2, [x23, #0x6c]
+  125778:      	add	x23, x10, x22
+  12577c:      	add	x23, x23, #0x6c
+  125780:      	zip1	v1.4s, v0.4s, v1.4s
+  125784:      	ld1	{ v2.h }[1], [x23]
+  125788:      	add	x23, x11, x22
+  12578c:      	add	x22, x12, x22
+  125790:      	add	x23, x23, #0x6c
+  125794:      	add	x22, x22, #0x6c
+  125798:      	zip1	v3.4s, v3.4s, v4.4s
+  12579c:      	ld1	{ v2.h }[2], [x23]
+  1257a0:      	ext	v0.16b, v0.16b, v1.16b, #0x8
+  1257a4:      	ld1	{ v2.h }[3], [x22]
+  1257a8:      	mov	v3.d[1], v0.d[1]
+  1257ac:      	ldr	s0, [x21]
+  1257b0:      	fcvtl	v1.4s, v2.4h
+  1257b4:      	ldr	q2, [sp, #0x110]
+  1257b8:      	fmul	v0.4s, v1.4s, v0.s[0]
+  1257bc:      	scvtf	v1.4s, v3.4s
+  1257c0:      	fmla	v2.4s, v1.4s, v0.4s
+  1257c4:      	mov	v0.16b, v2.16b
+  1257c8:      	b.ne	0x125338 <ggml_vec_dot_q3_K_q8_K_x4+0xdc>
+  1257cc:      	b	0x125bac <ggml_vec_dot_q3_K_q8_K_x4+0x950>
+  1257d0:      	adrp	x13, 0x19e000 <_ZTINSt6__ndk114codecvt_bynameIDiDu9mbstate_tEE+0x10>
+  1257d4:      	cmp	w0, #0x100
+  1257d8:      	ldr	x13, [x13, #0x3b8]
+  1257dc:      	stp	xzr, xzr, [sp, #0x180]
+  1257e0:      	ldr	w13, [x13]
+  1257e4:      	b.lt	0x125ba8 <ggml_vec_dot_q3_K_q8_K_x4+0x94c>
+  1257e8:      	movi	v1.16b, #0x4
+  1257ec:      	movi	v2.16b, #0x3
+  1257f0:      	lsl	x0, x3, #2
+  1257f4:      	mov	x14, xzr
+  1257f8:      	mov	w15, #0x30303030        // =808464432
+  1257fc:      	mov	w16, #0xf0f0f0f         // =252645135
+  125800:      	add	x17, x2, x0
+  125804:      	add	x10, x10, x0
+  125808:      	add	x11, x11, x0
+  12580c:      	add	x12, x12, x0
+  125810:      	mov	w0, #0x124              // =292
+  125814:      	add	x2, sp, #0x120
+  125818:      	mov	w3, #0x6e               // =110
+  12581c:      	add	x5, sp, #0x180
+  125820:      	cbz	w13, 0x12586c <ggml_vec_dot_q3_K_q8_K_x4+0x610>
+  125824:      	mul	x6, x14, x3
+  125828:      	add	x7, x17, x6
+  12582c:      	add	x19, x10, x6
+  125830:      	prfm	pldl1keep, [x7]
+  125834:      	prfm	pldl1keep, [x7, #0x40]
+  125838:      	prfum	pldl1keep, [x7, #0x6d]
+  12583c:      	add	x7, x11, x6
+  125840:      	add	x6, x12, x6
+  125844:      	prfm	pldl1keep, [x19]
+  125848:      	prfm	pldl1keep, [x19, #0x40]
+  12584c:      	prfum	pldl1keep, [x19, #0x6d]
+  125850:      	prfm	pldl1keep, [x7]
+  125854:      	prfm	pldl1keep, [x7, #0x40]
+  125858:      	prfum	pldl1keep, [x7, #0x6d]
+  12585c:      	prfm	pldl1keep, [x6]
+  125860:      	prfm	pldl1keep, [x6, #0x40]
+  125864:      	prfum	pldl1keep, [x6, #0x6d]
+  125868:      	nop
+  12586c:      	madd	x6, x14, x0, x4
+  125870:      	add	x21, sp, #0xd0
+  125874:      	add	x7, x6, #0x4
+  125878:      	add	x19, x6, #0x44
+  12587c:      	add	x20, x6, #0x84
+  125880:      	ld1	{ v3.16b, v4.16b, v5.16b, v6.16b }, [x7]
+  125884:      	ldr	s0, [x6], #0xc4
+  125888:      	str	s0, [sp, #0x40]
+  12588c:      	st1	{ v3.2d, v4.2d, v5.2d, v6.2d }, [x21]
+  125890:      	ld1	{ v3.16b, v4.16b, v5.16b, v6.16b }, [x19]
+  125894:      	add	x19, sp, #0x90
+  125898:      	st1	{ v3.2d, v4.2d, v5.2d, v6.2d }, [x19]
+  12589c:      	ld1	{ v3.16b, v4.16b, v5.16b, v6.16b }, [x20]
+  1258a0:      	add	x19, sp, #0x50
+  1258a4:      	st1	{ v3.2d, v4.2d, v5.2d, v6.2d }, [x19]
+  1258a8:      	ld1	{ v3.16b, v4.16b, v5.16b, v6.16b }, [x6]
+  1258ac:      	mov	x19, sp
+  1258b0:      	mov	x6, xzr
+  1258b4:      	st1	{ v3.2d, v4.2d, v5.2d, v6.2d }, [x19]
+  1258b8:      	ldr	x7, [x2, x6, lsl #3]
+  1258bc:      	nop
+  1258c0:      	madd	x21, x14, x3, x7
+  1258c4:      	add	x25, sp, #0xd0
+  1258c8:      	movi	v24.2d, #0000000000000000
+  1258cc:      	movi	v3.2d, #0000000000000000
+  1258d0:      	movi	v14.2d, #0000000000000000
+  1258d4:      	ldr	h0, [x21, #0x6c]
+  1258d8:      	mov	x22, x21
+  1258dc:      	ldr	w20, [x21, #0x68]
+  1258e0:      	ldp	w7, w19, [x21, #0x60]
+  1258e4:      	str	h0, [sp, #0x110]
+  1258e8:      	and	w24, w15, w20, lsl #4
+  1258ec:      	add	x21, x21, #0x40
+  1258f0:      	ld1	{ v30.16b, v31.16b }, [x22], #32
+  1258f4:      	ld1	{ v8.16b, v9.16b }, [x22]
+  1258f8:      	ld1	{ v25.2d, v26.2d, v27.2d, v28.2d }, [x25]
+  1258fc:      	and	w22, w15, w20, lsl #2
+  125900:      	and	w23, w19, w16
+  125904:      	and	w19, w16, w19, lsr #4
+  125908:      	ushr	v11.16b, v8.16b, #0x2
+  12590c:      	ushr	v12.16b, v9.16b, #0x2
+  125910:      	and	v0.16b, v8.16b, v2.16b
+  125914:      	mvn	v5.16b, v30.16b
+  125918:      	mvn	v6.16b, v31.16b
+  12591c:      	ushr	v13.16b, v8.16b, #0x4
+  125920:      	ushr	v4.16b, v8.16b, #0x6
+  125924:      	ushr	v7.16b, v9.16b, #0x6
+  125928:      	and	v10.16b, v9.16b, v2.16b
+  12592c:      	and	v23.16b, v11.16b, v2.16b
+  125930:      	and	v8.16b, v12.16b, v2.16b
+  125934:      	ushr	v17.16b, v9.16b, #0x4
+  125938:      	add	v16.16b, v5.16b, v5.16b
+  12593c:      	add	v19.16b, v6.16b, v6.16b
+  125940:      	shl	v15.16b, v5.16b, #0x2
+  125944:      	shl	v18.16b, v6.16b, #0x2
+  125948:      	orr	w22, w22, w23
+  12594c:      	and	w23, w7, w16
+  125950:      	bic	v20.16b, v1.16b, v30.16b
+  125954:      	bic	v21.16b, v1.16b, v31.16b
+  125958:      	ushr	v29.16b, v30.16b, #0x4
+  12595c:      	and	v22.16b, v15.16b, v1.16b
+  125960:      	ushr	v30.16b, v31.16b, #0x4
+  125964:      	orr	w23, w23, w24
+  125968:      	and	v16.16b, v16.16b, v1.16b
+  12596c:      	and	v19.16b, v19.16b, v1.16b
+  125970:      	and	v18.16b, v18.16b, v1.16b
+  125974:      	and	w24, w15, w20, lsr #2
+  125978:      	and	v17.16b, v17.16b, v2.16b
+  12597c:      	ushr	v6.16b, v6.16b, #0x1
+  125980:      	sub	v0.16b, v0.16b, v22.16b
+  125984:      	movi	v22.2d, #0000000000000000
+  125988:      	and	w20, w20, w15
+  12598c:      	sub	v16.16b, v23.16b, v16.16b
+  125990:      	sub	v19.16b, v8.16b, v19.16b
+  125994:      	sub	v18.16b, v10.16b, v18.16b
+  125998:      	ld1	{ v8.16b, v9.16b }, [x21]
+  12599c:      	and	w21, w16, w7, lsr #4
+  1259a0:      	ushr	v5.16b, v5.16b, #0x1
+  1259a4:      	orr	w7, w24, w19
+  1259a8:      	movi	v31.2d, #0000000000000000
+  1259ac:      	sub	v17.16b, v17.16b, v21.16b
+  1259b0:      	sdot	v14.4s, v0.16b, v25.16b
+  1259b4:      	orr	w19, w21, w20
+  1259b8:      	add	x20, sp, #0x90
+  1259bc:      	sdot	v24.4s, v16.16b, v27.16b
+  1259c0:      	sdot	v22.4s, v19.16b, v28.16b
+  1259c4:      	sdot	v3.4s, v18.16b, v26.16b
+  1259c8:      	and	v18.16b, v13.16b, v2.16b
+  1259cc:      	mvn	v13.16b, v30.16b
+  1259d0:      	and	v6.16b, v6.16b, v1.16b
+  1259d4:      	fmov	s0, w23
+  1259d8:      	mvn	v12.16b, v29.16b
+  1259dc:      	and	v5.16b, v5.16b, v1.16b
+  1259e0:      	movi	v10.2d, #0000000000000000
+  1259e4:      	movi	v15.2d, #0000000000000000
+  1259e8:      	movi	v11.2d, #0000000000000000
+  1259ec:      	sub	v16.16b, v18.16b, v20.16b
+  1259f0:      	addp	v18.4s, v24.4s, v22.4s
+  1259f4:      	ld1	{ v21.2d, v22.2d, v23.2d, v24.2d }, [x20]
+  1259f8:      	addp	v3.4s, v14.4s, v3.4s
+  1259fc:      	sub	v6.16b, v7.16b, v6.16b
+  125a00:      	shl	v7.16b, v13.16b, #0x2
+  125a04:      	mov	v0.s[1], w22
+  125a08:      	shl	v20.16b, v12.16b, #0x2
+  125a0c:      	sub	v4.16b, v4.16b, v5.16b
+  125a10:      	ushr	v5.16b, v8.16b, #0x2
+  125a14:      	and	v19.16b, v8.16b, v2.16b
+  125a18:      	add	x20, sp, #0x50
+  125a1c:      	sdot	v31.4s, v16.16b, v21.16b
+  125a20:      	add	v16.16b, v12.16b, v12.16b
+  125a24:      	sdot	v10.4s, v17.16b, v22.16b
+  125a28:      	addp	v14.4s, v3.4s, v18.4s
+  125a2c:      	and	v3.16b, v7.16b, v1.16b
+  125a30:      	and	v18.16b, v9.16b, v2.16b
+  125a34:      	add	v7.16b, v13.16b, v13.16b
+  125a38:      	mov	v0.b[0], w23
+  125a3c:      	and	v17.16b, v20.16b, v1.16b
+  125a40:      	sdot	v15.4s, v6.16b, v24.16b
+  125a44:      	ushr	v6.16b, v9.16b, #0x2
+  125a48:      	and	v5.16b, v5.16b, v2.16b
+  125a4c:      	and	v16.16b, v16.16b, v1.16b
+  125a50:      	sub	v18.16b, v18.16b, v3.16b
+  125a54:      	fmov	s3, w19
+  125a58:      	sdot	v11.4s, v4.16b, v23.16b
+  125a5c:      	sub	v17.16b, v19.16b, v17.16b
+  125a60:      	movi	v4.2d, #0000000000000000
+  125a64:      	movi	v19.2d, #0000000000000000
+  125a68:      	and	v7.16b, v7.16b, v1.16b
+  125a6c:      	and	v6.16b, v6.16b, v2.16b
+  125a70:      	sub	v5.16b, v5.16b, v16.16b
+  125a74:      	movi	v16.2d, #0000000000000000
+  125a78:      	ld1	{ v25.2d, v26.2d, v27.2d, v28.2d }, [x20]
+  125a7c:      	mov	v0.b[4], w22
+  125a80:      	mov	v3.s[1], w7
+  125a84:      	addp	v20.4s, v31.4s, v10.4s
+  125a88:      	movi	v31.8b, #0xe0
+  125a8c:      	sub	v6.16b, v6.16b, v7.16b
+  125a90:      	movi	v7.2d, #0000000000000000
+  125a94:      	ushr	v23.16b, v13.16b, #0x1
+  125a98:      	bic	v22.16b, v1.16b, v29.16b
+  125a9c:      	bic	v24.16b, v1.16b, v30.16b
+  125aa0:      	sdot	v4.4s, v17.16b, v25.16b
+  125aa4:      	sdot	v19.4s, v18.16b, v26.16b
+  125aa8:      	ushr	v17.16b, v8.16b, #0x4
+  125aac:      	ushr	v18.16b, v9.16b, #0x4
+  125ab0:      	sdot	v16.4s, v5.16b, v27.16b
+  125ab4:      	ushr	v5.16b, v12.16b, #0x1
+  125ab8:      	add	v0.8b, v0.8b, v31.8b
+  125abc:      	mov	v3.b[0], w19
+  125ac0:      	mov	x19, sp
+  125ac4:      	and	v17.16b, v17.16b, v2.16b
+  125ac8:      	sdot	v7.4s, v6.16b, v28.16b
+  125acc:      	ld1	{ v25.2d, v26.2d, v27.2d, v28.2d }, [x19]
+  125ad0:      	lsl	x19, x6, #2
+  125ad4:      	add	x6, x6, #0x1
+  125ad8:      	and	v18.16b, v18.16b, v2.16b
+  125adc:      	cmp	x6, #0x4
+  125ae0:      	and	v5.16b, v5.16b, v1.16b
+  125ae4:      	ushr	v6.16b, v8.16b, #0x6
+  125ae8:      	and	v23.16b, v23.16b, v1.16b
+  125aec:      	ushr	v29.16b, v9.16b, #0x6
+  125af0:      	sshll	v0.8h, v0.8b, #0x0
+  125af4:      	mov	v3.b[4], w7
+  125af8:      	addp	v21.4s, v11.4s, v15.4s
+  125afc:      	sub	v17.16b, v17.16b, v22.16b
+  125b00:      	sub	v18.16b, v18.16b, v24.16b
+  125b04:      	sub	v5.16b, v6.16b, v5.16b
+  125b08:      	movi	v6.2d, #0000000000000000
+  125b0c:      	movi	v22.2d, #0000000000000000
+  125b10:      	sub	v23.16b, v29.16b, v23.16b
+  125b14:      	movi	v24.2d, #0000000000000000
+  125b18:      	movi	v29.2d, #0000000000000000
+  125b1c:      	sshll	v30.4s, v0.4h, #0x0
+  125b20:      	addp	v4.4s, v4.4s, v19.4s
+  125b24:      	add	v3.8b, v3.8b, v31.8b
+  125b28:      	addp	v20.4s, v20.4s, v21.4s
+  125b2c:      	addp	v7.4s, v16.4s, v7.4s
+  125b30:      	sdot	v6.4s, v17.16b, v25.16b
+  125b34:      	sshll2	v0.4s, v0.8h, #0x0
+  125b38:      	mul	v30.4s, v14.4s, v30.4s
+  125b3c:      	sdot	v22.4s, v18.16b, v26.16b
+  125b40:      	sdot	v24.4s, v5.16b, v27.16b
+  125b44:      	sdot	v29.4s, v23.16b, v28.16b
+  125b48:      	sshll	v3.8h, v3.8b, #0x0
+  125b4c:      	mla	v30.4s, v20.4s, v0.4s
+  125b50:      	addp	v0.4s, v4.4s, v7.4s
+  125b54:      	addp	v4.4s, v6.4s, v22.4s
+  125b58:      	addp	v5.4s, v24.4s, v29.4s
+  125b5c:      	sshll	v6.4s, v3.4h, #0x0
+  125b60:      	sshll2	v3.4s, v3.8h, #0x0
+  125b64:      	mla	v30.4s, v0.4s, v6.4s
+  125b68:      	addp	v0.4s, v4.4s, v5.4s
+  125b6c:      	ldr	s4, [x5, x19]
+  125b70:      	mla	v30.4s, v0.4s, v3.4s
+  125b74:      	ldr	h3, [sp, #0x110]
+  125b78:      	fcvt	s3, h3
+  125b7c:      	addv	s0, v30.4s
+  125b80:      	fmov	w7, s0
+  125b84:      	ldr	s0, [sp, #0x40]
+  125b88:      	fmul	s0, s0, s3
+  125b8c:      	scvtf	s3, w7
+  125b90:      	fmadd	s0, s0, s3, s4
+  125b94:      	str	s0, [x5, x19]
+  125b98:      	b.ne	0x1258b8 <ggml_vec_dot_q3_K_q8_K_x4+0x65c>
+  125b9c:      	add	x14, x14, #0x1
+  125ba0:      	cmp	x14, x9
+  125ba4:      	b.ne	0x125820 <ggml_vec_dot_q3_K_q8_K_x4+0x5c4>
+  125ba8:      	ldr	q0, [sp, #0x180]
+  125bac:      	str	q0, [x1]
+  125bb0:      	ldr	x8, [x8, #0x28]
+  125bb4:      	ldur	x9, [x29, #-0x48]
+  125bb8:      	cmp	x8, x9
+  125bbc:      	b.ne	0x125bf0 <ggml_vec_dot_q3_K_q8_K_x4+0x994>
+  125bc0:      	add	sp, sp, #0x250
+  125bc4:      	ldp	x20, x19, [sp, #0x90]
+  125bc8:      	ldr	x28, [sp, #0x50]
+  125bcc:      	ldp	x22, x21, [sp, #0x80]
+  125bd0:      	ldp	x24, x23, [sp, #0x70]
+  125bd4:      	ldp	x26, x25, [sp, #0x60]
+  125bd8:      	ldp	x29, x30, [sp, #0x40]
+  125bdc:      	ldp	d9, d8, [sp, #0x30]
+  125be0:      	ldp	d11, d10, [sp, #0x20]
+  125be4:      	ldp	d13, d12, [sp, #0x10]
+  125be8:      	ldp	d15, d14, [sp], #0xa0
+  125bec:      	ret
+  125bf0:      	bl	0x192b60 <__stack_chk_fail@plt>

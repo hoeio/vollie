@@ -1,0 +1,602 @@
+0000000000002674 <_ggml_vec_dot_q3_K_q8_K_x4>:
+    2674:      	sub	sp, sp, #0x1f0
+    2678:      	stp	d15, d14, [sp, #0x160]
+    267c:      	stp	d13, d12, [sp, #0x170]
+    2680:      	stp	d11, d10, [sp, #0x180]
+    2684:      	stp	d9, d8, [sp, #0x190]
+    2688:      	stp	x28, x27, [sp, #0x1a0]
+    268c:      	stp	x24, x23, [sp, #0x1b0]
+    2690:      	stp	x22, x21, [sp, #0x1c0]
+    2694:      	stp	x20, x19, [sp, #0x1d0]
+    2698:      	stp	x29, x30, [sp, #0x1e0]
+    269c:      	add	x29, sp, #0x1e0
+    26a0:      	adrp	x8, 0x2000 <_ggml_vec_dot_q3_K_q8_K+0x64>
+    26a4:      	ldr	x8, [x8]
+    26a8:      	ldr	x8, [x8]
+    26ac:      	stur	x8, [x29, #-0x88]
+    26b0:      	add	w8, w0, #0xff
+    26b4:      	cmp	w0, #0x0
+    26b8:      	csel	w8, w8, w0, lt
+    26bc:      	asr	w8, w8, #8
+    26c0:      	lsl	x11, x3, #1
+    26c4:      	add	x9, x2, x3
+    26c8:      	add	x10, x9, x11
+    26cc:      	stp	x2, x9, [sp, #0x30]
+    26d0:      	add	x11, x2, x11
+    26d4:      	stp	x11, x10, [sp, #0x40]
+    26d8:      	adrp	x12, 0x2000 <_ggml_vec_dot_q3_K_q8_K+0x64>
+    26dc:      	ldr	w12, [x12]
+    26e0:      	cbz	w12, 0x2c2c <_ggml_vec_dot_q3_K_q8_K_x4+0x5b8>
+    26e4:      	movi	d5, #0000000000000000
+    26e8:      	movi	d7, #0000000000000000
+    26ec:      	movi	d4, #0000000000000000
+    26f0:      	movi	d6, #0000000000000000
+    26f4:      	cmp	w0, #0x100
+    26f8:      	b.lt	0x2be0 <_ggml_vec_dot_q3_K_q8_K_x4+0x56c>
+    26fc:      	mov	x12, #0x0               ; =0
+    2700:      	adrp	x13, 0x2000 <_ggml_vec_dot_q3_K_q8_K+0x64>
+    2704:      	ldr	w13, [x13]
+    2708:      	lsl	x17, x3, #2
+    270c:      	add	x14, x2, x17
+    2710:      	add	x15, x9, x17
+    2714:      	add	x16, x11, x17
+    2718:      	add	x17, x10, x17
+    271c:      	adrp	x0, 0x2000 <_ggml_vec_dot_q3_K_q8_K+0x64>
+    2720:      	ldr	q0, [x0]
+    2724:      	str	q0, [sp, #0x10]
+    2728:      	add	x0, sp, #0x90
+    272c:      	add	x0, x0, #0x10
+    2730:      	mov	w3, #0x124              ; =292
+    2734:      	adrp	x5, 0x2000 <_ggml_vec_dot_q3_K_q8_K+0x64>
+    2738:      	ldr	q0, [x5]
+    273c:      	str	q0, [sp]
+    2740:      	mov	w5, #0x6e               ; =110
+    2744:      	add	x6, sp, #0x30
+    2748:      	sub	x7, x29, #0xd0
+    274c:      	movi.16b	v17, #0x3
+    2750:      	movi.16b	v18, #0x4
+    2754:      	add	x19, sp, #0x50
+    2758:      	stp	s7, s5, [sp, #0x28]
+    275c:      	cbz	w13, 0x27a4 <_ggml_vec_dot_q3_K_q8_K_x4+0x130>
+    2760:      	mul	x20, x12, x5
+    2764:      	add	x21, x14, x20
+    2768:      	prfm	pldl1keep, [x21]
+    276c:      	prfm	pldl1keep, [x21, #0x40]
+    2770:      	prfum	pldl1keep, [x21, #0x6d]
+    2774:      	add	x21, x15, x20
+    2778:      	prfm	pldl1keep, [x21]
+    277c:      	prfm	pldl1keep, [x21, #0x40]
+    2780:      	prfum	pldl1keep, [x21, #0x6d]
+    2784:      	add	x21, x16, x20
+    2788:      	prfm	pldl1keep, [x21]
+    278c:      	prfm	pldl1keep, [x21, #0x40]
+    2790:      	prfum	pldl1keep, [x21, #0x6d]
+    2794:      	add	x20, x17, x20
+    2798:      	prfm	pldl1keep, [x20]
+    279c:      	prfm	pldl1keep, [x20, #0x40]
+    27a0:      	prfum	pldl1keep, [x20, #0x6d]
+    27a4:      	mov	x20, #0x0               ; =0
+    27a8:      	madd	x21, x12, x3, x4
+    27ac:      	add	x22, x21, #0x4
+    27b0:      	ld1.16b	{ v27, v28, v29, v30 }, [x22]
+    27b4:      	add	x22, x21, #0x44
+    27b8:      	ld1.16b	{ v8, v9, v10, v11 }, [x22]
+    27bc:      	add	x22, x21, #0x84
+    27c0:      	ld1.16b	{ v19, v20, v21, v22 }, [x22]
+    27c4:      	add	x21, x21, #0xc4
+    27c8:      	ld1.16b	{ v23, v24, v25, v26 }, [x21]
+    27cc:      	mul	x21, x12, x5
+    27d0:      	add	x22, x2, x21
+    27d4:      	ldr	d31, [x22, #0x60]
+    27d8:      	add	x23, x22, #0x68
+    27dc:      	mov.d	v31[1], v31[0]
+    27e0:      	ld1r.4s	{ v12 }, [x23]
+    27e4:      	ldp	q3, q0, [sp]
+    27e8:      	ushl.4s	v31, v31, v0
+    27ec:      	movi.16b	v1, #0xf
+    27f0:      	and.16b	v31, v31, v1
+    27f4:      	ushl.4s	v12, v12, v3
+    27f8:      	shl.4s	v12, v12, #0x4
+    27fc:      	movi.16b	v2, #0x30
+    2800:      	and.16b	v12, v12, v2
+    2804:      	orr.16b	v31, v12, v31
+    2808:      	movi.16b	v5, #0xe0
+    280c:      	add.16b	v31, v31, v5
+    2810:      	ld1.16b	{ v12, v13 }, [x22]
+    2814:      	stp	q12, q13, [sp, #0x90]
+    2818:      	add	x22, x9, x21
+    281c:      	ldr	d12, [x22, #0x60]
+    2820:      	add	x23, x22, #0x68
+    2824:      	mov.d	v12[1], v12[0]
+    2828:      	ld1r.4s	{ v13 }, [x23]
+    282c:      	ushl.4s	v12, v12, v0
+    2830:      	and.16b	v12, v12, v1
+    2834:      	ushl.4s	v13, v13, v3
+    2838:      	shl.4s	v13, v13, #0x4
+    283c:      	and.16b	v13, v13, v2
+    2840:      	orr.16b	v12, v13, v12
+    2844:      	add.16b	v12, v12, v5
+    2848:      	ld1.16b	{ v13, v14 }, [x22]
+    284c:      	stp	q31, q12, [x29, #-0xd0]
+    2850:      	add	x22, x11, x21
+    2854:      	add	x23, x22, #0x68
+    2858:      	ld1r.4s	{ v31 }, [x23]
+    285c:      	stp	q13, q14, [sp, #0xb0]
+    2860:      	ldr	d12, [x22, #0x60]
+    2864:      	mov.d	v12[1], v12[0]
+    2868:      	ushl.4s	v12, v12, v0
+    286c:      	and.16b	v12, v12, v1
+    2870:      	ushl.4s	v31, v31, v3
+    2874:      	shl.4s	v31, v31, #0x4
+    2878:      	and.16b	v31, v31, v2
+    287c:      	orr.16b	v31, v31, v12
+    2880:      	ld1.16b	{ v12, v13 }, [x22]
+    2884:      	stp	q12, q13, [sp, #0xd0]
+    2888:      	add	x21, x10, x21
+    288c:      	ldr	d12, [x21, #0x60]
+    2890:      	mov.d	v12[1], v12[0]
+    2894:      	add	x22, x21, #0x68
+    2898:      	ld1r.4s	{ v13 }, [x22]
+    289c:      	ushl.4s	v12, v12, v0
+    28a0:      	and.16b	v12, v12, v1
+    28a4:      	ushl.4s	v13, v13, v3
+    28a8:      	shl.4s	v13, v13, #0x4
+    28ac:      	and.16b	v13, v13, v2
+    28b0:      	orr.16b	v12, v13, v12
+    28b4:      	add.16b	v31, v31, v5
+    28b8:      	add.16b	v12, v12, v5
+    28bc:      	stp	q31, q12, [x29, #-0xb0]
+    28c0:      	ld1.16b	{ v12, v13 }, [x21]
+    28c4:      	stp	q12, q13, [sp, #0xf0]
+    28c8:      	mov	x21, x0
+    28cc:      	ldr	x22, [x6, x20, lsl #3]
+    28d0:      	madd	x23, x12, x5, x22
+    28d4:      	lsl	x22, x20, #4
+    28d8:      	ldr	q31, [x7, x22]
+    28dc:      	add	x23, x23, #0x20
+    28e0:      	ldp	q12, q13, [x21, #-0x10]
+    28e4:      	ld1.16b	{ v14, v15 }, [x23]
+    28e8:      	sshll.8h	v31, v31, #0x0
+    28ec:      	and.16b	v2, v14, v17
+    28f0:      	mvn.16b	v5, v12
+    28f4:      	shl.16b	v16, v5, #0x2
+    28f8:      	and.16b	v16, v16, v18
+    28fc:      	movi.2d	v1, #0000000000000000
+    2900:      	and.16b	v7, v15, v17
+    2904:      	sub.16b	v2, v2, v16
+    2908:      	mvn.16b	v16, v13
+    290c:      	shl.16b	v0, v16, #0x2
+    2910:      	and.16b	v0, v0, v18
+    2914:      	sub.16b	v0, v7, v0
+    2918:      	movi.2d	v7, #0000000000000000
+    291c:      	sdot.4s	v1, v2, v27
+    2920:      	sdot.4s	v7, v0, v28
+    2924:      	ushr.16b	v0, v14, #0x2
+    2928:      	and.16b	v0, v0, v17
+    292c:      	add.16b	v2, v5, v5
+    2930:      	and.16b	v2, v2, v18
+    2934:      	addp.4s	v1, v1, v7
+    2938:      	sub.16b	v0, v0, v2
+    293c:      	movi.2d	v2, #0000000000000000
+    2940:      	ushr.16b	v7, v15, #0x2
+    2944:      	and.16b	v7, v7, v17
+    2948:      	add.16b	v3, v16, v16
+    294c:      	sdot.4s	v2, v0, v29
+    2950:      	and.16b	v0, v3, v18
+    2954:      	sub.16b	v0, v7, v0
+    2958:      	movi.2d	v3, #0000000000000000
+    295c:      	ushr.16b	v7, v14, #0x4
+    2960:      	and.16b	v7, v7, v17
+    2964:      	sdot.4s	v3, v0, v30
+    2968:      	bic.16b	v0, v18, v12
+    296c:      	sub.16b	v0, v7, v0
+    2970:      	movi.2d	v7, #0000000000000000
+    2974:      	ushr.16b	v12, v15, #0x4
+    2978:      	and.16b	v12, v12, v17
+    297c:      	sdot.4s	v7, v0, v8
+    2980:      	bic.16b	v0, v18, v13
+    2984:      	sub.16b	v0, v12, v0
+    2988:      	movi.2d	v12, #0000000000000000
+    298c:      	sdot.4s	v12, v0, v9
+    2990:      	sshll.4s	v0, v31, #0x0
+    2994:      	addp.4s	v2, v2, v3
+    2998:      	addp.4s	v3, v7, v12
+    299c:      	ushr.16b	v7, v14, #0x6
+    29a0:      	ushr.16b	v5, v5, #0x1
+    29a4:      	and.16b	v5, v5, v18
+    29a8:      	sub.16b	v5, v7, v5
+    29ac:      	addp.4s	v1, v1, v2
+    29b0:      	movi.2d	v2, #0000000000000000
+    29b4:      	sdot.4s	v2, v5, v10
+    29b8:      	ushr.16b	v5, v15, #0x6
+    29bc:      	ushr.16b	v7, v16, #0x1
+    29c0:      	and.16b	v7, v7, v18
+    29c4:      	mul.4s	v0, v1, v0
+    29c8:      	sub.16b	v1, v5, v7
+    29cc:      	movi.2d	v5, #0000000000000000
+    29d0:      	sdot.4s	v5, v1, v11
+    29d4:      	addp.4s	v1, v2, v5
+    29d8:      	sshll2.4s	v2, v31, #0x0
+    29dc:      	addp.4s	v1, v3, v1
+    29e0:      	mla.4s	v0, v1, v2
+    29e4:      	str	q0, [x19, x22]
+    29e8:      	add	x20, x20, #0x1
+    29ec:      	add	x21, x21, #0x20
+    29f0:      	cmp	x20, #0x4
+    29f4:      	b.ne	0x28cc <_ggml_vec_dot_q3_K_q8_K_x4+0x258>
+    29f8:      	mov	x20, #0x0               ; =0
+    29fc:      	mov	x21, x0
+    2a00:      	ldp	q0, q1, [x21, #-0x10]
+    2a04:      	ushr.16b	v0, v0, #0x4
+    2a08:      	lsl	x22, x20, #4
+    2a0c:      	ldr	q27, [x19, x22]
+    2a10:      	ushr.16b	v28, v1, #0x4
+    2a14:      	ldr	x23, [x6, x20, lsl #3]
+    2a18:      	madd	x23, x12, x5, x23
+    2a1c:      	ldr	q1, [x7, x22]
+    2a20:      	stur	q0, [x21, #-0x10]
+    2a24:      	add	x23, x23, #0x40
+    2a28:      	ld1.16b	{ v2, v3 }, [x23]
+    2a2c:      	sshll2.8h	v1, v1, #0x0
+    2a30:      	mvn.16b	v5, v0
+    2a34:      	and.16b	v7, v2, v17
+    2a38:      	shl.16b	v16, v5, #0x2
+    2a3c:      	and.16b	v16, v16, v18
+    2a40:      	sub.16b	v7, v7, v16
+    2a44:      	movi.2d	v16, #0000000000000000
+    2a48:      	and.16b	v29, v3, v17
+    2a4c:      	sdot.4s	v16, v7, v19
+    2a50:      	mvn.16b	v7, v28
+    2a54:      	shl.16b	v30, v7, #0x2
+    2a58:      	and.16b	v30, v30, v18
+    2a5c:      	sub.16b	v29, v29, v30
+    2a60:      	movi.2d	v30, #0000000000000000
+    2a64:      	sdot.4s	v30, v29, v20
+    2a68:      	ushr.16b	v29, v2, #0x2
+    2a6c:      	and.16b	v29, v29, v17
+    2a70:      	add.16b	v31, v5, v5
+    2a74:      	and.16b	v31, v31, v18
+    2a78:      	sub.16b	v29, v29, v31
+    2a7c:      	addp.4s	v16, v16, v30
+    2a80:      	movi.2d	v30, #0000000000000000
+    2a84:      	ushr.16b	v31, v3, #0x2
+    2a88:      	and.16b	v31, v31, v17
+    2a8c:      	add.16b	v8, v7, v7
+    2a90:      	and.16b	v8, v8, v18
+    2a94:      	sdot.4s	v30, v29, v21
+    2a98:      	sub.16b	v29, v31, v8
+    2a9c:      	movi.2d	v31, #0000000000000000
+    2aa0:      	ushr.16b	v8, v2, #0x4
+    2aa4:      	and.16b	v8, v8, v17
+    2aa8:      	bic.16b	v0, v18, v0
+    2aac:      	sdot.4s	v31, v29, v22
+    2ab0:      	sub.16b	v0, v8, v0
+    2ab4:      	movi.2d	v29, #0000000000000000
+    2ab8:      	ushr.16b	v8, v3, #0x4
+    2abc:      	and.16b	v8, v8, v17
+    2ac0:      	bic.16b	v9, v18, v28
+    2ac4:      	sdot.4s	v29, v0, v23
+    2ac8:      	sub.16b	v0, v8, v9
+    2acc:      	movi.2d	v8, #0000000000000000
+    2ad0:      	sdot.4s	v8, v0, v24
+    2ad4:      	ushr.16b	v0, v2, #0x6
+    2ad8:      	ushr.16b	v5, v5, #0x1
+    2adc:      	addp.4s	v30, v30, v31
+    2ae0:      	and.16b	v5, v5, v18
+    2ae4:      	sub.16b	v0, v0, v5
+    2ae8:      	movi.2d	v5, #0000000000000000
+    2aec:      	sdot.4s	v5, v0, v25
+    2af0:      	sshll.4s	v0, v1, #0x0
+    2af4:      	addp.4s	v29, v29, v8
+    2af8:      	ushr.16b	v2, v3, #0x6
+    2afc:      	ushr.16b	v3, v7, #0x1
+    2b00:      	and.16b	v3, v3, v18
+    2b04:      	sub.16b	v2, v2, v3
+    2b08:      	movi.2d	v3, #0000000000000000
+    2b0c:      	addp.4s	v7, v16, v30
+    2b10:      	sdot.4s	v3, v2, v26
+    2b14:      	addp.4s	v2, v5, v3
+    2b18:      	addp.4s	v2, v29, v2
+    2b1c:      	sshll2.4s	v1, v1, #0x0
+    2b20:      	mla.4s	v27, v7, v0
+    2b24:      	str	q28, [x21], #0x20
+    2b28:      	mla.4s	v27, v2, v1
+    2b2c:      	str	q27, [x19, x22]
+    2b30:      	add	x20, x20, #0x1
+    2b34:      	cmp	x20, #0x4
+    2b38:      	b.ne	0x2a00 <_ggml_vec_dot_q3_K_q8_K_x4+0x38c>
+    2b3c:      	mul	x20, x12, x3
+    2b40:      	ldr	s0, [x4, x20]
+    2b44:      	mul	x20, x12, x5
+    2b48:      	add	x21, x2, x20
+    2b4c:      	ldr	h1, [x21, #0x6c]
+    2b50:      	fcvt	s1, h1
+    2b54:      	fmul	s1, s0, s1
+    2b58:      	ldp	q2, q3, [sp, #0x50]
+    2b5c:      	addv.4s	s2, v2
+    2b60:      	fmov	w21, s2
+    2b64:      	scvtf	s2, w21
+    2b68:      	ldp	s7, s5, [sp, #0x28]
+    2b6c:      	fmadd	s5, s1, s2, s5
+    2b70:      	add	x21, x9, x20
+    2b74:      	ldr	h1, [x21, #0x6c]
+    2b78:      	fcvt	s1, h1
+    2b7c:      	addv.4s	s2, v3
+    2b80:      	fmov	w21, s2
+    2b84:      	scvtf	s2, w21
+    2b88:      	fmul	s1, s0, s1
+    2b8c:      	fmadd	s7, s1, s2, s7
+    2b90:      	add	x21, x11, x20
+    2b94:      	ldr	h1, [x21, #0x6c]
+    2b98:      	fcvt	s1, h1
+    2b9c:      	fmul	s1, s0, s1
+    2ba0:      	ldp	q2, q3, [sp, #0x70]
+    2ba4:      	addv.4s	s2, v2
+    2ba8:      	fmov	w21, s2
+    2bac:      	scvtf	s2, w21
+    2bb0:      	fmadd	s4, s1, s2, s4
+    2bb4:      	add	x20, x10, x20
+    2bb8:      	ldr	h1, [x20, #0x6c]
+    2bbc:      	fcvt	s1, h1
+    2bc0:      	fmul	s0, s0, s1
+    2bc4:      	addv.4s	s1, v3
+    2bc8:      	fmov	w20, s1
+    2bcc:      	scvtf	s1, w20
+    2bd0:      	fmadd	s6, s0, s1, s6
+    2bd4:      	add	x12, x12, #0x1
+    2bd8:      	cmp	x12, x8
+    2bdc:      	b.ne	0x2758 <_ggml_vec_dot_q3_K_q8_K_x4+0xe4>
+    2be0:      	stp	s5, s7, [x1]
+    2be4:      	stp	s4, s6, [x1, #0x8]
+    2be8:      	ldur	x8, [x29, #-0x88]
+    2bec:      	adrp	x9, 0x2000 <_ggml_vec_dot_q3_K_q8_K+0x64>
+    2bf0:      	ldr	x9, [x9]
+    2bf4:      	ldr	x9, [x9]
+    2bf8:      	cmp	x9, x8
+    2bfc:      	b.ne	0x2fd0 <_ggml_vec_dot_q3_K_q8_K_x4+0x95c>
+    2c00:      	ldp	x29, x30, [sp, #0x1e0]
+    2c04:      	ldp	x20, x19, [sp, #0x1d0]
+    2c08:      	ldp	x22, x21, [sp, #0x1c0]
+    2c0c:      	ldp	x24, x23, [sp, #0x1b0]
+    2c10:      	ldp	x28, x27, [sp, #0x1a0]
+    2c14:      	ldp	d9, d8, [sp, #0x190]
+    2c18:      	ldp	d11, d10, [sp, #0x180]
+    2c1c:      	ldp	d13, d12, [sp, #0x170]
+    2c20:      	ldp	d15, d14, [sp, #0x160]
+    2c24:      	add	sp, sp, #0x1f0
+    2c28:      	ret
+    2c2c:      	adrp	x12, 0x2000 <_ggml_vec_dot_q3_K_q8_K+0x64>
+    2c30:      	ldr	w12, [x12]
+    2c34:      	stp	xzr, xzr, [sp, #0x90]
+    2c38:      	cmp	w0, #0x100
+    2c3c:      	b.lt	0x2fb0 <_ggml_vec_dot_q3_K_q8_K_x4+0x93c>
+    2c40:      	mov	x13, #0x0               ; =0
+    2c44:      	mov	w14, #0x30303030        ; =808464432
+    2c48:      	mov	w15, #0xf0f0f0f         ; =252645135
+    2c4c:      	lsl	x17, x3, #2
+    2c50:      	add	x16, x2, x17
+    2c54:      	add	x9, x9, x17
+    2c58:      	add	x11, x11, x17
+    2c5c:      	add	x10, x10, x17
+    2c60:      	mov	w17, #0x124             ; =292
+    2c64:      	add	x0, sp, #0x30
+    2c68:      	movi.16b	v1, #0x4
+    2c6c:      	mov	w2, #0x6e               ; =110
+    2c70:      	movi.16b	v2, #0x3
+    2c74:      	add	x3, sp, #0x90
+    2c78:      	cbz	w12, 0x2cc0 <_ggml_vec_dot_q3_K_q8_K_x4+0x64c>
+    2c7c:      	mul	x5, x13, x2
+    2c80:      	add	x6, x16, x5
+    2c84:      	prfm	pldl1keep, [x6]
+    2c88:      	prfm	pldl1keep, [x6, #0x40]
+    2c8c:      	prfum	pldl1keep, [x6, #0x6d]
+    2c90:      	add	x6, x9, x5
+    2c94:      	prfm	pldl1keep, [x6]
+    2c98:      	prfm	pldl1keep, [x6, #0x40]
+    2c9c:      	prfum	pldl1keep, [x6, #0x6d]
+    2ca0:      	add	x6, x11, x5
+    2ca4:      	prfm	pldl1keep, [x6]
+    2ca8:      	prfm	pldl1keep, [x6, #0x40]
+    2cac:      	prfum	pldl1keep, [x6, #0x6d]
+    2cb0:      	add	x5, x10, x5
+    2cb4:      	prfm	pldl1keep, [x5]
+    2cb8:      	prfm	pldl1keep, [x5, #0x40]
+    2cbc:      	prfum	pldl1keep, [x5, #0x6d]
+    2cc0:      	mov	x5, #0x0                ; =0
+    2cc4:      	madd	x6, x13, x17, x4
+    2cc8:      	add	x7, x6, #0x4
+    2ccc:      	ld1.16b	{ v3, v4, v5, v6 }, [x7]
+    2cd0:      	mov	x7, x6
+    2cd4:      	ldr	s0, [x7], #0x44
+    2cd8:      	str	s0, [sp, #0x2c]
+    2cdc:      	ld1.16b	{ v16, v17, v18, v19 }, [x7]
+    2ce0:      	add	x7, x6, #0x84
+    2ce4:      	ld1.16b	{ v20, v21, v22, v23 }, [x7]
+    2ce8:      	add	x6, x6, #0xc4
+    2cec:      	ld1.16b	{ v24, v25, v26, v27 }, [x6]
+    2cf0:      	ldr	x6, [x0, x5, lsl #3]
+    2cf4:      	madd	x21, x13, x2, x6
+    2cf8:      	ldr	h28, [x21, #0x6c]
+    2cfc:      	ldp	w6, w19, [x21, #0x60]
+    2d00:      	ldr	w7, [x21, #0x68]
+    2d04:      	and	w20, w19, w15
+    2d08:      	and	w22, w14, w7, lsl #2
+    2d0c:      	and	w23, w6, w15
+    2d10:      	and	w24, w14, w7, lsl #4
+    2d14:      	orr	w20, w22, w20
+    2d18:      	orr	w22, w24, w23
+    2d1c:      	fmov	s29, w22
+    2d20:      	mov.s	v29[1], w20
+    2d24:      	add	x23, x21, #0x40
+    2d28:      	ld1.16b	{ v30, v31 }, [x21], #32
+    2d2c:      	mvn.16b	v8, v30
+    2d30:      	ld1.16b	{ v9, v10 }, [x21]
+    2d34:      	shl.16b	v11, v8, #0x2
+    2d38:      	and.16b	v11, v11, v1
+    2d3c:      	mvn.16b	v12, v31
+    2d40:      	shl.16b	v13, v12, #0x2
+    2d44:      	movi.8b	v7, #0xe0
+    2d48:      	add.16b	v14, v8, v8
+    2d4c:      	and.16b	v13, v13, v1
+    2d50:      	and.16b	v14, v14, v1
+    2d54:      	add.16b	v15, v12, v12
+    2d58:      	and.16b	v15, v15, v1
+    2d5c:      	and.16b	v0, v9, v2
+    2d60:      	sub.16b	v0, v0, v11
+    2d64:      	and.16b	v11, v10, v2
+    2d68:      	sub.16b	v11, v11, v13
+    2d6c:      	ushr.16b	v13, v9, #0x2
+    2d70:      	and.16b	v13, v13, v2
+    2d74:      	sub.16b	v13, v13, v14
+    2d78:      	ushr.16b	v14, v10, #0x2
+    2d7c:      	and.16b	v14, v14, v2
+    2d80:      	sub.16b	v14, v14, v15
+    2d84:      	movi.2d	v15, #0000000000000000
+    2d88:      	sdot.4s	v15, v0, v3
+    2d8c:      	movi.2d	v0, #0000000000000000
+    2d90:      	mov.b	v29[0], w22
+    2d94:      	sdot.4s	v0, v11, v4
+    2d98:      	movi.2d	v11, #0000000000000000
+    2d9c:      	sdot.4s	v11, v13, v5
+    2da0:      	movi.2d	v13, #0000000000000000
+    2da4:      	sdot.4s	v13, v14, v6
+    2da8:      	addp.4s	v0, v15, v0
+    2dac:      	addp.4s	v11, v11, v13
+    2db0:      	bic.16b	v13, v1, v30
+    2db4:      	bic.16b	v14, v1, v31
+    2db8:      	ushr.16b	v8, v8, #0x1
+    2dbc:      	and.16b	v8, v8, v1
+    2dc0:      	addp.4s	v0, v0, v11
+    2dc4:      	ushr.16b	v11, v12, #0x1
+    2dc8:      	and.16b	v11, v11, v1
+    2dcc:      	ushr.16b	v12, v9, #0x4
+    2dd0:      	and.16b	v12, v12, v2
+    2dd4:      	mov.b	v29[4], w20
+    2dd8:      	sub.16b	v12, v12, v13
+    2ddc:      	ushr.16b	v13, v10, #0x4
+    2de0:      	and.16b	v13, v13, v2
+    2de4:      	sub.16b	v13, v13, v14
+    2de8:      	ushr.16b	v14, v9, #0x6
+    2dec:      	add.8b	v29, v29, v7
+    2df0:      	sub.16b	v8, v14, v8
+    2df4:      	ushr.16b	v9, v10, #0x6
+    2df8:      	sub.16b	v9, v9, v11
+    2dfc:      	movi.2d	v10, #0000000000000000
+    2e00:      	sdot.4s	v10, v12, v16
+    2e04:      	sshll.8h	v29, v29, #0x0
+    2e08:      	movi.2d	v11, #0000000000000000
+    2e0c:      	sdot.4s	v11, v13, v17
+    2e10:      	movi.2d	v12, #0000000000000000
+    2e14:      	sdot.4s	v12, v8, v18
+    2e18:      	movi.2d	v8, #0000000000000000
+    2e1c:      	sshll.4s	v13, v29, #0x0
+    2e20:      	sdot.4s	v8, v9, v19
+    2e24:      	addp.4s	v9, v10, v11
+    2e28:      	addp.4s	v8, v12, v8
+    2e2c:      	addp.4s	v8, v9, v8
+    2e30:      	ushr.16b	v9, v30, #0x4
+    2e34:      	sshll2.4s	v29, v29, #0x0
+    2e38:      	ushr.16b	v30, v31, #0x4
+    2e3c:      	ld1.16b	{ v10, v11 }, [x23]
+    2e40:      	mvn.16b	v31, v9
+    2e44:      	shl.16b	v12, v31, #0x2
+    2e48:      	mul.4s	v0, v0, v13
+    2e4c:      	and.16b	v12, v12, v1
+    2e50:      	mvn.16b	v13, v30
+    2e54:      	shl.16b	v14, v13, #0x2
+    2e58:      	and.16b	v14, v14, v1
+    2e5c:      	add.16b	v15, v31, v31
+    2e60:      	mla.4s	v0, v8, v29
+    2e64:      	and.16b	v29, v15, v1
+    2e68:      	add.16b	v8, v13, v13
+    2e6c:      	and.16b	v15, v10, v2
+    2e70:      	sub.16b	v12, v15, v12
+    2e74:      	and.16b	v15, v11, v2
+    2e78:      	and.16b	v8, v8, v1
+    2e7c:      	sub.16b	v14, v15, v14
+    2e80:      	ushr.16b	v15, v10, #0x2
+    2e84:      	and.16b	v15, v15, v2
+    2e88:      	sub.16b	v29, v15, v29
+    2e8c:      	ushr.16b	v15, v11, #0x2
+    2e90:      	and.16b	v15, v15, v2
+    2e94:      	sub.16b	v8, v15, v8
+    2e98:      	movi.2d	v15, #0000000000000000
+    2e9c:      	sdot.4s	v15, v12, v20
+    2ea0:      	movi.2d	v12, #0000000000000000
+    2ea4:      	sdot.4s	v12, v14, v21
+    2ea8:      	movi.2d	v14, #0000000000000000
+    2eac:      	sdot.4s	v14, v29, v22
+    2eb0:      	movi.2d	v29, #0000000000000000
+    2eb4:      	sdot.4s	v29, v8, v23
+    2eb8:      	addp.4s	v8, v15, v12
+    2ebc:      	and	w19, w15, w19, lsr #4
+    2ec0:      	and	w20, w14, w7, lsr #2
+    2ec4:      	orr	w19, w20, w19
+    2ec8:      	and	w6, w15, w6, lsr #4
+    2ecc:      	and	w7, w7, w14
+    2ed0:      	orr	w6, w7, w6
+    2ed4:      	addp.4s	v29, v14, v29
+    2ed8:      	fmov	s12, w6
+    2edc:      	mov.s	v12[1], w19
+    2ee0:      	mov.b	v12[0], w6
+    2ee4:      	mov.b	v12[4], w19
+    2ee8:      	add.8b	v12, v12, v7
+    2eec:      	sshll.8h	v12, v12, #0x0
+    2ef0:      	addp.4s	v29, v8, v29
+    2ef4:      	sshll.4s	v8, v12, #0x0
+    2ef8:      	mla.4s	v0, v29, v8
+    2efc:      	bic.16b	v29, v1, v9
+    2f00:      	bic.16b	v30, v1, v30
+    2f04:      	ushr.16b	v8, v10, #0x4
+    2f08:      	and.16b	v8, v8, v2
+    2f0c:      	sub.16b	v29, v8, v29
+    2f10:      	ushr.16b	v8, v11, #0x4
+    2f14:      	and.16b	v8, v8, v2
+    2f18:      	sub.16b	v30, v8, v30
+    2f1c:      	ushr.16b	v8, v10, #0x6
+    2f20:      	ushr.16b	v9, v11, #0x6
+    2f24:      	ushr.16b	v31, v31, #0x1
+    2f28:      	and.16b	v31, v31, v1
+    2f2c:      	sub.16b	v31, v8, v31
+    2f30:      	ushr.16b	v8, v13, #0x1
+    2f34:      	and.16b	v8, v8, v1
+    2f38:      	sub.16b	v8, v9, v8
+    2f3c:      	movi.2d	v9, #0000000000000000
+    2f40:      	sdot.4s	v9, v29, v24
+    2f44:      	movi.2d	v29, #0000000000000000
+    2f48:      	sdot.4s	v29, v30, v25
+    2f4c:      	movi.2d	v30, #0000000000000000
+    2f50:      	sdot.4s	v30, v31, v26
+    2f54:      	movi.2d	v31, #0000000000000000
+    2f58:      	sdot.4s	v31, v8, v27
+    2f5c:      	addp.4s	v29, v9, v29
+    2f60:      	addp.4s	v30, v30, v31
+    2f64:      	addp.4s	v29, v29, v30
+    2f68:      	sshll2.4s	v30, v12, #0x0
+    2f6c:      	mla.4s	v0, v29, v30
+    2f70:      	addv.4s	s0, v0
+    2f74:      	fcvt	s28, h28
+    2f78:      	fmov	w6, s0
+    2f7c:      	scvtf	s0, w6
+    2f80:      	lsl	x6, x5, #2
+    2f84:      	ldr	s29, [x3, x6]
+    2f88:      	ldr	s7, [sp, #0x2c]
+    2f8c:      	fmul	s28, s7, s28
+    2f90:      	fmadd	s0, s28, s0, s29
+    2f94:      	str	s0, [x3, x6]
+    2f98:      	add	x5, x5, #0x1
+    2f9c:      	cmp	x5, #0x4
+    2fa0:      	b.ne	0x2cf0 <_ggml_vec_dot_q3_K_q8_K_x4+0x67c>
+    2fa4:      	add	x13, x13, #0x1
+    2fa8:      	cmp	x13, x8
+    2fac:      	b.ne	0x2c78 <_ggml_vec_dot_q3_K_q8_K_x4+0x604>
+    2fb0:      	ldr	q0, [sp, #0x90]
+    2fb4:      	str	q0, [x1]
+    2fb8:      	ldur	x8, [x29, #-0x88]
+    2fbc:      	adrp	x9, 0x2000 <_ggml_vec_dot_q3_K_q8_K+0x64>
+    2fc0:      	ldr	x9, [x9]
+    2fc4:      	ldr	x9, [x9]
+    2fc8:      	cmp	x9, x8
+    2fcc:      	b.eq	0x2c00 <_ggml_vec_dot_q3_K_q8_K_x4+0x58c>
+    2fd0:      	bl	0x2fd0 <_ggml_vec_dot_q3_K_q8_K_x4+0x95c>
+
