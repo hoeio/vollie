@@ -109,3 +109,60 @@ pre-registered as anything until a screen number exists.
 **Owner questions to carry (not mine to decide):** (1) is a persisted runtime-derived artefact (C2's factorisation, regenerable, in app storage) "runtime" under
 the frozen-file rule? (2) C1 changes routing on near-ties — is a bit-exact-in-text but numerics-changed router inside the +5 % cap or does the owner want it
 under the +2 % speed-rule budget (it is a different mechanism, but it touches the same decision)?
+
+## F. After the R43 host screen: C1-F16 as a kit item, the C2 clamp variant, the C3/C4 protocol (Bonnie, 2026-11-08)
+
+Labels as above; R43 numbers are *host* (PPL machine-independent); every ms is *estimated* at the device byte rate 0.0411 ms/MB (R25). Owner's rules applied:
+no new budget, C1 sits under both bounds, cached runtime-derived artefacts are allowed. Correction to §(ii): C3's bytes were over-counted — one Mamba-2 head
+is 128 `ssm_in` rows × 864 B + 64 `ssm_out` columns × 1,536 × 0.5625 B = **166 KB**, so 6/48 heads × 36 layers = **−35.9 MB (−1.5 ms)**, 12/48 = **−71.7 MB (−2.9 ms)**
+(was −47 / −94 MB).
+
+**(1) C1-F16 as a kit item.** PPL accounting (host, `-t 4` ≡ `-t 8` at `-b 512`, R43): served 9.7886 → **9.7864** = +1.888 % over stock 9.6051; room under the +2 %
+speed-rule bound 9.797 = **0.0106 (+0.11 %)**; under the +5 % cap 10.0854 = **0.299 (+3.06 %)**; en.txt 11.4887 → 11.5062 (+0.15 %, inside wiki + 1 %); k̄ +0.003;
+greedy identical on both prompts (slots skipped 11,659 vs 11,616 → routing moves on near-ties, text does not). **Class F** (it changes the router's decision on
+ties → it can change which experts, hence which pages, are touched; the host page-set test is not applicable because the set legitimately differs) → the
+side-level rule applies (both sides' mean ≤ 10 majflt/token, fault ratio reported), not the block gate. Device prediction, two lines: (a) **the kit must add a
+`router=` µs/token field** (the 40 router `MUL_MAT`s, 393 KB F32 each, like `head=`) — today's cost is unmeasured: 15.7 MB at the byte rate = 0.65 ms, but 40 ops
+of 393 KB may be fixed-cost-dominated; prediction **`router` B − A −0.25..−0.35 if the op is at the byte rate, −0.10..−0.20 if fixed-cost-dominated; falsified
+> −0.05**; (b) `MUL_MAT` total (contains the router) **−0.15..−0.40, central −0.3**; `MUL_MAT_ID` 0 ± 0.3 (k̄ +0.003 = +0.1 slot/token ≈ +0.01 ms, invisible);
+head / `SSM_SCAN` 0 ± 0.3. Resolvability: `MUL_MAT` per-block sd ≈ 1.0 clean (r8) → σ ≈ 0.26 at 30/side — a −0.3 effect is 1σ on `MUL_MAT`, which is why the
+`router` line (fixed small ops, sd ≈ 0.02-0.05 expected) is the one to score. **Not worth a phone session alone**: ride in the r15 kit as a second ABBA next to
+whatever r14's result leaves (ABBA `ROUTER_CAST:0:f16` ×2, alternated), ≈ 3 min of kit time. It is PPL-*negative* and generalises to every MoE GGUF with F32
+routers — the result worth having even at −0.3 ms. Default-on candidate only after a device `router` line ≤ −0.1 at ≤ 10 majflt/token.
+
+**(2) The C2 clamp variant — kill it now.** Today's plain head2 keeps the **Q4_0 screen logit** for the 98,304 non-picked rows (patch: "the rest keep the screen
+logit"); that is why plain head2 costs +0.01 %: the screen logit is within Q4_0 error of the exact one, so the denominator is right and a target outside the
+picked set (rare: in_set 1.0 on the kit prompts, overlap 0.91-0.96) still gets a near-exact log p. The low-rank screen fails on **both** counts: recall (in_set
+0.87, overlap 0.33-0.53 at r 768) and denominator. A clamp fixes neither: (i) clamp to the 2,048th exact logit → 98,304 rows at l₂₀₄₈ add ≈ 48 × the picked set's
+tail mass to the denominator → PPL ratio ≫ 2 — worse than the plain tail, *estimated* from the count alone; (ii) clamp to −∞ → the denominator loses the true tail
+mass (1-3 % of probability; PPL is *flattered*, so a −∞ PPL is **not a valid gate measurement**) and every target outside the picked set has log p = −∞ → PPL = ∞ at
+in_set 0.87; (iii) clamp to the low-rank value is R43. The only clamp that could work is "plain screen for recall, low-rank for nothing" — i.e. no byte saving.
+Kill rule, if Tom wants one cheap check before closing (no PPL needed): the in_set curve over r on the saved host logits; C2 is alive only if **in_set ≥ 0.995 at
+r ≤ 1,024** (−29 MB). With 66.5 % of the energy in 768 directions I expect in_set 0.995 only near r ≈ 1,400 (saving < 8 MB). **C2 closed at every r and every clamp.**
+
+**(3) C3 / C4 host protocol for Tom (no wikitext-2 anywhere in the choice of what to prune; `lab/text/en.txt` ≥ 20k tokens is the calibration text).**
+- *C4 first — static shared-expert neuron pruning (1,024 neurons × 40 layers).* Importance of neuron j in layer l = mean over calibration tokens of
+  |silu(g_j)·u_j| × ‖W_down[:, j]‖₂ (capture the GLU output = `down_shexp`'s input with the `cb_eval` hook of `dense_colskip.py`; 40 × 1,024 running means, one
+  pass). Prune the lowest **12.5 % per layer** (128 neurons), then 25 %. **Simulate the runtime exactly**: zero the pruned GLU channels **and** replace `down_shexp`
+  by its dequant → drop columns → re-quant Q4_0 (the kept 896 / 768 inputs re-blocked in 32s; this re-quant error is real and must be in the screen); gate/up row
+  removal is a memcpy of whole Q4_0 rows (output-major), no error. Bytes −13.3 / −26.7 MB → **−0.55 / −1.1 ms**. PPL band (ratio to 9.7886): 12.5 % **1.003-1.012**,
+  25 % **1.008-1.03**; **kill: 12.5 % > 1.012 on 60 chunks** → C4 dead (then 25 % is not run). Load-time mechanism: anon copies (gate/up rows, re-quantised down),
+  a per-layer kept-neuron list in the runtime-derived artefact (allowed), `GGML_SHEXP_PRUNE=<pct>`; the three shexp `MUL_MAT`s dispatch to the copies.
+- *C3 second — static Mamba-2 head pruning (48 heads × 36 layers), only if C4's PPL-per-ms ≤ 1 %/ms.* Importance of head h in layer l = mean over calibration
+  tokens of ‖y_h‖₂ (the 64 channels of the gated-norm output = `ssm_out`'s input, per head) × ‖W_out[:, h]‖_F. Prune the lowest **6 per layer** (12.5 %), then 12.
+  **Two-stage simulation**, both through the hook: (a) zero the head's 64 channels at `ssm_out`'s input (head removed, norm statistics untouched) — a lower bound on
+  the cost; (b) the runtime-equivalent: zero the head's z/x rows at `ssm_in`'s output **and** rescale the gated RMSNorm by the per-layer constant
+  √(1/(1 − f_l)), f_l = the pruned heads' mean share of the norm's energy on the calibration text (the runtime can only norm over kept channels). Score (b);
+  report (a). The recurrent state of a pruned head does not exist → consistent by construction; A/D/dt/conv entries of the head are dropped with it. Bytes −35.9 /
+  −71.7 MB → **−1.5 / −2.9 ms**. PPL band: 6/48 **1.005-1.03**, 12/48 **1.02-1.08**; **kill: 6/48 (b) > 1.04** → C3 dead. Load time: `ssm_in` row removal (memcpy of
+  Q4_0 rows), `ssm_out` dequant → drop columns → re-quant (kept 2,688 = 84 blocks of 32 ✓ at 6/48; 2,304 at 12/48 ✓), conv/A/D/dt masks, the norm constant;
+  `GGML_SSM_HEAD_PRUNE=<n>`; the artefact holds the kept-head lists.
+- *Pass for a device round (either):* full-set wikitext-2 ≤ 10.0854 for the **combination** that would be served (C1-F16 + the cut), en.txt ≤ wiki + 1 %, greedy
+  coherent on both kit prompts, and **the combination's bytes ≥ 36 MB (≥ −1.5 ms)** — below that the device line cannot be resolved (`MUL_MAT` σ ≈ 0.26 at 30/side)
+  and the round is not worth the owner's time.
+
+**Ranking.** 1. **C1-F16** — done on the host, free in PPL, rides in r15. 2. **C4** — half a Tom-day of host simulation, mechanism well understood, −1.1 ms at 25 %
+if +0.8..+3 % holds. 3. **C3** — a Tom-day, riskier per ms (SSM heads carry the mixing; no training), −1.5 ms at 6/48. 4. **"Stop here"** is the right call *if* C4's
+12.5 % step fails its kill: then the dense line closes at **−0.32 ms** (C1) and the +5 % cap stays unspent — spending it on C3 alone for −1.5 ms (≈ +0.6 tok/s
+*estimated*) at +1..+3 % PPL is a poor trade I would not recommend. Everything above is host work; no device round is proposed until a combination clears
+both the PPL cap and the −1.5 ms resolvability floor.
