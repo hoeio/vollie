@@ -197,7 +197,7 @@ def main():
     if want_csv:
         print('\n== results.csv rows')
         for ph, nm, thr, heat, tps, pp, mj, mn, io in rows:
-            print(f"app {r.get('app')} (research {r.get('kit')}),DEVICE-MEASURED {ph}: {nm} ({thr} threads),9.6051,+6.21,,"
+            print(f"app {r.get('app')} (research {r.get('kit')}),\"DEVICE-MEASURED {ph}: {nm} ({thr} threads)\",9.6051,+6.21,,"  # quoted: run names may hold commas (r11)
                   f"\"{tps:.1f} w / {'' if pp is None else f'{pp:.0f}'} r at {'' if heat is None else f'{heat*100:.0f}%'}; majflt {mj} minflt {mn} io {io} MB\",,,\"{r.get('started')}\"")
 
 if __name__ == '__main__':
