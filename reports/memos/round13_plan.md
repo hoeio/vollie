@@ -191,3 +191,41 @@ bench shows K 512 cold ≈ hot *with* K 1,536 cold/hot > 1.2, the term is **stre
 K 1,536 it interleaves four 660-B streams over 2,640 B (4 trained streams, 10 lines each) — a prefetcher-ramp term that a page-head touch only partly fixes and a
 row-group reorder (gate/up rows visited so the four streams become one) would fix — noted, not proposed. The 46 % recovery, if it survives a verified bench, favours
 the page reading over the stream-shape one.
+
+## E. r13b read: the bench is verified, §A was built on an X1 number (Bonnie, 2026-11-07 night; `reports/device/r13b_2026-11-07.json`; *device* unless labelled)
+
+**(1) The X1 reading is the one that survives; the "A55" story in R40/§D was wrong (mine too).** Verified line (cpu 6-6, migr 0, cpu_ok 21/21, 2,112/2,112):
+old 201.52 / new 156.86 / int8 100.30 / q4x4 78.58 / scalar 131.38 ns/row at K 1,536 — equal to r12 and r13 to three digits, so **r12, r13, r13b all ran on A78s**
+and R37's r11 line (117.49 / 87.13, `cpu=4` read once) is the outlier. Clyde's arithmetic checks: 201.52 / 117.49 = **1.715** = (2,841 / 2,112 = 1.345) × **1.275**.
+The decisive test is that the r13b / r11 ratio is **kernel-dependent**: old 1.715, new 1.800, q4x4 1.818, scalar 1.624, int8 1.599 (K 512: 1.737 / 1.838 / 1.811 /
+1.612). A clock difference or a time-shared core gives one factor for every kernel; a different microarchitecture does not — the issue-bound kernels (q4x4, new)
+gain most (4 NEON pipes), the load-bound ones (int8, scalar) least. That is the X1 (cpu 7) at 2,841 with 1.19-1.35 × the A78's IPC. No other reading fits all nine
+ratios. Cross-check with the count model: old = 201.52 / 6 = **33.6 ns = 70.9 cycles per row-block at 2,112 — exactly the 2-pipe NEON issue floor (70-71.5)** from
+`expert_kernel.md`; new = 26.1 ns = **55.2 cycles** vs its 377 / 4 / 2 = 47 floor (85 %), and equal to the "ideal in-place unpack floor 54-55 cycles" of §2 of that
+memo. The kernel sits on the floor cache-hot; r10/r11's 0.724-0.742 ratios were X1 ratios and still agree (0.778 / 0.766 on the A78).
+
+**(2) §A is withdrawn — by the slot share, not by the flag.** In situ 37.8-39 ns/row-block vs cache-hot 33.6 → the old kernel is **86-89 % of the slot**; non-kernel
+**4.2-5.4 ns/row-block = 13-17 µs/slot = 2.1-2.8 ms/token** at 164 slots (*estimated*), not 50-60 µs/slot: the "non-kernel half" was an X1 bench divided into an A78
+slot. The page-latency model (25-41 µs/slot) cannot fit in 13-17 µs and is withdrawn; R27's 16-33 % clock-invariant share is consistent with the new 11-15 % at its low
+edge. cold/hot 1.043 and recovery 0.36 on a verified core bound the touch lever at 0.36 × 7.3 ns/row = 0.44 ns/row-block = **≤ 1.4 µs/slot = ≤ −0.2 ms/token** —
+not worth an ABBA. **The K 512 flag:** its premise ("cold ≥ hot under any memory model") was mine and is wrong for a kernel at its issue floor streaming 2.9 GB/s per
+core behind a hardware prefetcher — cold ≈ hot (0.989, 1 % noise) is the expected measurement, not an invalid one. Ruling: the flag fired on a false premise; the
+instrument is valid; the decision rule "< 1.2 on a verified A78 → park lever 1, withdraw the §A page reading" governs and is met on both shapes. **I agree with
+Clyde's call on all three points** (§A withdrawn, `MMID_TOUCH` parked, the ABBA session not spent). One note, not a dissent: the flag did its job — it forced the
+premise check that found the X1 — so flag-style falsifiers stay in the kit. Still standing from this memo: the §B block gate and class test, §B.1, and the
+ABBA/BAAB alternation (r13: adv 1.005, majflt B/A 0.93 — the position term is gone).
+
+**(3) What is left with a compute-bound expert op at its issue floor (all 2,112, *estimated* from verified bench numbers; R38 stands as scored).**
+| rank | lever | arithmetic | ms/token | status |
+|---|---|---|---|---|
+| — | new kernel (compiled default, exact) | 33.6 → 26.1 ns/row-block = −7.45 × 3,072 × 164 | **−3.75** (−3.5..−4.1 by k̄) | device-unshown as scored (R38); the clean subset −6.27 ± 3.10 is 1σ-consistent with it |
+| 1 | `MMID_FUSE` (gate+up+GLU one pass) + two chunks per `fetch_add` | 40 barriers + 40 ops' fixed costs + half the atomics, out of the 2.1-2.8 ms non-kernel | **−0.6..−1.3**, exact | Tom > 1 day; the last exact crumb of the expert op |
+| 2 | kernel | at 85 % of its own floor and on the in-place-unpack floor | ≤ −0.5 | closed as a line: 3-bit extraction costs the issue slots |
+| 3 | exact 4-bit container (q4x4 13.1 ns/row-block = 40 µs compute under a 59 µs byte floor) | slot 59-65 vs 80 + 15 → −30..−36 µs × 164 | **−4.9..−5.9**, exact | needs the anon copy: 3.45 GB all, 86 MB/layer; ≥ 8 layers = R24's 618-MB page-cache loss → negative on 8 GB; **the generalisation lever for ≥ 12 GB phones**, not this one |
+| 4 | int8 reference (16.7 ns/row-block = 0.50 old / 0.64 new) | 2.7 MB/slot → 118 µs byte floor | 0 | diagnostic only: unpack is 36 % of the new kernel |
+| 5 | fewer MACs: skip | capped at 118 (+2 % final) | 0 | closed |
+| 6 | dense `MUL_MAT` 22-24 ms = 525 MB at the byte rate | bytes only fall by (a) a byte-rate container below 4 bits — none exists on dotprod cores (R29: Q2_K/Q3_K dense screens were issue-bound) — or (b) structural numerics: vocabulary subset of the tied head, channel/neuron pruning of `ssm_in`/`ssm_out` (296 MB = 12.5 ms; 05_compute_less §1135 table has host PPL per zeroed fraction) | −2..−5 for a 10-20 % byte cut | **numerics; outside the +2 % speed-rule budget, inside the +20 % hard limit (served 9.7886 → ≤ 10.853 = +10.9 % headroom)** — the owner's call with host PPL numbers first (`tools/ppl.sh`, an afternoon); Clyde's round-14 dissent, priced |
+
+Where 20 stands on this arithmetic: clean steady 52.4-53.0 (R31, old kernel) − 3.75 (kernel, unshown) = **48.7-49.3 → printed fault-free ≈ 19.9-20.1** at 1.13 ms
+outside; + lever 1 → 47.4-48.7 → **20.2-20.7**. Every path to 20 on this phone under the current budget runs through the kernel claim the rules say is unshown, plus
+one exact crumb; the only ≥ 3 ms lever left is numerics under the hard limit (rank 6), which is a decision, not a measurement.
