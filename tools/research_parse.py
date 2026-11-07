@@ -1,9 +1,32 @@
 """Turns a research-kit JSON report (tools/research_kit.md) into results.csv rows and R-log text.
-usage: python3 -I tools/research_parse.py <report.json> [--csv] [--gate T]
+usage: python3 -I tools/research_parse.py <report.json> [--csv] [--gate T] [--sigma S]
 Prints a human table per phase (device-measured numbers), the A/B splits from the cpu-prof pairs, the
 barrier cost, the speculation stats, and, with --csv, the rows to append to reports/results.csv.
---gate T (r13, R39 / reports/memos/round13_plan.md §B): the block-gated ABBA score, class-K knobs only."""
+--gate T (r13, R39 / reports/memos/round13_plan.md §B): the block-gated ABBA score, class-K knobs only.
+--sigma S (r14, R42): the gate's σ limit on the scored line (default 1.0; r14 MMID_FUSE: 0.4). The scored line is
+MUL_MAT_ID+GLU (compute + wait of both) when the run carries fuse= (r14+), else MUL_MAT_ID."""
 import json, re, sys, statistics
+
+def op_sum(o, *ops):
+    return sum(sum(o.get(op, (0, 0, 0))[1:]) for op in ops)
+
+def fuse_hygiene(blocks):
+    """r14 (R42): every fuse=1 block must show the fused graph against the fuse=0 blocks: L = fused layers = MUL_MAT_ID count
+    drop = (fuse=0 count) / 3 (gate, up, down per layer); GLU count − L, nodes − 2L, barriers − 2L (the up->gate and gate->GLU
+    barriers both go). blocks: (side, blk, d, o). Returns lines; [] when no block has fuse=1."""
+    cnt = lambda d, o: (o.get('MUL_MAT_ID', (0,))[0], o.get('GLU', (0,))[0], int(d.get('nodes', 0)), int(d.get('barriers', 0)))
+    ref = [cnt(d, o) for _, _, d, o in blocks if d.get('fuse') == '0']
+    fus = [(s, b, cnt(d, o)) for s, b, d, o in blocks if d.get('fuse') == '1']
+    if not fus:
+        return []
+    if not ref:
+        return ['HYGIENE FAIL: no fuse=0 block to compare against']
+    m, g, n, br = max(set(ref), key=ref.count)
+    L = m // 3
+    want = (m - L, g - L, n - 2 * L, br - 2 * L)
+    bad = [f"{s}{b}" for s, b, c in fus if c != want]
+    head = f"fuse=0 MUL_MAT_ID/GLU/nodes/barriers {m}/{g}/{n}/{br} -> fuse=1 wants {'/'.join(map(str, want))}"
+    return [f"{head}: {'ok' if not bad else 'HYGIENE FAIL (fuse did not engage) in blocks ' + ' '.join(bad)} ({len(fus)} fuse=1 blocks)"]
 
 def prof_fields(line):
     d = {}
@@ -74,6 +97,8 @@ def abba_summary(runs):
                ('MUL_MAT_ID', lambda d, o: sum(o.get('MUL_MAT_ID', (0, 0, 0))[1:])),
                ('MUL_MAT', lambda d, o: sum(o.get('MUL_MAT', (0, 0, 0))[1:])),
                ('head', lambda d, o: int(d.get('head', 0)))] + \
+              ([('MUL_MAT_ID+GLU', lambda d, o: op_sum(o, 'MUL_MAT_ID', 'GLU')),  # r14: the line the fuse moves work between
+                ('GLU compute', lambda d, o: o.get('GLU', (0, 0, 0))[1])] if any('fuse' in b[2] for x in runs for b in abba_blocks(x)) else []) + \
               [(op, (lambda op: lambda d, o: sum(o.get(op, (0, 0, 0))[1:]))(op)) for op in ('SSM_SCAN', 'CPY', 'CONCAT', 'SSM_CONV')]
     rows = []
     blocks = [(ri, b) for ri, x in enumerate(runs) for b in abba_blocks(x)]
@@ -94,7 +119,12 @@ def abba_summary(runs):
                             f"Δ {mb - ma:+6.2f} ± {se:4.2f}  groups {len(gd)}: Δ {gm:+6.2f} sd {gs:4.2f}"))
     nodes = {sd_: sorted({(d.get('nodes'), d.get('barriers')) for _, (s2, _, d, _) in blocks if s2 == sd_}) for sd_ in 'AB'}
     rows.append(('nodes/bar', f"A {' '.join(f'{n}/{b}' for n, b in nodes['A'])}  B {' '.join(f'{n}/{b}' for n, b in nodes['B'])}"))
-    for key in ('chunk', 'expq4', 'kern', 'touch', 'fuse'):  # r9/r10/r13 header fields, per side (absent before r9 / r10 / r13)
+    if any('fuse' in d for _, (_, _, d, _) in blocks):  # r14: per-side op counts and the fused-graph check
+        oc = {sd_: sorted({(o.get('MUL_MAT_ID', (0,))[0], o.get('GLU', (0,))[0]) for _, (s2, _, _, o) in blocks if s2 == sd_}) for sd_ in 'AB'}
+        rows.append(('MMID/GLU cnt', f"A {' '.join(f'{m}/{g}' for m, g in oc['A'])}  B {' '.join(f'{m}/{g}' for m, g in oc['B'])}"))
+        for h in fuse_hygiene([b for _, b in blocks]):
+            rows.append(('hygiene', h))
+    for key in ('chunk', 'expq4', 'kern', 'touch', 'fuse', 'chunk2'):  # r9/r10/r13 header fields, per side (absent before r9 / r10 / r13)
         v = {sd_: sorted({d[key] for _, (s2, _, d, _) in blocks if s2 == sd_ and key in d}) for sd_ in 'AB'}
         if v['A'] or v['B']:
             rows.append((key, f"A {' '.join(v['A'])}  B {' '.join(v['B'])}"))
@@ -115,6 +145,9 @@ GATE_LINES = [('MUL_MAT_ID', lambda d, o: sum(o.get('MUL_MAT_ID', (0, 0, 0))[1:]
               ('MUL_MAT', lambda d, o: sum(o.get('MUL_MAT', (0, 0, 0))[1:])),
               ('head', lambda d, o: int(d.get('head', 0))),
               ('SSM_SCAN', lambda d, o: sum(o.get('SSM_SCAN', (0, 0, 0))[1:]))]
+GATE_FUSE = [('MUL_MAT_ID+GLU', lambda d, o: op_sum(o, 'MUL_MAT_ID', 'GLU')),  # r14 (R42): scored line, then its low-variance part
+             ('GLU compute', lambda d, o: o.get('GLU', (0, 0, 0))[1])]
+SIGMA = 1.0  # --sigma
 
 def gate_blocks(x, T):
     """r13 §B: (side, blk, d, o, counted) per post-warm-up block of one ABBA run, and the run's modal clock. A block counts iff
@@ -136,18 +169,22 @@ def gate_score(blocks):
     na, nb = len(cnt['A']), len(cnt['B'])
     mf = {s: statistics.mean(float(d['majflt']) for d, _ in cnt[s]) if cnt[s] else float('nan') for s in 'AB'}
     res = {}
-    for label, f in GATE_LINES:
+    fused = any('fuse' in d for s2, _, d, o, ok in blocks)
+    for label, f in GATE_LINES + (GATE_FUSE if fused else []):
         a = [f(d, o) / 1000 for d, o in cnt['A']]; b = [f(d, o) / 1000 for d, o in cnt['B']]
         if len(a) < 2 or len(b) < 2:
             res[label] = (float('nan'), float('nan')); continue
         res[label] = (statistics.mean(b) - statistics.mean(a), (statistics.variance(a) / len(a) + statistics.variance(b) / len(b)) ** 0.5)
-    flags = {'n>=8/side': na >= 8 and nb >= 8, '|majflt A-B|<=3': abs(mf['A'] - mf['B']) <= 3, 'sigma<=1.0': res['MUL_MAT_ID'][1] <= 1.0}
+    scored = 'MUL_MAT_ID+GLU' if fused else 'MUL_MAT_ID'
+    flags = {'n>=8/side': na >= 8 and nb >= 8, '|majflt A-B|<=3': abs(mf['A'] - mf['B']) <= 3, f'sigma<={SIGMA:.1f}': res[scored][1] <= SIGMA}
+    if fused:  # r14: a counted block without the fused graph voids the run
+        flags['hygiene'] = not any('FAIL' in h for h in fuse_hygiene([(s2, b, d, o) for s2, b, d, o, ok in blocks]))
     verdict = 'scorable' if all(flags.values()) else 'unresolved'
     return na, nb, mf, res, verdict, flags
 
 def print_gate(abba, T):
     print(f"\n== block gate T={T} (R39 §B; class-K knobs only: a block counts iff majflt/token <= {T} and the run's modal clock; "
-          "Δ = B − A ± 1σ over counted blocks, ms/token; MUL_MAT_ID = compute + wait)")
+          "Δ = B − A ± 1σ over counted blocks, ms/token; MUL_MAT_ID = compute + wait; r14: scored line MUL_MAT_ID+GLU)")
     for name, xs in abba.items():
         print(f"  {name}  ({len(xs)} run{'s' if len(xs) > 1 else ''})")
         allb = []
@@ -167,6 +204,8 @@ def print_gate(abba, T):
 def main():
     path = sys.argv[1]; want_csv = '--csv' in sys.argv
     gate = float(sys.argv[sys.argv.index('--gate') + 1]) if '--gate' in sys.argv else None
+    global SIGMA
+    SIGMA = float(sys.argv[sys.argv.index('--sigma') + 1]) if '--sigma' in sys.argv else 1.0
     r = json.load(open(path))
     print(f"kit {r.get('kit')} app {r.get('app')} started {r.get('started')} finished {r.get('finished')} stopped_early={r.get('stopped_early')}")
     for h in r.get('header', []): print('  ' + h)
