@@ -131,3 +131,29 @@ unresolved at zero counted blocks (min 36 / 90 majflt/token) rather than letting
 8. If cold_touch recovers < 20 % of (cold − hot) while cold/hot ≥ 1.5: the stall is the stream but not TLB-shaped; lever 1 dead; next audit = per-page prefetcher ramp (hardware), outside the runtime.
 9. Printed: official 32 default ×2 reported with clock and majflt, **not a scored line**; the steady arithmetic 46-47.5 ms / 20.6-21.2 printed is *estimated* and stacks a device-unshown kernel term — not pre-registered as reached.
 10. Session plan: one session; second session only if §B says unresolved; after that the line is parked.
+
+## B.1 Ruling on the class-K test for `MMID_TOUCH` (Bonnie, same day, after Tom's host numbers)
+
+Tom (host, M4, 16-KB pages, fresh process, 200-token story, `ru_minflt`): 3 threads off 205,434 vs on 212,643 = **+3.5 %**; 2 threads **−4.7 %**; 6 threads
+**+2.0 %**; spread 0.3 %; load + prompt ≈ 116,800 so decode-only moves ≈ ±8 %. **The sign flips with thread count.** A changed page *set* is a property of the
+chunk's rows and cannot depend on who reads them; a fault-event count can — when the touch's 5-6 page-head loads are in flight together on several threads,
+neighbouring faults race the fault-around that would have mapped them from one event, so the same pages produce more (or, with another interleaving, fewer)
+*events*. My §B instrument was wrong: `ru_minflt` counts fault events, not pages touched. Nothing in Tom's data says the page set moved; by code reading it is
+the chunk's own rows on both sides.
+
+**Ruling (1): `MMID_TOUCH` is class K for the majflt ≤ 10 block gate.** The gate's quantity is the major fault = a page-cache miss; residency is decided by
+reclaim and by which pages are first read in which order at ms scale, and the touch reads the same pages 0.1-10 µs before the kernel would, inside the same
+chunk, so it cannot change whether a page is resident. The minor-fault movement is part of the lever's real cost (≈ 1-2 µs per extra event, in `MUL_MAT_ID`
+honestly) and is reported, not gated. Clyde's argument stands; the ±8 % is a reason to *measure* the class on the device, not to drop the gate.
+
+**(2) Pre-registered checks that decide the class on data (paste-ready):**
+> *Class check for `MMID_TOUCH` (device, over ALL same-clock blocks of the three alternated ABBA runs, not only counted ones).* (a) majflt/token side ratio
+> B/A within **0.80-1.25** → the knob does not move major faults; outside it → **disqualifier**: the block gate is not applied and the knob falls to the
+> side-level rule (both sides' mean ≤ 10, fault ratio reported) for this round. (b) `adv` equal on both sides to the unit (readahead path undisturbed);
+> unequal → disqualifier. (c) minflt/token side ratio B/A **reported next to Δ**: ≤ 1.30 = expected fault-splitting, a finding, not a flag; > 1.30 = a
+> finding flagged "touch splits fault-around" for Tom (the lever is unchanged this round). (d) Host, before the phone run: the fresh-process `ru_minflt`
+> test **at 1 thread** (faults serialise; no race) must agree within **0.5 %** — agreement confirms the timing explanation on data; disagreement means the
+> page set differs, my reading of the code is wrong, and the knob is class F before the round starts.
+
+**(3)** Not "no": falling to the side-level rule now would discard the gate on the strength of an instrument that measures the wrong thing. If (d) fails on the
+host or (a)/(b) fail on the device, the fall-back is automatic by the clause above. Thresholds and the lever are unchanged.

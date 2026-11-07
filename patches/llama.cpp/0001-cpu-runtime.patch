@@ -2415,7 +2415,7 @@ index cfbbf6617..c7a5565eb 100644
  static inline svuint32_t ggml_decode_q4scales_and_mins_for_mmla(const uint32_t * vx_scales) {
      const svbool_t pg_all   = svptrue_pat_b32(SV_VL4);
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index ab82e3d6c..5a5591398 100644
+index ab82e3d6c..97872147d 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -197,6 +197,8 @@ typedef void * thread_ret_t;
@@ -2729,12 +2729,13 @@ index ab82e3d6c..5a5591398 100644
                      vec_dot(ne00, &tmp[ir0 - iir0], 0, src0_cur + ir0*nb01, 0, src1_col, 0, 1);
                  }
  
-@@ -1551,6 +1823,537 @@ static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
+@@ -1551,6 +1823,538 @@ static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
      return ptr;
  }
  
 +// ---- Vollie: MUL_MAT_ID additions (knobs documented where the variables are defined below) ----
 +static int ggml_cpu_mmid, ggml_cpu_mmid_touch;
++static bool ggml_cpu_mmid_test1;
 +static int ggml_cpu_q3k_x4;
 +static int ggml_cpu_expert_skip, ggml_cpu_expert_skip_renorm;
 +static int ggml_cpu_expert_topp, ggml_cpu_expert_gap, ggml_cpu_expert_mink;
@@ -3193,7 +3194,7 @@ index ab82e3d6c..5a5591398 100644
 +    const struct ggml_tensor * src1 = dst->src[1];
 +    const struct ggml_tensor * ids  = dst->src[2];
 +    const enum ggml_type vec_dot_type = type_traits_cpu[src0->type].vec_dot_type;
-+    return (ggml_cpu_mmid & 1) && nth > 1 &&
++    return (ggml_cpu_mmid & 1) && (nth > 1 || ggml_cpu_mmid_test1) &&
 +           ids->ne[1] == 1 && src1->ne[1] == 1 && src1->ne[2] == 1 && src1->ne[3] == 1 &&
 +           src0->ne[2] <= GGML_CPU_MMID_MAX_AS && src0->ne[2]*ids->ne[0] <= GGML_CPU_SKIP_MAX &&
 +           src1->type == GGML_TYPE_F32 && src1->type != vec_dot_type && ggml_is_contiguous(src1) &&
@@ -3267,7 +3268,7 @@ index ab82e3d6c..5a5591398 100644
  static void ggml_compute_forward_mul_mat_id(
          const struct ggml_compute_params * params,
                struct ggml_tensor * dst) {
-@@ -1568,9 +2371,18 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1568,9 +2372,18 @@ static void ggml_compute_forward_mul_mat_id(
  
      const bool src1_cont = ggml_is_contiguous(src1);
  
@@ -3287,7 +3288,7 @@ index ab82e3d6c..5a5591398 100644
      // we don't support permuted src0 or src1
      GGML_ASSERT(nb00 == ggml_type_size(type));
      GGML_ASSERT(nb10 == ggml_type_size(src1->type));
-@@ -1644,21 +2456,10 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1644,21 +2457,10 @@ static void ggml_compute_forward_mul_mat_id(
      }
  
      if (ith == 0) {
@@ -3312,7 +3313,7 @@ index ab82e3d6c..5a5591398 100644
  
      // reset current_chunk
      for (int cur_a = ith; cur_a < n_as; cur_a += nth) {
-@@ -1668,6 +2469,7 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1668,6 +2470,7 @@ static void ggml_compute_forward_mul_mat_id(
  
      ggml_barrier(params->threadpool);
  
@@ -3320,7 +3321,7 @@ index ab82e3d6c..5a5591398 100644
      for (int cur_a = 0; cur_a < n_as; ++cur_a) {
          const int64_t cne1 = matrix_row_counts[cur_a];
  
-@@ -1675,12 +2477,23 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1675,12 +2478,23 @@ static void ggml_compute_forward_mul_mat_id(
              continue;
          }
  
@@ -3345,7 +3346,7 @@ index ab82e3d6c..5a5591398 100644
          const void * wdata = (src1->type == vec_dot_type) ? src1->data : params->wdata;
          const size_t row_size = ggml_row_size(vec_dot_type, ne10);
  
-@@ -1689,7 +2502,7 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1689,7 +2503,7 @@ static void ggml_compute_forward_mul_mat_id(
  
          int chunk_size = 16;
          if (nr0 == 1 || nr1 == 1) {
@@ -3354,7 +3355,7 @@ index ab82e3d6c..5a5591398 100644
          }
  
          // disable for NUMA
-@@ -1720,7 +2533,7 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1720,7 +2534,7 @@ static void ggml_compute_forward_mul_mat_id(
              const int64_t ir1_start = dr1 * ith1;
              const int64_t ir1_end = MIN(ir1_start + dr1, nr1);
  
@@ -3363,7 +3364,7 @@ index ab82e3d6c..5a5591398 100644
                  dst, src0, src1, ids, cur_a,
                  ir0_start, ir0_end, ir1_start, ir1_end,
                  src0_cur, matrix_rows, row_size, src1_cont, wdata
-@@ -1744,6 +2557,11 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
+@@ -1744,6 +2558,11 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
          return;
      }
  
@@ -3375,7 +3376,7 @@ index ab82e3d6c..5a5591398 100644
      // extra_buffer op?
      if (ggml_cpu_extra_compute_forward(params, tensor)) {
          return;
-@@ -2902,6 +3720,10 @@ struct ggml_cplan ggml_graph_plan(
+@@ -2902,6 +3721,10 @@ struct ggml_cplan ggml_graph_plan(
                          if (src1->type != vec_dot_type) {
                              cur += ggml_row_size(vec_dot_type, ggml_nelements(src1)) + sizeof(int64_t);
                          }
@@ -3386,7 +3387,7 @@ index ab82e3d6c..5a5591398 100644
                          // matrix_row_counts
                          cur += n_as * sizeof(int64_t) + sizeof(int64_t);
                          // matrix_rows
-@@ -3064,40 +3886,905 @@ struct ggml_cplan ggml_graph_plan(
+@@ -3064,40 +3887,908 @@ struct ggml_cplan ggml_graph_plan(
  // Returns the number of nodes skipped by fusion (>=1), or 0 if no fusion was applied.
  static bool ggml_cpu_disable_fusion = false;  // initialized once in ggml_cpu_init(), read-only afterwards
  
@@ -3518,6 +3519,9 @@ index ab82e3d6c..5a5591398 100644
 +// so its 2-6 page walks overlap instead of serialising inside the kernel. Bit-identical (reads only; the touch takes the
 +// minor fault the kernel would have taken). Not on the GGML_EXPERT_Q4_LAYERS copies.
 +static int ggml_cpu_mmid_touch = 0;
++// Vollie: env GGML_MMID_TEST1=1 (r13, host test only; off unless set, the kit never sets it): the no-barrier path also at
++// 1 thread, so the MMID_TOUCH class-K fault test can run without concurrent faults. Same results (same from_float, same vec_dot).
++static bool ggml_cpu_mmid_test1 = false;
 +
 +// Vollie: env GGML_Q3K_X4=1 (default since R18): Q3_K expert rows four at a time, sharing the
 +// activation loads (bit-identical: each row's integer sum and float accumulation order are unchanged).
@@ -4310,7 +4314,7 @@ index ab82e3d6c..5a5591398 100644
  static thread_ret_t ggml_graph_compute_thread(void * data) {
      struct ggml_compute_state * state = (struct ggml_compute_state *) data;
      struct ggml_threadpool    * tp    = state->threadpool;
-@@ -3126,6 +4813,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3126,6 +4817,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
      GGML_PRINT_DEBUG("thread #%d compute-start cplan %p last-graph %d\n", state->ith, (const void *)cplan, state->last_graph);
  #endif
  
@@ -4333,7 +4337,7 @@ index ab82e3d6c..5a5591398 100644
      for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
          struct ggml_tensor * node = cgraph->nodes[node_n];
  
-@@ -3139,12 +4842,70 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3139,12 +4846,70 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
          }
  
          // TODO: move fused-op detection into ggml_graph_plan so fusion decisions are made once at planning time
@@ -4409,7 +4413,7 @@ index ab82e3d6c..5a5591398 100644
          }
  
          if (state->ith == 0 && cplan->abort_callback &&
-@@ -3153,8 +4914,36 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3153,8 +4918,36 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
              tp->ec    = GGML_STATUS_ABORTED;
          }
  
@@ -4447,7 +4451,7 @@ index ab82e3d6c..5a5591398 100644
          }
      }
  
-@@ -3398,6 +5187,233 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3398,6 +5191,235 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
      int n_threads                               = cplan->n_threads;
      struct ggml_threadpool * threadpool = cplan->threadpool;
  
@@ -4504,6 +4508,8 @@ index ab82e3d6c..5a5591398 100644
 +    ggml_cpu_mmid = mmid && *mmid ? atoi(mmid) : 3;
 +    const char * mtouch = getenv("GGML_MMID_TOUCH");
 +    ggml_cpu_mmid_touch = mtouch && *mtouch ? atoi(mtouch) != 0 : 0;
++    const char * mt1 = getenv("GGML_MMID_TEST1");
++    ggml_cpu_mmid_test1 = mt1 && *mt1 && atoi(mt1) != 0;
 +    const char * skip = getenv("GGML_EXPERT_SKIP");
 +    ggml_cpu_expert_skip = skip ? atoi(skip) : 0;
 +    const char * renorm = getenv("GGML_EXPERT_SKIP_RENORM");
@@ -4681,7 +4687,7 @@ index ab82e3d6c..5a5591398 100644
      bool disposable_threadpool = false;
  
      if (threadpool == NULL) {
-@@ -3455,6 +5471,47 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3455,6 +5477,47 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
  
      // don't leave affinity set on the main thread
      clear_numa_thread_affinity();
