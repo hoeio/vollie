@@ -499,3 +499,13 @@ the ABBA items ran at 2,112 and are scored, the absolutes are not.
   byte-rate Q3_K expert gemv as a separate campaign; it is **round 10** (−6 to −8 ms *estimated* at the byte rate, exact up to float order, generalises to every
   Q3_K MoE on dotprod arm64). The budget (+2.6 % for the expert copy) and the served file remain outside the rules and the owner's call.
 
+
+## 17. Round 10 scored (R35, 2026-11-07) — the kernel is exact and faster in isolation; the day could not score it
+
+`reports/03_final.md` R35, JSON `reports/device/r10_2026-11-07.json`, Bonnie `reports/memos/r10_read.md`. The worst memory day of the campaign (79-83 majflt/token on
+every ABBA block, clock 2,112 → 1,881): the (i) `Q3K_KERN` line came back −0.21 ± 6.17 ms on a 3.5-ms-wide band and is **unscorable by the R33 (ii) rule** — not a
+pass, not a falsification. What the day did measure (*device*): the kernel is **bit-identical** (text and per-window k̄ identical, 200 + 32 tokens) and **0.724-0.737 ×**
+the old kernel cache-hot on an A78 at one thread (below the predicted 0.75-0.85); the scalar-assisted unpack is closed (scalar/new ≈ 1); the expert slot is only ≈ 63 %
+kernel (*estimated*), the rest stream / atomics / arrival. `GGML_Q3K_KERN=1` becomes the compiled default from r11 without a gate. Round 11 re-runs the (i) line under a
+noise clause pre-registered in R35 (same clock, ≤ 10 majflt/token both sides, σ ≤ 1.0, ≤ 2 re-runs), band −3.0..−4.5 (central −3.6), thresholds unchanged; printed
+fault-free ≈ 19.8 *estimated* — 20 is a coin flip, not pre-registered as reached.
