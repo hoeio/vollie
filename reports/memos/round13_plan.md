@@ -157,3 +157,37 @@ honestly) and is reported, not gated. Clyde's argument stands; the ±8 % is a re
 
 **(3)** Not "no": falling to the side-level rule now would discard the gate on the strength of an instrument that measures the wrong thing. If (d) fails on the
 host or (a)/(b) fail on the device, the fall-back is automatic by the clause above. Thresholds and the lever are unchanged.
+
+## D. r13 read (Bonnie, 2026-11-07 evening; `reports/device/r13_2026-11-07.json`; all numbers *device* unless labelled)
+
+**(i) The bench result is a verdict on the bench, not on §A.** Two instrument facts: (1) the r13 line `old=201.57 new=157.01 q4x4=78.68` equals r12's **A55** line
+(201.57 / 157.22 / 78.68) to 4-5 significant digits while `cpu=5 pinned=1 mhz=2112/2112` is printed — five numbers do not coincide across a different core at a
+different clock; the thread ran where r12's ran (an A55 at 1,804) and `cpu=` was read before a migration, or the pin landed on another thread. 1.7-1.8 × R37's
+verified A78 line is exactly the A55/A78 ratio r12 showed. (2) **K 512: cold/hot 1.012.** Same bytes (338 KB), same 4-KB page count (83) as K 1,536, so under *any*
+memory model cold ≥ hot by the same absolute amount; cold ≈ hot says the "cold" slice was not cold — best-of-7 trials on a reused slice picks the hot trial (64 MB /
+8 MB stride = 8 fresh placements < 21 trials). Consequently the K 1,536 **1.248 is a lower bound** (cold − hot ≥ 38.9 ns/row = 6.5 ns/row-block = **≥ 20 µs/slot**
+absolute at 3,072 row-blocks, against the model's 25-41) and the 46 % recovery is read as "≥ 46 % of a partially-cold gap" — inside my 50-80 % band's floor,
+unverified. `cold_thp` with `anon_huge_kb=0` is the same memory as `cold` (187.6 vs 195.9 = the trial noise, 4 %); it says anon THP is off on this kernel (fact).
+Model values (*estimated*): a verified A78 at 2,112 should show cold/hot **1.55-1.9** (hot 14.5 + page term 8-13 ns/row-block); an A55 at 1,804 (hot 26.2
+ns/row-block, same ns of latency, less OoO overlap) **1.3-1.5**; a core time-shared with a spinning worker scales hot and cold together → ratio unchanged but
+absolutes ≈ 2 ×. r13's 1.248 on the A55 with a partly-warm slice sits under the A55 band, consistent with the slice-reuse reading. The §A gate (≥ 1.5) is **not
+evaluated**, not failed; §A is not withdrawn and not confirmed.
+
+**Bench fixes before any ABBA counts (Tom):** (a) pause the threadpool during the bench and pin to an A78 the workers do not hold; read `sched_getcpu()` *after each
+trial* and discard trials off the pinned core, print `cpu_ok=n/21`; (b) **one fresh slice per trial, no best-of**: write a 16-MB stream between trials, report the
+median of 7 cold slices and `hot` = the same slice re-run immediately; (c) drop `cold_thp` unless `anon_huge_kb > 0`; (d) built-in falsifier: K 512 cold/hot < 1.05
+with fresh slices = the instrument is wrong, line marked invalid. A bench-only kit (baseline + bench, ≈ 2 min of the owner's time) is a kit check, not an ABBA session.
+
+**(ii) ABBA: unresolved under §B — zero counted blocks (every block 11-124 majflt/token; file cache 42-293 MB before runs, swap → 290 MB).** The kit changes worked:
+BAAB cancelled the position term (adv B/A 1.005; per run 1.017 / 0.984; majflt B/A 0.929), the class checks (a)(b)(c) all pass, untouched lines sit at zero
+(`MUL_MAT` −0.39 ± 0.84, head −0.12 ± 0.24, `SSM_SCAN` +0.11 ± 0.12). The ungated pooled `MUL_MAT_ID` −0.07 ± 3.28 (34 A / 35 B) is a day number, not evidence either
+way (σ 3.3 on a −3 central). **Recommendation: do not spend the one re-run session yet.** Order: Tom fixes the bench → bench-only kit → if a verified A78 shows
+cold/hot ≥ 1.5 **and** K 512 ≥ 1.3, the re-run session is the ABBA ×3 (same clause, T = 10); if cold/hot < 1.2 on a verified core, **park lever 1** and withdraw
+§A's page-latency reading (then the non-kernel half is in-core-coupled and the next audit is the chunk loop, not memory). A re-run on a thrashing day cannot count
+and would burn the session.
+
+**(iii) Revision to §A — none from r13 (instrument), one hedge added.** Old numbers kept: page term 25-41 µs/slot, cold/hot 1.55-1.9 at the A78. Hedge: if a verified
+bench shows K 512 cold ≈ hot *with* K 1,536 cold/hot > 1.2, the term is **stream-shape, not page**: the x4 kernel at K 512 sweeps an 880-B region (≈ 1 stream) while at
+K 1,536 it interleaves four 660-B streams over 2,640 B (4 trained streams, 10 lines each) — a prefetcher-ramp term that a page-head touch only partly fixes and a
+row-group reorder (gate/up rows visited so the four streams become one) would fix — noted, not proposed. The 46 % recovery, if it survives a verified bench, favours
+the page reading over the stream-shape one.
