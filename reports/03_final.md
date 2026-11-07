@@ -1,6 +1,6 @@
 # 03 — Final report and research log (living document)
 
-Last updated: **2026-11-05, R27 = round-6 device results** (§1 rewritten 2026-11-05; §6-§7 are a snapshot of 2026-11-02 at R22: for the current numbers see §1 and the R25 and R27 blocks); campaign plan in `04_campaign.md`. Each new result is appended to §5 and `results.csv`; the
+Last updated: **2026-11-07, R35 = round-10 device results** (§1 rewritten 2026-11-05; §6-§7 are a snapshot of 2026-11-02 at R22: for the current numbers see §1 and the R25 and R27 blocks); campaign plan in `04_campaign.md`. Each new result is appended to §5 and `results.csv`; the
 summary in §1 is rewritten to match.
 
 Every speed number is labelled: **measured on device** (the user's Galaxy Z Flip 3, run by the user
