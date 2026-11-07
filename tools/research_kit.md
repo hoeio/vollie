@@ -1,42 +1,34 @@
-# Research kit (round 10) — what it runs, the result file, how to run it
+# Research kit (round 11) — what it runs, the result file, how to run it
 
-The kit is the **"Run research kit (~15 min)"** button in Vollie's Settings (app 2.2.15+38, kit `r10`; round 9 was
-2.2.14+37 / `r9`). It measures the round-10 runs on the phone as it is (about 15 minutes), and puts one JSON report on
+The kit is the **"Run research kit (~15 min)"** button in Vollie's Settings (app 2.2.16+39, kit `r11`; round 10 was
+2.2.15+38 / `r10`). It measures the round-11 runs on the phone as it is (about 15-20 minutes), and puts one JSON report on
 the clipboard ("Copy research results"). `tools/research_parse.py` turns that JSON into `results.csv` rows and R-log text.
 
-What changed in the round-10 build (pre-registration `reports/05_compute_less.md` §9.9; Bonnie's memo
-`reports/memos/expert_kernel.md`; Tom's audit `lab/logs/r33/q3k_kernel/README.md`; build and checks `lab/logs/r34/`):
+What changed in the round-11 build (R35 in `reports/03_final.md`, its noise clause for the (i) re-run; Bonnie's memo
+`reports/memos/r10_read.md`; build and checks `lab/logs/r35/`):
 
-- **Default (compiled into this build, not a saved setting):** `GGML_EXPERT_SKIP=117 GGML_HEAD2=2048 GGML_HEAD2_Q=q4_0`
-  as r9, **plus `VOLLIE_SAMPLER_BYPASS=1`** (r9 (iii): exact, the sampler's fast path at temp 0). `Research.served` sets
-  them at every model load and is the base of every kit run; the vanilla rows set `VOLLIE_SAMPLER_BYPASS=0` (stock, as r9).
-- **(i) `GGML_Q3K_KERN=1`** (default 0 = the r9 `GGML_Q3K_ILP` path; **bit-identical**): the Q3_K expert dot of the
-  `MMID=3` path as an in-register 4-row kernel (the 4 rows' qs/hmask word-transposed, `sdot` by lane, the plane value
-  built in place with shift+and+`bit`/`sri`, the bias folded into the accumulator seed, scales pre-shifted so one
-  accumulator holds 16 × the block sum; the float step is the stock one). Hand-scheduled asm: device build **377 NEON ops
-  per 4-row block vs 562** (no `movi`, no spills; `lab/logs/r34/disasm/counts.txt`). Identity: 2 × 10⁵ random row-quads
-  bitwise, PPL chunks 1-3 at −ub 1 / −ub 32 / −b 512 to every digit, greedy 32 on both kit prompts (`lab/logs/r34/id.out`).
-  ABBA name `Q3K_KERN`; `cpu-prof` lines gain `kern=` (the knob on that side).
-- **(ii) `GGML_MMID_FUSE`** (gate + up in one pass) was **not built** this round; not in the kit.
-- **(iii) `GGML_CPU_BENCH=1`**: a **1-thread kernel timing, no model change**: on the first graph after it is set, the
-  calling thread times, cache-hot on synthetic expert slices (random Q3_K rows of the served shapes), ns per row of: `old`
-  (the r9 x4 ILP kernel), `new` ((i)), `int8` (the rows pre-expanded to int8, the "unpack-free" reference), `q4x4` (the
-  repacked Q4_0 4x4 gemv of `repack.cpp`, the byte-rate reference) and `scalar` (a prototype that builds planes 0-1 of the
-  next block on the integer units into a 512-byte L1 buffer while NEON runs this block). Best of 3 rounds × 7 trials,
-  kernels interleaved. Two lines: `cpu-bench q3k threads=1 K=1536 rows=512 old=… new=… int8=… q4x4=… scalar=…
-  exact_new=1 exact_int8=1 exact_scalar=1 cpu=<core>` and the same for `K=512 rows=1536` (`exact_*` = output bitwise equal
-  to `old`; `cpu` = the core it ran on: 4-6 = A78, 7 = X1). The parser prints them under `== cpu-bench` with new/old,
-  int8/old, scalar/old and old/q4x4.
+- **Default (compiled into this build, not a saved setting):** `GGML_EXPERT_SKIP=117 GGML_HEAD2=2048 GGML_HEAD2_Q=q4_0
+  VOLLIE_SAMPLER_BYPASS=1` as r10 (`Research.served`), **and the CPU module's `GGML_Q3K_KERN` now defaults to 1**: the
+  in-register Q3_K expert kernel of r10 (i) (377 vs 562 NEON ops per 4-row block, **bit-identical**, shown exact on the
+  device in R35) is on unless `GGML_Q3K_KERN=0` (the r9 `GGML_Q3K_ILP` path, the off switch). Identity of the new default:
+  `lab/logs/r35/id.out` (2 × 10⁵ random row-quads bitwise; PPL chunks 1-3 at −ub 1 / −ub 32 / −b 512 equal to r9/r10 on
+  every digit, stock and served, kern unset / '' / 0 / 1; greedy 32 on both kit prompts identical to the r10 build's host text).
+- **(i) re-run:** ABBA `Q3K_KERN:0:1` twice (same name, A = 0 = old path, B = 1 = new, the r10 direction, so the parser
+  pools both runs and they sit in the r10 orientation), scored under the R35 noise clause. `cpu-prof` lines keep `kern=`.
+- **(iii) `cpu-bench` now logs the core's clock:** each `cpu-bench q3k …` line ends `cpu=<core> mhz=<start>/<end>` (the
+  core's `scaling_cur_freq` in MHz before and after that shape's timing; −1 where unreadable). The parser prints it next
+  to the ratios under `== cpu-bench`; r10 lines without `mhz=` still parse ("clock not logged").
+- The vanilla story 200 is dropped (time); the vanilla rows also set `GGML_Q3K_KERN=0`.
 
-## What one run does (about 15 minutes, no settings to change)
+## What one run does (about 15-20 minutes, no settings to change)
 
 | phase | runs | what | knob |
 |---|---|---|---|
-| `baseline` | 2 | official benchmark prompt, 32 tokens, saved settings + the default | — |
-| `bench` | 1 | the kernel timing (iii): a one-token reply ("Hi") with `GGML_CPU_BENCH=1`; its two `cpu-bench q3k` lines are in `prof` | `GGML_CPU_BENCH=1` |
-| `vanilla` | 2 | **stock llama.cpp settings, for comparison**: official 32 and story 200 with every Vollie knob that has an off switch off (list below), threads as saved | env for that run only |
-| `ab` | 2 | ABBA A/B over the 200-token story on the default, `GGML_CPU_PROF=1`: (a) `Q3K_KERN:0:1` (exact; scored on `MUL_MAT_ID` compute), (c) `EXPERT_SKIP:0:118` with head2 off and skip 0 on the prompt (the standing control, as r8/r9) | `GGML_CPU_AB=knob:…` |
-| `on` | 4 | always-on: story 200 default (the day's control), story 200 default + `GGML_Q3K_KERN=1`; official 32 default, official 32 default + `GGML_Q3K_KERN=1` | as named |
+| `baseline` | 2 | official benchmark prompt, 32 tokens, saved settings + the default (kernel on) | — |
+| `bench` | 1 | the kernel timing (iii): a one-token reply ("Hi") with `GGML_CPU_BENCH=1`; its two `cpu-bench q3k` lines (now with `mhz=`) are in `prof` | `GGML_CPU_BENCH=1` |
+| `vanilla` | 1 | **stock llama.cpp settings, for comparison**: official 32 with every Vollie knob that has an off switch off (list below), threads as saved | env for that run only |
+| `ab` | 3 | ABBA A/B over the 200-token story on the default, `GGML_CPU_PROF=1`: (a) `Q3K_KERN:0:1` ×2 (exact; scored on `MUL_MAT_ID` compute, both runs pooled), (c) `EXPERT_SKIP:0:118` with head2 off and skip 0 on the prompt (the standing control, as r8-r10; kernel at the new default) | `GGML_CPU_AB=knob:…` |
+| `on` | 4 | always-on: story 200 default (kernel on), story 200 default + `GGML_Q3K_KERN=0` (old path); official 32 default ×2 | as named |
 
 Memory: as r9 (the default holds the 86.7 MB head copy); (i) and (iii) allocate nothing on the model path (the bench
 mallocs ≈ 7 MB of synthetic slices for its two shapes and frees them). Load-time copy: head ≈ 0.23-0.34 s (r8 device).
@@ -47,7 +39,7 @@ and cpu7 clock every 8 tokens.
 
 **Vanilla rows, what is off:** `GGML_TINY_OP=0`, `GGML_MMID=0`, `GGML_Q3K_X4=0`, `GGML_Q3K_VEC=0`, `GGML_Q3K_ILP=0`,
 `GGML_SSM_INPLACE=0`, `GGML_CONV_RING=0`, `GGML_EXPERT_SKIP=0`, `GGML_EXPERT_IO=0` (expert prefetch and next-layer
-prediction off), `GGML_HEAD2=0`, `VOLLIE_SAMPLER_BYPASS=0`; `GGML_Q3K_PF`, `GGML_Q3K_KERN`, `GGML_EXPERT_ANON`, `GGML_EXPERT_TOPP/GAP` are off anyway. **What stays Vollie's in
+prediction off), `GGML_HEAD2=0`, `VOLLIE_SAMPLER_BYPASS=0`, `GGML_Q3K_KERN=0`; `GGML_Q3K_PF`, `GGML_EXPERT_ANON`, `GGML_EXPERT_TOPP/GAP` are off anyway. **What stays Vollie's in
 those rows (no switch without a reload or more memory; README footnote, not a fake vanilla):** the KV cache is q8_0
 with flash attention (stock: f16); the weights run from the mmap because Vollie's memory check turns the repacked
 copies off on an 8 GB phone (stock `use_extra_bufts` = on, which ran this phone out of memory, R-log 2026-10-31);
@@ -85,7 +77,7 @@ run:
   majflt, minflt       page faults during the run (process-wide)
   io_read_bytes        bytes read from storage during the run (process-wide)
   prof                 [str] cpu-prof / cpu-bench / repack-release lines the module printed during the run (r10: the
-                       bench run's two "cpu-bench q3k" lines)
+                       bench run's two "cpu-bench q3k" lines; r11: each ends cpu=<core> mhz=<start>/<end>)
   text                 first 80 chars of the reply
   mem_before_load      (release/after load) memInfo() before the reload
   error                exception text if the run failed
@@ -109,23 +101,26 @@ The run's own `majflt`, `minflt` divided by `tokens` = faults per token over the
 
 ## 실행 안내 (한국어)
 
-**이번 회차(r10)에서 바뀐 것:**
-- **기본 설정:** 지난 회차와 같은 조합(전문가 생략 117 + 두 단계 출력층)에, 지난 회차에 결과가 완전히 같다고 확인된
-  **샘플러 빠른 경로**가 기본으로 들어갔습니다(이 빌드에만 들어 있는 기본값, 저장된 설정은 그대로).
-- **(i) 전문가 계산 커널을 새로 짠 버전(`Q3K_KERN`)** — 모델 파일의 같은 숫자를 같은 순서로 더하는, 결과가 완전히 같은
-  계산을 더 적은 명령으로 하는 실험입니다. A/B 한 줄과 상시 켠 줄(이야기 200, 공식 32)로 잽니다.
-- **(iii) 커널 시간 재기(`cpu-bench`)** — 한 스레드로 전문가 계산 커널 몇 가지의 속도만 재는 짧은 측정입니다(1초 안팎,
-  모델이나 답에는 아무 변화 없음). 결과는 `cpu-bench q3k …` 두 줄로 남습니다.
-- "EXPERT_SKIP:0:118" A/B 한 줄은 지난 회차와 똑같은 비교 기준입니다. **"vanilla" 두 줄은 비교용으로, Vollie의 속도
-  기능을 끈 기본 llama.cpp 설정입니다**(같은 모델, 추가 다운로드 없음).
+**이번 회차(r11)에서 바뀐 것:**
+- **기본 설정:** 지난 회차의 기본 설정(전문가 생략 117 + 두 단계 출력층 + 샘플러 빠른 경로)에, 지난 회차에 전화기에서도
+  결과가 완전히 같다고 확인된 **새 전문가 계산 커널(`Q3K_KERN`)이 기본으로 켜졌습니다**(답은 한 글자도 달라지지 않고,
+  같은 계산을 더 적은 명령으로 합니다. 저장된 설정은 그대로).
+- **(i) 새 커널 A/B를 다시 잽니다** — 지난 회차는 메모리가 부족한 날이라 판정할 수 없었습니다. 같은 A/B를 두 번 돌려
+  합칩니다.
+- **(iii) 커널 시간 재기(`cpu-bench`)** — 지난 회차와 같고, 이번에는 잴 때의 코어 클럭(MHz)도 함께 남깁니다(1초 안팎,
+  모델이나 답에는 아무 변화 없음).
+- "EXPERT_SKIP:0:118" A/B 한 줄은 지난 회차와 똑같은 비교 기준입니다. **"vanilla" 한 줄은 비교용으로, Vollie의 속도
+  기능을 끈 기본 llama.cpp 설정입니다**(같은 모델, 추가 다운로드 없음). 시간 때문에 vanilla 이야기 200은 뺐습니다.
 
-**준비:** Vollie 2.2.15+38 설치(APK, `vollie-2.2.15+38-research-r10.apk`), 모델이 이미 받아져 있고 평소처럼 쓰는 상태면 됩니다.
+**가장 중요한 한 가지: 실행하는 동안(약 15-20분) 전화기를 만지지 마세요.** 다른 앱을 열거나 화면을 끄지 말고 그대로 두세요.
+
+**준비:** Vollie 2.2.16+39 설치(APK, `vollie-2.2.16+39-research-r11.apk`), 모델이 이미 받아져 있고 평소처럼 쓰는 상태면 됩니다.
 전화기 설정은 아무것도 바꾸지 마세요(다른 앱도 그대로). 이번 회차는 추가 다운로드가 없습니다.
 
 1. Vollie → 설정(Settings) → **"Run research kit (~15 min)"** 탭.
-2. 약 15분 동안 화면을 켠 채로 둡니다(앱이 켜둡니다). 진행 상황은 버튼 아래에 `Research · 분:초 · 단계`로 보입니다.
+2. 약 15-20분 동안 화면을 켠 채로 둡니다(앱이 켜둡니다). 진행 상황은 버튼 아래에 `Research · 분:초 · 단계`로 보입니다.
 3. 끝나면 **"Copy research results"** 탭 → 클립보드에 JSON이 복사됩니다. 그대로 제게 붙여 보내 주세요
-   (길이 50-150 KB). 같은 내용이 앱 파일 폴더에 `research-r10-<시각>.json`으로도 저장됩니다.
+   (길이 50-150 KB). 같은 내용이 앱 파일 폴더에 `research-r11-<시각>.json`으로도 저장됩니다.
 4. 중간에 멈추려면 **"Stop research run"**. 그때까지의 결과도 복사할 수 있습니다.
 
 **보내 주실 것:** 붙여 넣은 JSON 한 개. 가능하면 실행 직전의 전화기 상태 한 줄(예: 충전 중 여부, 방금

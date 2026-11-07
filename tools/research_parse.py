@@ -37,13 +37,15 @@ def outside_graph(x):
     return (dur - ttft - win_ms - rest * steady) / (tok - 1), dur - ttft, win_ms, rest, steady
 
 def bench_ratios(line):
-    """r10: the pre-registered ratios of one 'cpu-bench q3k' line (§9.9 (iii))."""
+    """r10: the pre-registered ratios of one 'cpu-bench q3k' line (§9.9 (iii)); r11 adds the core clock (mhz=start/end)."""
     d = dict(re.findall(r'(\w+)=([^\s]+)', line))
     try:
         o, n, i8, q4, sc = (float(d[k]) for k in ('old', 'new', 'int8', 'q4x4', 'scalar'))
     except (KeyError, ValueError):
         return 'ratios: missing fields'
-    return f"new/old {n/o:.3f}  int8/old {i8/o:.3f}  scalar/old {sc/o:.3f}  old/q4x4 {o/q4:.2f}"
+    mhz = d.get('mhz')  # r11: core clock 'start/end' MHz; r10 lines have none
+    clock = f"  cpu{d.get('cpu', '?')} at {mhz} MHz (start/end)" if mhz else f"  cpu{d.get('cpu', '?')} clock not logged (pre-r11)"
+    return f"new/old {n/o:.3f}  int8/old {i8/o:.3f}  scalar/old {sc/o:.3f}  old/q4x4 {o/q4:.2f}" + clock
 
 def mean_sd(v):
     return (statistics.mean(v), statistics.stdev(v) if len(v) > 1 else float('nan'))
@@ -162,7 +164,7 @@ def main():
                   f"majflt/tok={(x.get('majflt') or 0)/tok if tok else float('nan'):.1f} minflt/tok={(x.get('minflt') or 0)/tok if tok else float('nan'):.0f}")
     bench = [l for x in runs for l in x.get('prof', []) if l.startswith('cpu-bench q3k ')]
     if bench:
-        print('\n== cpu-bench (r10: 1-thread kernel timing, cache-hot synthetic expert slices, ns/row; device-measured)')
+        print('\n== cpu-bench (r10/r11: 1-thread kernel timing, cache-hot synthetic expert slices, ns/row; device-measured)')
         for l in bench:
             print('  ' + l)
             print('    ' + bench_ratios(l))

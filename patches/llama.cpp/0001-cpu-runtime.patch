@@ -1,5 +1,5 @@
 diff --git a/ggml/src/ggml-cpu/arch/arm/quants.c b/ggml/src/ggml-cpu/arch/arm/quants.c
-index cfbbf6617..d84e852f4 100644
+index cfbbf6617..11553530a 100644
 --- a/ggml/src/ggml-cpu/arch/arm/quants.c
 +++ b/ggml/src/ggml-cpu/arch/arm/quants.c
 @@ -14,6 +14,7 @@
@@ -188,7 +188,7 @@ index cfbbf6617..d84e852f4 100644
  
      }
  
-@@ -2311,6 +2380,2125 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
+@@ -2311,6 +2380,2135 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
  
  }
  
@@ -357,7 +357,7 @@ index cfbbf6617..d84e852f4 100644
 +}
 +#endif
 +
-+// Vollie: env GGML_Q3K_KERN=1 (default 0; r10, reports/05_compute_less.md §9.9 (i); bit-identical): the x4 dot
++// Vollie: env GGML_Q3K_KERN (default 1 since r11, 0 = the r9 ILP path; r10, reports/05_compute_less.md §9.9 (i); bit-identical): the x4 dot
 +// below as an in-register 4-row kernel. Per Q3_K block the 4 rows' qs/hmask are word-transposed (lane = row),
 +// each 16-weight group is 4 by-element sdots into an accumulator seeded at -(4 << p) * bsum[g] (value byte =
 +// (q2 + 4h) << p, p = 0/2/4/0 for planes 0-3, built in place: shift+and the hmask bit, bit/sri the qs plane),
@@ -2297,14 +2297,24 @@ index cfbbf6617..d84e852f4 100644
 +    for (int v = 0; v < 5; ++v) free(out[v]);
 +    return ok;
 +}
++
++// Vollie r11: the core's current clock in MHz (cpufreq scaling_cur_freq, kHz), -1 if unreadable (host, cpu < 0).
++static int ggml_q3k_bench_mhz(int cpu) {
++    char path[96]; long khz = -1000;
++    snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", cpu);
++    FILE * fp = cpu >= 0 ? fopen(path, "r") : NULL;
++    if (fp) { if (fscanf(fp, "%ld", &khz) != 1) khz = -1000; fclose(fp); }
++    return (int) (khz / 1000);
++}
 +#endif
 +
 +// Writes the two "cpu-bench q3k" lines (K 1,536 x 512 rows, K 512 x 1,536 rows) to stderr; 1 thread (the caller's).
 +void ggml_cpu_q3k_bench(int cpu) {
 +#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
 +    char line[512];
-+    if (ggml_q3k_bench_shape(1536, 512, line, sizeof line)) fprintf(stderr, "%s cpu=%d\n", line, cpu);
-+    if (ggml_q3k_bench_shape(512, 1536, line, sizeof line)) fprintf(stderr, "%s cpu=%d\n", line, cpu);
++    int m0 = ggml_q3k_bench_mhz(cpu);
++    if (ggml_q3k_bench_shape(1536, 512, line, sizeof line)) { int m1 = ggml_q3k_bench_mhz(cpu); fprintf(stderr, "%s cpu=%d mhz=%d/%d\n", line, cpu, m0, m1); m0 = m1; }
++    if (ggml_q3k_bench_shape(512, 1536, line, sizeof line)) fprintf(stderr, "%s cpu=%d mhz=%d/%d\n", line, cpu, m0, ggml_q3k_bench_mhz(cpu));
 +#else
 +    fprintf(stderr, "cpu-bench q3k unsupported (needs arm64 dotprod) cpu=%d\n", cpu);
 +#endif
@@ -2315,7 +2325,7 @@ index cfbbf6617..d84e852f4 100644
  static inline svuint32_t ggml_decode_q4scales_and_mins_for_mmla(const uint32_t * vx_scales) {
      const svbool_t pg_all   = svptrue_pat_b32(SV_VL4);
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index ab82e3d6c..897778b8b 100644
+index ab82e3d6c..52fae1707 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -197,6 +197,8 @@ typedef void * thread_ret_t;
@@ -4404,7 +4414,7 @@ index ab82e3d6c..897778b8b 100644
 +    const char * pf = getenv("GGML_Q3K_PF");
 +    ggml_cpu_q3k_pf = pf && *pf ? atoi(pf) != 0 : 0;
 +    const char * kern = getenv("GGML_Q3K_KERN");
-+    ggml_cpu_q3k_kern = kern && *kern ? atoi(kern) != 0 : 0; // Vollie: off unless set (bit-identical, r10)
++    ggml_cpu_q3k_kern = kern && *kern ? atoi(kern) != 0 : 1; // Vollie: default on since r11 (bit-identical, R34/R35)
 +    const char * anon = getenv("GGML_EXPERT_ANON");
 +    ggml_cpu_expert_anon = anon && *anon ? atoi(anon) : 0;
 +    ggml_cpu_anon_use = ggml_cpu_expert_anon > 0;
