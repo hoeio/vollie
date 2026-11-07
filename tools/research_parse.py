@@ -1,7 +1,8 @@
 """Turns a research-kit JSON report (tools/research_kit.md) into results.csv rows and R-log text.
-usage: python3 -I tools/research_parse.py <report.json> [--csv]
+usage: python3 -I tools/research_parse.py <report.json> [--csv] [--gate T]
 Prints a human table per phase (device-measured numbers), the A/B splits from the cpu-prof pairs, the
-barrier cost, the speculation stats, and, with --csv, the rows to append to reports/results.csv."""
+barrier cost, the speculation stats, and, with --csv, the rows to append to reports/results.csv.
+--gate T (r13, R39 / reports/memos/round13_plan.md §B): the block-gated ABBA score, class-K knobs only."""
 import json, re, sys, statistics
 
 def prof_fields(line):
@@ -45,7 +46,17 @@ def bench_ratios(line):
         return 'ratios: missing fields'
     mhz = d.get('mhz')  # r11: core clock 'start/end' MHz; r10 lines have none
     clock = f"  cpu{d.get('cpu', '?')} at {mhz} MHz (start/end)" if mhz else f"  cpu{d.get('cpu', '?')} clock not logged (pre-r11)"
-    return f"new/old {n/o:.3f}  int8/old {i8/o:.3f}  scalar/old {sc/o:.3f}  old/q4x4 {o/q4:.2f}" + clock
+    if 'pinned' in d:  # r13: the module pins the bench thread to cpu 4-6
+        clock += '  pinned' if d['pinned'] == '1' else '  UNPINNED'
+    cold = ''
+    try:  # r13 (R39): page-stream fields; cold/hot >= 1.5 opens the ABBA, < 1.2 falsifies the diagnosis
+        h, c, ct = (float(d[k]) for k in ('hot', 'cold', 'cold_touch'))
+        rec = f"{(c - ct) / (c - h):.2f}" if c != h else 'n/a (cold = hot)'
+        cold = (f"\n    cold/hot {c/h:.3f}  (cold - cold_touch)/(cold - hot) {rec}  cold_thp/hot {float(d.get('cold_thp', 'nan'))/h:.3f}"
+                f"  anon_huge_kb {d.get('anon_huge_kb')}  exact cold/touch/thp {d.get('exact_cold')}/{d.get('exact_cold_touch')}/{d.get('exact_cold_thp')}")
+    except (KeyError, ValueError, ZeroDivisionError):
+        pass
+    return f"new/old {n/o:.3f}  int8/old {i8/o:.3f}  scalar/old {sc/o:.3f}  old/q4x4 {o/q4:.2f}" + clock + cold
 
 def mean_sd(v):
     return (statistics.mean(v), statistics.stdev(v) if len(v) > 1 else float('nan'))
@@ -76,7 +87,7 @@ def abba_summary(runs):
                             f"Δ {mb - ma:+6.2f} ± {se:4.2f}  groups {len(gd)}: Δ {gm:+6.2f} sd {gs:4.2f}"))
     nodes = {sd_: sorted({(d.get('nodes'), d.get('barriers')) for _, (s2, _, d, _) in blocks if s2 == sd_}) for sd_ in 'AB'}
     rows.append(('nodes/bar', f"A {' '.join(f'{n}/{b}' for n, b in nodes['A'])}  B {' '.join(f'{n}/{b}' for n, b in nodes['B'])}"))
-    for key in ('chunk', 'expq4', 'kern', 'fuse'):  # r9/r10 header fields, per side (absent before r9 / r10)
+    for key in ('chunk', 'expq4', 'kern', 'touch', 'fuse'):  # r9/r10/r13 header fields, per side (absent before r9 / r10 / r13)
         v = {sd_: sorted({d[key] for _, (s2, _, d, _) in blocks if s2 == sd_ and key in d}) for sd_ in 'AB'}
         if v['A'] or v['B']:
             rows.append((key, f"A {' '.join(v['A'])}  B {' '.join(v['B'])}"))
@@ -93,8 +104,62 @@ def abba_summary(runs):
             rows.append((key, f"A {ma:.1f}  B {mb:.1f}  B/A {mb/ma if ma else float('nan'):.3f}"))
     return rows
 
+GATE_LINES = [('MUL_MAT_ID', lambda d, o: sum(o.get('MUL_MAT_ID', (0, 0, 0))[1:])),
+              ('MUL_MAT', lambda d, o: sum(o.get('MUL_MAT', (0, 0, 0))[1:])),
+              ('head', lambda d, o: int(d.get('head', 0))),
+              ('SSM_SCAN', lambda d, o: sum(o.get('SSM_SCAN', (0, 0, 0))[1:]))]
+
+def gate_blocks(x, T):
+    """r13 §B: (side, blk, d, o, counted) per post-warm-up block of one ABBA run, and the run's modal clock. A block counts iff
+    majflt/token <= T and its mhz_blocks entry (cpu4/cpu7; entries map onto blocks by token position) is the run's modal clock.
+    ponytail: the kit samples the clock every 8 text chunks, not tokens (r12: 3 entries per 200 tokens), so several blocks share
+    one entry; no mhz_blocks -> no block counts."""
+    mb = [tuple(m) for m in x.get('mhz_blocks') or []]
+    modal = max(set(mb), key=mb.count) if mb else None
+    tok = x.get('tokens') or 200
+    out = []
+    for side, blk, d, o in abba_blocks(x):
+        clk = mb[min(len(mb) - 1, 8 * (blk + 1) * len(mb) // tok)] if mb else None
+        out.append((side, blk, d, o, float(d.get('majflt', 'inf')) <= T and clk == modal))
+    return out, modal
+
+def gate_score(blocks):
+    """Counted blocks -> (nA, nB, majflt A, B, {line: (Δ, σ)}, verdict, flags). Δ = B − A, σ = sqrt(sA²/nA + sB²/nB)."""
+    cnt = {s: [(d, o) for s2, _, d, o, ok in blocks if ok and s2 == s] for s in 'AB'}
+    na, nb = len(cnt['A']), len(cnt['B'])
+    mf = {s: statistics.mean(float(d['majflt']) for d, _ in cnt[s]) if cnt[s] else float('nan') for s in 'AB'}
+    res = {}
+    for label, f in GATE_LINES:
+        a = [f(d, o) / 1000 for d, o in cnt['A']]; b = [f(d, o) / 1000 for d, o in cnt['B']]
+        if len(a) < 2 or len(b) < 2:
+            res[label] = (float('nan'), float('nan')); continue
+        res[label] = (statistics.mean(b) - statistics.mean(a), (statistics.variance(a) / len(a) + statistics.variance(b) / len(b)) ** 0.5)
+    flags = {'n>=8/side': na >= 8 and nb >= 8, '|majflt A-B|<=3': abs(mf['A'] - mf['B']) <= 3, 'sigma<=1.0': res['MUL_MAT_ID'][1] <= 1.0}
+    verdict = 'scorable' if all(flags.values()) else 'unresolved'
+    return na, nb, mf, res, verdict, flags
+
+def print_gate(abba, T):
+    print(f"\n== block gate T={T} (R39 §B; class-K knobs only: a block counts iff majflt/token <= {T} and the run's modal clock; "
+          "Δ = B − A ± 1σ over counted blocks, ms/token; MUL_MAT_ID = compute + wait)")
+    for name, xs in abba.items():
+        print(f"  {name}  ({len(xs)} run{'s' if len(xs) > 1 else ''})")
+        allb = []
+        for i, x in enumerate(xs):
+            bl, modal = gate_blocks(x, T)
+            allb += bl
+            ids = {s: ' '.join(str(blk) for s2, blk, _, _, ok in bl if ok and s2 == s) for s in 'AB'}
+            print(f"    run {i+1}: modal clock {'/'.join(map(str, modal)) if modal else 'NOT LOGGED'}; first block {bl[0][0] if bl else '-'}; counted A {{{ids['A']}}} B {{{ids['B']}}}")
+        for title, bl in [(f'run {i+1}', gate_blocks(x, T)[0]) for i, x in enumerate(xs)] + [('pooled', allb)]:
+            na, nb, mf, res, verdict, flags = gate_score(bl)
+            print(f"    {title:7s} counted A {na} / B {nb}  majflt A {mf['A']:.1f} B {mf['B']:.1f}  " +
+                  '  '.join(f"{k} {v[0]:+.2f} ± {v[1]:.2f}" for k, v in res.items()))
+            bias = [(k, res[k][0]) for k in ('MUL_MAT', 'head', 'SSM_SCAN') if abs(res[k][0]) > 0.3]
+            bt = '  bias: ' + ', '.join(f"{k} {v:+.2f}" for k, v in bias) + f" (line scored only if |Δ| > {2 * max(abs(v) for _, v in bias):.2f})" if bias else ''
+            print(f"            {'  '.join(f'{k} {chr(10003) if v else chr(10007)}' for k, v in flags.items())} -> {verdict}{bt}")
+
 def main():
     path = sys.argv[1]; want_csv = '--csv' in sys.argv
+    gate = float(sys.argv[sys.argv.index('--gate') + 1]) if '--gate' in sys.argv else None
     r = json.load(open(path))
     print(f"kit {r.get('kit')} app {r.get('app')} started {r.get('started')} finished {r.get('finished')} stopped_early={r.get('stopped_early')}")
     for h in r.get('header', []): print('  ' + h)
@@ -151,6 +216,8 @@ def main():
             for x in xs:
                 mb = x.get('mhz_blocks')
                 if mb: print(f"    mhz cpu4/cpu7 every 8 tokens: {' '.join(f'{a}/{b}' for a, b in mb)}")
+        if gate is not None:
+            print_gate(abba, gate)
     print('\n== r3 fields per run (last cpu-prof line; faults per generated token)')
     for x in runs:
         lines = [l for l in x.get('prof', []) if l.startswith('cpu-prof')]

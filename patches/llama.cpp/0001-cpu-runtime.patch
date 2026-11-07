@@ -1,16 +1,19 @@
 diff --git a/ggml/src/ggml-cpu/arch/arm/quants.c b/ggml/src/ggml-cpu/arch/arm/quants.c
-index cfbbf6617..11553530a 100644
+index cfbbf6617..c7a5565eb 100644
 --- a/ggml/src/ggml-cpu/arch/arm/quants.c
 +++ b/ggml/src/ggml-cpu/arch/arm/quants.c
-@@ -14,6 +14,7 @@
+@@ -14,6 +14,10 @@
  #include <float.h>
  #include <stdlib.h> // for qsort
  #include <stdio.h>  // for GGML_ASSERT
 +#include <time.h>   // Vollie: GGML_CPU_BENCH
++#if !defined(_WIN32)
++#include <sys/mman.h> // Vollie: GGML_CPU_BENCH cold arenas (r13)
++#endif
  
  #define GROUP_MAX_EPS 1e-15f
  #define GROUP_MAX_EPS_IQ3_XXS 1e-8f
-@@ -2015,6 +2016,10 @@ void ggml_vec_dot_q2_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
+@@ -2015,6 +2019,10 @@ void ggml_vec_dot_q2_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
  #endif
  }
  
@@ -21,7 +24,7 @@ index cfbbf6617..11553530a 100644
  void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
      assert(n % QK_K == 0);
      assert(nrc == 1);
-@@ -2236,7 +2241,10 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
+@@ -2236,7 +2244,10 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
  
          ggml_uint8x16x4_t q3h;
  
@@ -33,7 +36,7 @@ index cfbbf6617..11553530a 100644
  
          // Set up scales
          memcpy(aux, x[i].scales, 12);
-@@ -2247,54 +2255,115 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
+@@ -2247,54 +2258,115 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
  
          int8_t * scale = (int8_t *)utmp;
          for (int j = 0; j < 16; ++j) scale[j] -= m32;
@@ -188,7 +191,7 @@ index cfbbf6617..11553530a 100644
  
      }
  
-@@ -2311,6 +2380,2135 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
+@@ -2311,6 +2383,2222 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
  
  }
  
@@ -2227,8 +2230,65 @@ index cfbbf6617..11553530a 100644
 +static uint32_t ggml_q3k_bench_rng = 12345;
 +static uint32_t ggml_q3k_bench_rand(void) { ggml_q3k_bench_rng = ggml_q3k_bench_rng*1664525u + 1013904223u; return ggml_q3k_bench_rng >> 8; }
 +
-+// One shape: ns/row, best of 3 rounds x 7 trials of 2 passes over all rows (kernels interleaved per round).
-+// Fills line; returns 0 if a buffer could not be allocated.
++// Vollie r13 (R39): the cold fields. A 64-MB anon arena, 2-MB aligned (huge: MADV_HUGEPAGE, else MADV_NOHUGEPAGE, Linux),
++// holding copies of the bench slice at 4-KB-aligned slots; *map / *maplen = what to munmap. NULL if unavailable.
++#define GGML_Q3K_ARENA ((size_t) 64 << 20)
++static uint8_t * ggml_q3k_bench_arena(int huge, void ** map, size_t * maplen) {
++    *map = NULL;
++#if defined(_WIN32)
++    GGML_UNUSED(huge); GGML_UNUSED(maplen);
++    return NULL;
++#else
++    *maplen = GGML_Q3K_ARENA + ((size_t) 2 << 20);
++    void * m = mmap(NULL, *maplen, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    if (m == MAP_FAILED) {
++        return NULL;
++    }
++    *map = m;
++    uint8_t * a = (uint8_t *) (((uintptr_t) m + ((uintptr_t) 2 << 20) - 1) & ~(((uintptr_t) 2 << 20) - 1));
++#if defined(__linux__)
++    madvise(a, GGML_Q3K_ARENA, huge ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
++#else
++    GGML_UNUSED(huge);
++#endif
++    return a;
++#endif
++}
++
++// AnonHugePages of the process in kB (/proc/self/smaps_rollup), -1 if unreadable.
++static long ggml_q3k_bench_anon_huge(void) {
++    FILE * fp = fopen("/proc/self/smaps_rollup", "r");
++    char l[256]; long kb = -1;
++    while (fp && fgets(l, sizeof l, fp)) {
++        if (sscanf(l, "AnonHugePages: %ld", &kb) == 1) break;
++    }
++    if (fp) fclose(fp);
++    return kb;
++}
++
++// One cold trial: one pass of the new kernel over the slice at arena slot (*ct)*step mod nslots (consecutive slots >= 8 MB
++// apart, none reused within a shape), in the in-situ order (32-row chunks, 4-row groups); touch = GGML_MMID_TOUCH's page-head
++// loads at each chunk start. ns/row.
++static double ggml_q3k_bench_cold(const uint8_t * arena, size_t slot, int nslots, int step, int * ct, int rows, int nb, size_t bx,
++                                  int touch, float * out, const block_q8_K * yk) {
++    const uint8_t * w = arena + (size_t) (((long long) (*ct)++ * step) % nslots) * slot;
++    struct timespec ts0, ts1;
++    clock_gettime(CLOCK_MONOTONIC, &ts0);
++    for (int r = 0; r < rows; r += 4) {
++        if (touch && r % 32 == 0) {
++            ggml_cpu_page_touch(w + r*bx, (size_t) (rows - r < 32 ? rows - r : 32)*bx);
++        }
++        const block_q3_K * x[4] = { (const block_q3_K *) (w + r*bx), (const block_q3_K *) (w + (r + 1)*bx),
++                                    (const block_q3_K *) (w + (r + 2)*bx), (const block_q3_K *) (w + (r + 3)*bx) };
++        ggml_vec_dot_q3_K_q8_K_x4_kern(nb, out + r, x, yk);
++    }
++    clock_gettime(CLOCK_MONOTONIC, &ts1);
++    return ((ts1.tv_sec - ts0.tv_sec)*1e9 + (ts1.tv_nsec - ts0.tv_nsec)) / rows;
++}
++
++// One shape: ns/row, best of 3 rounds x 7 trials of 2 passes over all rows (kernels interleaved per round); r13: + cold and
++// cold_touch (1 pass on a fresh arena slice per trial, interleaved with the rest), then cold_thp (its own arena, after the
++// first is freed: one 64-MB arena at a time). Fills line; returns 0 if a buffer could not be allocated.
 +static int ggml_q3k_bench_shape(int K, int rows, char * line, size_t len) {
 +    const int nb = K/QK_K;
 +    const size_t bx = (size_t) nb*sizeof(block_q3_K), b40 = (size_t) (K/QK4_0)*sizeof(block_q4_0);
@@ -2238,9 +2298,9 @@ index cfbbf6617..11553530a 100644
 +    uint8_t * q40  = malloc(b40*rows), * q4x4 = malloc(b40*rows);
 +    block_q8_K * yk = malloc(nb*sizeof(block_q8_K));
 +    block_q8_0 * y0 = malloc((K/QK8_0)*sizeof(block_q8_0));
-+    float * out[5];
-+    for (int v = 0; v < 5; ++v) out[v] = malloc(rows*sizeof(float));
-+    int ok = w && x8 && f && q40 && q4x4 && yk && y0 && out[0] && out[1] && out[2] && out[3] && out[4];
++    float * out[8];
++    for (int v = 0; v < 8; ++v) out[v] = malloc(rows*sizeof(float));
++    int ok = w && x8 && f && q40 && q4x4 && yk && y0 && out[0] && out[1] && out[2] && out[3] && out[4] && out[5] && out[6] && out[7];
 +    if (ok) {
 +        for (size_t i = 0; i < bx*rows + 4*sizeof(block_q3_K); ++i) w[i] = (uint8_t) ggml_q3k_bench_rand();
 +        for (int r = 0; r < rows; ++r) for (int b = 0; b < nb; ++b) {
@@ -2262,10 +2322,27 @@ index cfbbf6617..11553530a 100644
 +                                        (const block_q3_K *) (w + (rr + 2)*bx), (const block_q3_K *) (w + (rr + 3)*bx) };
 +            ggml_vec_dot_q3_K_q8_K_x4_ilp(nb, out[0] + rr, x, bx, yk);
 +        }
-+        double best[5] = { 1e30, 1e30, 1e30, 1e30, 1e30 };
++        // r13: cold arenas. Slots of the slice rounded up to 4 KB; step = the first slot count >= 8 MB coprime with nslots
++        const size_t slot = (bx*rows + 4095) & ~(size_t) 4095;
++        const int nslots = (int) (GGML_Q3K_ARENA / slot);
++        int step = (int) ((((size_t) 8 << 20) + slot - 1) / slot), ct = 0;
++        for (;; step++) { // until gcd(step, nslots) == 1
++            int a = step, b = nslots;
++            while (b) { const int t = a % b; a = b; b = t; }
++            if (a == 1) break;
++        }
++        void * map = NULL; size_t maplen = 0;
++        uint8_t * arena = ggml_q3k_bench_arena(0, &map, &maplen);
++        for (int i = 0; arena && i < nslots; ++i) memcpy(arena + (size_t) i*slot, w, bx*rows); // resident: no faults in the timing
++        double best[8] = { 1e30, 1e30, 1e30, 1e30, 1e30, 1e30, 1e30, 1e30 };
 +        for (int round = 0; round < 3; ++round) {
-+            for (int v = 0; v < 5; ++v) {
++            for (int v = 0; v < 7; ++v) {
 +                for (int t = 0; t < 7; ++t) {
++                    if (v >= 5) {
++                        const double ns = arena ? ggml_q3k_bench_cold(arena, slot, nslots, step, &ct, rows, nb, bx, v == 6, out[v], yk) : -1;
++                        best[v] = ns < best[v] ? ns : best[v];
++                        continue;
++                    }
 +                    struct timespec ts0, ts1;
 +                    clock_gettime(CLOCK_MONOTONIC, &ts0);
 +                    for (int pass = 0; pass < 2; ++pass) {
@@ -2288,13 +2365,25 @@ index cfbbf6617..11553530a 100644
 +                }
 +            }
 +        }
-+        const int ex_new = memcmp(out[1], out[0], rows*sizeof(float)) == 0, ex_int8 = memcmp(out[2], out[0], rows*sizeof(float)) == 0,
-+                  ex_scalar = memcmp(out[4], out[0], rows*sizeof(float)) == 0;
-+        snprintf(line, len, "cpu-bench q3k threads=1 K=%d rows=%d old=%.2f new=%.2f int8=%.2f q4x4=%.2f scalar=%.2f exact_new=%d exact_int8=%d exact_scalar=%d",
-+                 K, rows, best[0], best[1], best[2], best[3], best[4], ex_new, ex_int8, ex_scalar);
++        if (map) munmap(map, maplen);
++        arena = ggml_q3k_bench_arena(1, &map, &maplen);
++        for (int i = 0; arena && i < nslots; ++i) memcpy(arena + (size_t) i*slot, w, bx*rows);
++        const long huge_kb = arena ? ggml_q3k_bench_anon_huge() : -1;
++        ct = 0;
++        for (int t = 0; t < 21; ++t) {
++            const double ns = arena ? ggml_q3k_bench_cold(arena, slot, nslots, step, &ct, rows, nb, bx, 0, out[7], yk) : -1;
++            best[7] = ns < best[7] ? ns : best[7];
++        }
++        if (map) munmap(map, maplen);
++        int ex[8];
++        for (int v = 1; v < 8; ++v) ex[v] = memcmp(out[v], out[0], rows*sizeof(float)) == 0;
++        snprintf(line, len, "cpu-bench q3k threads=1 K=%d rows=%d old=%.2f new=%.2f int8=%.2f q4x4=%.2f scalar=%.2f exact_new=%d exact_int8=%d exact_scalar=%d "
++                 "hot=%.2f cold=%.2f cold_touch=%.2f cold_thp=%.2f exact_cold=%d exact_cold_touch=%d exact_cold_thp=%d anon_huge_kb=%ld",
++                 K, rows, best[0], best[1], best[2], best[3], best[4], ex[1], ex[2], ex[4],
++                 best[1], best[5], best[6], best[7], ex[5], ex[6], ex[7], huge_kb);
 +    }
 +    free(w); free(x8); free(f); free(q40); free(q4x4); free(yk); free(y0);
-+    for (int v = 0; v < 5; ++v) free(out[v]);
++    for (int v = 0; v < 8; ++v) free(out[v]);
 +    return ok;
 +}
 +
@@ -2309,14 +2398,15 @@ index cfbbf6617..11553530a 100644
 +#endif
 +
 +// Writes the two "cpu-bench q3k" lines (K 1,536 x 512 rows, K 512 x 1,536 rows) to stderr; 1 thread (the caller's).
-+void ggml_cpu_q3k_bench(int cpu) {
++// r13: pinned = the caller pinned this thread to the big cores (ggml-cpu.c).
++void ggml_cpu_q3k_bench(int cpu, int pinned) {
 +#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
-+    char line[512];
++    char line[768];
 +    int m0 = ggml_q3k_bench_mhz(cpu);
-+    if (ggml_q3k_bench_shape(1536, 512, line, sizeof line)) { int m1 = ggml_q3k_bench_mhz(cpu); fprintf(stderr, "%s cpu=%d mhz=%d/%d\n", line, cpu, m0, m1); m0 = m1; }
-+    if (ggml_q3k_bench_shape(512, 1536, line, sizeof line)) fprintf(stderr, "%s cpu=%d mhz=%d/%d\n", line, cpu, m0, ggml_q3k_bench_mhz(cpu));
++    if (ggml_q3k_bench_shape(1536, 512, line, sizeof line)) { int m1 = ggml_q3k_bench_mhz(cpu); fprintf(stderr, "%s cpu=%d pinned=%d mhz=%d/%d\n", line, cpu, pinned, m0, m1); m0 = m1; }
++    if (ggml_q3k_bench_shape(512, 1536, line, sizeof line)) fprintf(stderr, "%s cpu=%d pinned=%d mhz=%d/%d\n", line, cpu, pinned, m0, ggml_q3k_bench_mhz(cpu));
 +#else
-+    fprintf(stderr, "cpu-bench q3k unsupported (needs arm64 dotprod) cpu=%d\n", cpu);
++    fprintf(stderr, "cpu-bench q3k unsupported (needs arm64 dotprod) cpu=%d pinned=%d\n", cpu, pinned);
 +#endif
 +    fflush(stderr);
 +}
@@ -2325,7 +2415,7 @@ index cfbbf6617..11553530a 100644
  static inline svuint32_t ggml_decode_q4scales_and_mins_for_mmla(const uint32_t * vx_scales) {
      const svbool_t pg_all   = svptrue_pat_b32(SV_VL4);
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index ab82e3d6c..52fae1707 100644
+index ab82e3d6c..5a5591398 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -197,6 +197,8 @@ typedef void * thread_ret_t;
@@ -2639,12 +2729,12 @@ index ab82e3d6c..52fae1707 100644
                      vec_dot(ne00, &tmp[ir0 - iir0], 0, src0_cur + ir0*nb01, 0, src1_col, 0, 1);
                  }
  
-@@ -1551,6 +1823,534 @@ static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
+@@ -1551,6 +1823,537 @@ static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
      return ptr;
  }
  
 +// ---- Vollie: MUL_MAT_ID additions (knobs documented where the variables are defined below) ----
-+static int ggml_cpu_mmid;
++static int ggml_cpu_mmid, ggml_cpu_mmid_touch;
 +static int ggml_cpu_q3k_x4;
 +static int ggml_cpu_expert_skip, ggml_cpu_expert_skip_renorm;
 +static int ggml_cpu_expert_topp, ggml_cpu_expert_gap, ggml_cpu_expert_mink;
@@ -3153,6 +3243,9 @@ index ab82e3d6c..52fae1707 100644
 +            if (q4) {
 +                ggml_cpu_expq4_chunk(q4, dst, ids, cur_a, c*chunk, MIN((c + 1)*chunk, ne01), 0, counts[cur_a], matrix_rows, row_size, my_q);
 +            } else {
++                if (ggml_cpu_mmid_touch) { // Vollie: GGML_MMID_TOUCH
++                    ggml_cpu_page_touch(src0_cur + c*chunk*src0->nb[1], (size_t) (MIN((c + 1)*chunk, ne01) - c*chunk)*src0->nb[1]);
++                }
 +                ggml_cpu_mmid_chunk(dst, src0, src1, ids, cur_a, c*chunk, MIN((c + 1)*chunk, ne01), 0, 1,
 +                                    src0_cur, matrix_rows, row_size, true, my_q);
 +            }
@@ -3174,7 +3267,7 @@ index ab82e3d6c..52fae1707 100644
  static void ggml_compute_forward_mul_mat_id(
          const struct ggml_compute_params * params,
                struct ggml_tensor * dst) {
-@@ -1568,9 +2368,18 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1568,9 +2371,18 @@ static void ggml_compute_forward_mul_mat_id(
  
      const bool src1_cont = ggml_is_contiguous(src1);
  
@@ -3194,7 +3287,7 @@ index ab82e3d6c..52fae1707 100644
      // we don't support permuted src0 or src1
      GGML_ASSERT(nb00 == ggml_type_size(type));
      GGML_ASSERT(nb10 == ggml_type_size(src1->type));
-@@ -1644,21 +2453,10 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1644,21 +2456,10 @@ static void ggml_compute_forward_mul_mat_id(
      }
  
      if (ith == 0) {
@@ -3219,7 +3312,7 @@ index ab82e3d6c..52fae1707 100644
  
      // reset current_chunk
      for (int cur_a = ith; cur_a < n_as; cur_a += nth) {
-@@ -1668,6 +2466,7 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1668,6 +2469,7 @@ static void ggml_compute_forward_mul_mat_id(
  
      ggml_barrier(params->threadpool);
  
@@ -3227,7 +3320,7 @@ index ab82e3d6c..52fae1707 100644
      for (int cur_a = 0; cur_a < n_as; ++cur_a) {
          const int64_t cne1 = matrix_row_counts[cur_a];
  
-@@ -1675,12 +2474,23 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1675,12 +2477,23 @@ static void ggml_compute_forward_mul_mat_id(
              continue;
          }
  
@@ -3252,7 +3345,7 @@ index ab82e3d6c..52fae1707 100644
          const void * wdata = (src1->type == vec_dot_type) ? src1->data : params->wdata;
          const size_t row_size = ggml_row_size(vec_dot_type, ne10);
  
-@@ -1689,7 +2499,7 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1689,7 +2502,7 @@ static void ggml_compute_forward_mul_mat_id(
  
          int chunk_size = 16;
          if (nr0 == 1 || nr1 == 1) {
@@ -3261,7 +3354,7 @@ index ab82e3d6c..52fae1707 100644
          }
  
          // disable for NUMA
-@@ -1720,7 +2530,7 @@ static void ggml_compute_forward_mul_mat_id(
+@@ -1720,7 +2533,7 @@ static void ggml_compute_forward_mul_mat_id(
              const int64_t ir1_start = dr1 * ith1;
              const int64_t ir1_end = MIN(ir1_start + dr1, nr1);
  
@@ -3270,7 +3363,7 @@ index ab82e3d6c..52fae1707 100644
                  dst, src0, src1, ids, cur_a,
                  ir0_start, ir0_end, ir1_start, ir1_end,
                  src0_cur, matrix_rows, row_size, src1_cont, wdata
-@@ -1744,6 +2554,11 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
+@@ -1744,6 +2557,11 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
          return;
      }
  
@@ -3282,7 +3375,7 @@ index ab82e3d6c..52fae1707 100644
      // extra_buffer op?
      if (ggml_cpu_extra_compute_forward(params, tensor)) {
          return;
-@@ -2902,6 +3717,10 @@ struct ggml_cplan ggml_graph_plan(
+@@ -2902,6 +3720,10 @@ struct ggml_cplan ggml_graph_plan(
                          if (src1->type != vec_dot_type) {
                              cur += ggml_row_size(vec_dot_type, ggml_nelements(src1)) + sizeof(int64_t);
                          }
@@ -3293,7 +3386,7 @@ index ab82e3d6c..52fae1707 100644
                          // matrix_row_counts
                          cur += n_as * sizeof(int64_t) + sizeof(int64_t);
                          // matrix_rows
-@@ -3064,40 +3883,895 @@ struct ggml_cplan ggml_graph_plan(
+@@ -3064,40 +3886,905 @@ struct ggml_cplan ggml_graph_plan(
  // Returns the number of nodes skipped by fusion (>=1), or 0 if no fusion was applied.
  static bool ggml_cpu_disable_fusion = false;  // initialized once in ggml_cpu_init(), read-only afterwards
  
@@ -3374,6 +3467,9 @@ index ab82e3d6c..52fae1707 100644
 +// cancels a linear drift (page-cache fill, clocks) instead of handing it to one side. The profile window closes
 +// at every block; its line carries "ab=A|B blk=<n>" (blk=0: the warm-up). The count restarts at each prompt.
 +static int     ggml_cpu_ab_warm = 16, ggml_cpu_ab_block = 8, ggml_cpu_ab_blk = 0;
++// Vollie: env GGML_CPU_AB_BAAB=1 (r13, R39): the post-warm-up blocks go B A A B B A A B ... instead (warm-up still A; ab= keeps
++// naming the side, so A is always the first value), so position 1 of each group of four is B's.
++static bool    ggml_cpu_ab_baab = false;
 +static int64_t ggml_cpu_ab_tiny = 0;
 +static int64_t ggml_cpu_prof_comp[2][GGML_OP_COUNT], ggml_cpu_prof_wait[2][GGML_OP_COUNT];
 +static int     ggml_cpu_prof_cnt[2][GGML_OP_COUNT], ggml_cpu_prof_graphs[2], ggml_cpu_prof_tokens[2], ggml_cpu_prof_nodes[2], ggml_cpu_prof_barriers[2];
@@ -3383,6 +3479,7 @@ index ab82e3d6c..52fae1707 100644
 +static bool    ggml_cpu_prof_anon[2];                        // the side read the GGML_EXPERT_ANON copies
 +static int     ggml_cpu_prof_ilp[2], ggml_cpu_prof_pf[2];    // GGML_Q3K_ILP / _PF on that side
 +static int     ggml_cpu_prof_kern[2];                        // Vollie: GGML_Q3K_KERN on that side
++static int     ggml_cpu_prof_touch[2];                       // Vollie: GGML_MMID_TOUCH on that side
 +static int     ggml_cpu_prof_skip[2];                        // GGML_EXPERT_SKIP on that side
 +static int64_t ggml_cpu_prof_flt[2][2]; // Vollie: page faults (major, minor) of the process during profiled graphs, per A/B side
 +static int64_t ggml_cpu_prof_h2[2];   // GGML_HEAD2 on that side
@@ -3415,6 +3512,12 @@ index ab82e3d6c..52fae1707 100644
 +//      counters are reset by thread 0 before the barrier that precedes the op.
 +//   Without 2, chunks are assigned round-robin (thread i takes chunks i, i+nth, ...).
 +static int ggml_cpu_mmid = 0;
++
++// Vollie: env GGML_MMID_TOUCH=1 (r13, R39; off unless set, "" = unset): in the no-barrier path, after a chunk is claimed and
++// before its kernel runs, one demand load of the first byte of each 4-KB page the chunk's weight rows span (ggml_cpu_page_touch),
++// so its 2-6 page walks overlap instead of serialising inside the kernel. Bit-identical (reads only; the touch takes the
++// minor fault the kernel would have taken). Not on the GGML_EXPERT_Q4_LAYERS copies.
++static int ggml_cpu_mmid_touch = 0;
 +
 +// Vollie: env GGML_Q3K_X4=1 (default since R18): Q3_K expert rows four at a time, sharing the
 +// activation loads (bit-identical: each row's integer sum and float accumulation order are unchanged).
@@ -4083,7 +4186,7 @@ index ab82e3d6c..52fae1707 100644
 +    }
 +    // Vollie: kavg = kept expert slots per layer and token on this side; anon=N/hit%/tensor copies per
 +    // decode token (both sides together: one cache); ilp, pf = GGML_Q3K_ILP / GGML_Q3K_PF on this side
-+    int len = snprintf(line, sizeof line, "cpu-prof%s graphs=%d tokens=%d threads=%d tiny=%lld eio=%d q3k=%d x4=%d ilp=%d pf=%d mmid=%d skip=%d/%lld%% kavg=%.2f anon=%d/%lld%%/%.1f anon_mb=%lld pred=%lld%% adv=%lld us/token=%lld compute=%lld wait=%lld head2=%lld head=%lld majflt=%.1f minflt=%.1f nodes=%d barriers=%d chunk=%d expq4=%d kern=%d mmid_thr=",
++    int len = snprintf(line, sizeof line, "cpu-prof%s graphs=%d tokens=%d threads=%d tiny=%lld eio=%d q3k=%d x4=%d ilp=%d pf=%d mmid=%d skip=%d/%lld%% kavg=%.2f anon=%d/%lld%%/%.1f anon_mb=%lld pred=%lld%% adv=%lld us/token=%lld compute=%lld wait=%lld head2=%lld head=%lld majflt=%.1f minflt=%.1f nodes=%d barriers=%d chunk=%d expq4=%d kern=%d touch=%d mmid_thr=",
 +        ab, g, ggml_cpu_prof_tokens[v], n_threads,
 +        (long long) (ggml_cpu_ab_mode == 2 && v ? ggml_cpu_ab_tiny : ggml_cpu_tiny_thresh), ggml_cpu_expert_io,
 +        ggml_cpu_ab_mode == 1 ? (v ? 0 : 1) : ggml_cpu_q3k_vec, ggml_cpu_q3k_x4, ggml_cpu_prof_ilp[v], ggml_cpu_prof_pf[v], ggml_cpu_mmid,
@@ -4098,7 +4201,7 @@ index ab82e3d6c..52fae1707 100644
 +        (long long) (comp / g), (long long) (wait / g), (long long) ggml_cpu_prof_h2[v], (long long) (ggml_cpu_prof_head[v] / g),
 +        ggml_cpu_prof_tokens[v] ? (double) ggml_cpu_prof_flt[v][0] / ggml_cpu_prof_tokens[v] : 0.0,
 +        ggml_cpu_prof_tokens[v] ? (double) ggml_cpu_prof_flt[v][1] / ggml_cpu_prof_tokens[v] : 0.0, ggml_cpu_prof_nodes[v] / g, ggml_cpu_prof_barriers[v] / g,
-+        ggml_cpu_prof_chunk[v], ggml_cpu_prof_expq4[v], ggml_cpu_prof_kern[v]);
++        ggml_cpu_prof_chunk[v], ggml_cpu_prof_expq4[v], ggml_cpu_prof_kern[v], ggml_cpu_prof_touch[v]);
 +    // per-thread µs computing inside MUL_MAT_ID (both A/B variants together): the spread is the imbalance
 +    for (int t = 0; t < n_threads && t < GGML_MAX_N_THREADS && len < (int) sizeof line - 64; t++) {
 +        len += snprintf(line + len, sizeof line - len, "%s%lld", t ? "/" : "",
@@ -4207,7 +4310,7 @@ index ab82e3d6c..52fae1707 100644
  static thread_ret_t ggml_graph_compute_thread(void * data) {
      struct ggml_compute_state * state = (struct ggml_compute_state *) data;
      struct ggml_threadpool    * tp    = state->threadpool;
-@@ -3126,6 +4800,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3126,6 +4813,22 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
      GGML_PRINT_DEBUG("thread #%d compute-start cplan %p last-graph %d\n", state->ith, (const void *)cplan, state->last_graph);
  #endif
  
@@ -4230,7 +4333,7 @@ index ab82e3d6c..52fae1707 100644
      for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
          struct ggml_tensor * node = cgraph->nodes[node_n];
  
-@@ -3139,12 +4829,70 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3139,12 +4842,70 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
          }
  
          // TODO: move fused-op detection into ggml_graph_plan so fusion decisions are made once at planning time
@@ -4306,7 +4409,7 @@ index ab82e3d6c..52fae1707 100644
          }
  
          if (state->ith == 0 && cplan->abort_callback &&
-@@ -3153,8 +4901,36 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+@@ -3153,8 +4914,36 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
              tp->ec    = GGML_STATUS_ABORTED;
          }
  
@@ -4344,7 +4447,7 @@ index ab82e3d6c..52fae1707 100644
          }
      }
  
-@@ -3398,6 +5174,219 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3398,6 +5187,233 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
      int n_threads                               = cplan->n_threads;
      struct ggml_threadpool * threadpool = cplan->threadpool;
  
@@ -4399,6 +4502,8 @@ index ab82e3d6c..52fae1707 100644
 +    ggml_cpu_q3k_x4 = q3kx && *q3kx ? atoi(q3kx) != 0 : 1;
 +    const char * mmid = getenv("GGML_MMID");
 +    ggml_cpu_mmid = mmid && *mmid ? atoi(mmid) : 3;
++    const char * mtouch = getenv("GGML_MMID_TOUCH");
++    ggml_cpu_mmid_touch = mtouch && *mtouch ? atoi(mtouch) != 0 : 0;
 +    const char * skip = getenv("GGML_EXPERT_SKIP");
 +    ggml_cpu_expert_skip = skip ? atoi(skip) : 0;
 +    const char * renorm = getenv("GGML_EXPERT_SKIP_RENORM");
@@ -4442,9 +4547,18 @@ index ab82e3d6c..52fae1707 100644
 +    if (kbench_n > 0 && kbench_n != ggml_cpu_kbench_n) {
 +        ggml_cpu_kbench_n = kbench_n;
 +#if defined(__linux__)
-+        ggml_cpu_q3k_bench(sched_getcpu());
++        // Vollie r13: the bench thread on the A78s {4,5,6} for the bench only (r12's landed on an A55), then its mask back
++        cpu_set_t old_set, big;
++        const bool had = sched_getaffinity(0, sizeof old_set, &old_set) == 0;
++        CPU_ZERO(&big);
++        CPU_SET(4, &big); CPU_SET(5, &big); CPU_SET(6, &big);
++        const bool pinned = had && sched_setaffinity(0, sizeof big, &big) == 0;
++        ggml_cpu_q3k_bench(sched_getcpu(), pinned);
++        if (pinned) {
++            sched_setaffinity(0, sizeof old_set, &old_set);
++        }
 +#else
-+        ggml_cpu_q3k_bench(-1);
++        ggml_cpu_q3k_bench(-1, 0);
 +#endif
 +    }
 +    const char * bbench = getenv("GGML_BARRIER_BENCH");
@@ -4456,7 +4570,7 @@ index ab82e3d6c..52fae1707 100644
 +    }
 +    const char * ab = getenv("GGML_CPU_AB");
 +    // Modes: "q3k", "tiny:<n>", and the generic "knob:<NAME>:<A>:<B>" (NAME = TINY_OP, MMID,
-+    // Q3K_VEC, Q3K_X4, Q3K_ILP, Q3K_PF, Q3K_KERN, EXPERT_SKIP, EXPERT_ANON, SSM_INPLACE, CONV_RING, HEAD2, MM_CHUNK, EXPERT_Q4_LAYERS): ABBA blocks (see
++    // Q3K_VEC, Q3K_X4, Q3K_ILP, Q3K_PF, Q3K_KERN, MMID_TOUCH, EXPERT_SKIP, EXPERT_ANON, SSM_INPLACE, CONV_RING, HEAD2, MM_CHUNK, EXPERT_Q4_LAYERS): ABBA blocks (see
 +    // ggml_cpu_ab_warm); q3k and tiny: A on even decode graphs, B on odd ones. EXPERT_ANON keeps one cache of max(A, B) slots, filled on both sides; a side reads it iff
 +    // its value is > 0 (so A/B measures reading the copies, not the fill).
 +    ggml_cpu_ab_mode = !ab ? 0 : strcmp(ab, "q3k") == 0 ? 1 : strncmp(ab, "tiny:", 5) == 0 ? 2 : strncmp(ab, "knob:", 5) == 0 ? 3 : 0;
@@ -4465,11 +4579,13 @@ index ab82e3d6c..52fae1707 100644
 +        const char * aw = getenv("GGML_CPU_AB_WARM"), * abk = getenv("GGML_CPU_AB_BLOCK");
 +        ggml_cpu_ab_warm  = aw && *aw ? MAX(0, atoi(aw)) : 16;
 +        ggml_cpu_ab_block = abk && *abk ? MAX(1, atoi(abk)) : 8;
++        const char * baab = getenv("GGML_CPU_AB_BAAB");
++        ggml_cpu_ab_baab = baab && *baab && atoi(baab) != 0;
 +    }
 +    if (ggml_cpu_ab_mode && decode) {
 +        const int ig  = ggml_cpu_ab_count++;
 +        const int blk = ig < ggml_cpu_ab_warm ? -1 : (ig - ggml_cpu_ab_warm) / ggml_cpu_ab_block;
-+        ggml_cpu_ab_var = ggml_cpu_ab_mode == 3 ? blk % 4 == 1 || blk % 4 == 2 : ig & 1;
++        ggml_cpu_ab_var = ggml_cpu_ab_mode == 3 ? (blk >= 0 && ggml_cpu_ab_baab ? blk % 4 == 0 || blk % 4 == 3 : blk % 4 == 1 || blk % 4 == 2) : ig & 1;
 +        ggml_cpu_ab_blk = blk + 1;
 +        if (ggml_cpu_ab_mode == 1) {
 +            ggml_cpu_q3k_vec = ggml_cpu_ab_var == 0;
@@ -4498,6 +4614,7 @@ index ab82e3d6c..52fae1707 100644
 +                else if (strcmp(name, "Q3K_ILP")     == 0) ggml_cpu_q3k_ilp      = v != 0;
 +                else if (strcmp(name, "Q3K_PF")      == 0) ggml_cpu_q3k_pf       = v != 0;
 +                else if (strcmp(name, "Q3K_KERN")    == 0) ggml_cpu_q3k_kern     = v != 0;
++                else if (strcmp(name, "MMID_TOUCH")  == 0) ggml_cpu_mmid_touch   = v != 0;
 +                else if (strcmp(name, "SSM_INPLACE") == 0) ggml_cpu_ssm_inplace  = v != 0;
 +                else if (strcmp(name, "CONV_RING")   == 0) ggml_cpu_conv_ring    = v != 0;
 +                else if (strcmp(name, "HEAD2")       == 0) ggml_cpu_head2_m      = v;
@@ -4564,7 +4681,7 @@ index ab82e3d6c..52fae1707 100644
      bool disposable_threadpool = false;
  
      if (threadpool == NULL) {
-@@ -3455,6 +5444,46 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3455,6 +5471,47 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
  
      // don't leave affinity set on the main thread
      clear_numa_thread_affinity();
@@ -4591,6 +4708,7 @@ index ab82e3d6c..52fae1707 100644
 +        ggml_cpu_prof_ilp[ggml_cpu_ab_var]  = ggml_cpu_q3k_ilp;
 +        ggml_cpu_prof_pf[ggml_cpu_ab_var]   = ggml_cpu_q3k_pf;
 +        ggml_cpu_prof_kern[ggml_cpu_ab_var] = ggml_cpu_q3k_kern;
++        ggml_cpu_prof_touch[ggml_cpu_ab_var] = ggml_cpu_mmid_touch;
 +        ggml_cpu_prof_skip[ggml_cpu_ab_var] = ggml_cpu_expert_skip;
 +        ggml_cpu_prof_h2[ggml_cpu_ab_var]   = ggml_cpu_head2_m;
 +        ggml_cpu_prof_chunk[ggml_cpu_ab_var] = ggml_cpu_mm_chunk;
@@ -4740,16 +4858,24 @@ index 7a73e138e..84f6503b1 100644
 +    }
 +}
 diff --git a/ggml/src/ggml-cpu/quants.h b/ggml/src/ggml-cpu/quants.h
-index 93ea7eeff..ce740eb82 100644
+index 93ea7eeff..e6211b7ed 100644
 --- a/ggml/src/ggml-cpu/quants.h
 +++ b/ggml/src/ggml-cpu/quants.h
-@@ -51,6 +51,9 @@ void ggml_vec_dot_nvfp4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
+@@ -51,6 +51,17 @@ void ggml_vec_dot_nvfp4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
  
  void ggml_vec_dot_q2_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
  void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
 +// Vollie: four consecutive Q3_K rows (stride bx bytes) against one Q8_K row; s[0..3]. NEON only.
 +void ggml_vec_dot_q3_K_q8_K_x4(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy);
-+void ggml_cpu_q3k_bench(int cpu); // Vollie: GGML_CPU_BENCH (arch/arm/quants.c)
++void ggml_cpu_q3k_bench(int cpu, int pinned); // Vollie: GGML_CPU_BENCH (arch/arm/quants.c)
++// Vollie: GGML_MMID_TOUCH (r13) and its cpu-bench twin: one volatile demand load (not prfm) of the first byte of each
++// 4-KB page that [p, p + n) spans, so the page walks and first-line fills start together. Reads only, results unchanged.
++// ponytail: 4-KB pages assumed (Android arm64); on 16-KB-page hosts it touches 4x more often than needed, still exact
++static inline void ggml_cpu_page_touch(const void * p, size_t n) {
++    for (uintptr_t a = (uintptr_t) p & ~(uintptr_t) 4095, e = (uintptr_t) p + n; a < e; a += 4096) {
++        (void) *(const volatile uint8_t *) a;
++    }
++}
  void ggml_vec_dot_q4_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
  void ggml_vec_dot_q5_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
  void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
