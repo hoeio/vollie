@@ -1,6 +1,6 @@
 # 03 — Final report and research log (living document)
 
-Last updated: **2026-11-07, R38 = round-12 device results, the kernel line scored (falsified under the pooled rule)** (§1 rewritten 2026-11-05; §6-§7 are a snapshot of 2026-11-02 at R22: for the current numbers see §1 and the R25 and R27 blocks); campaign plan in `04_campaign.md`. Each new result is appended to §5 and `results.csv`; the
+Last updated: **2026-11-07, R39 = round-13 pre-registration (MMID_TOUCH, block-gated ABBA); R38 closed the kernel line** (§1 rewritten 2026-11-05; §6-§7 are a snapshot of 2026-11-02 at R22: for the current numbers see §1 and the R25 and R27 blocks); campaign plan in `04_campaign.md`. Each new result is appended to §5 and `results.csv`; the
 summary in §1 is rewritten to match.
 
 Every speed number is labelled: **measured on device** (the user's Galaxy Z Flip 3, run by the user
@@ -633,6 +633,28 @@ Open after R37: **r12 = the same APK, kit r11, run again** (no build); score as 
 *Day numbers for the record (device):* on the best official-32 run of the day the served config printed **14.9 tok/s** at 2,112 MHz (r9's 10.8-12.9 clean-day baselines were at a lower clock); vanilla 5.8; the always-on steady at 58-59 ms/token on 18-20 majflt/token sits 10 ms above the fault-free 48.5-51.0 model, i.e. ≈ 0.5 ms per major fault per token at this clock (estimated).
 
 Open after R38: **the kernel line is scored and closed; no build.** Next: Bonnie's memo on (a) the non-kernel half of the expert slot (stream / atomics / arrival at `MMID=3`, 42-46 µs of a 96-100 µs slot at 2,112 — the larger half, R35/R37) with a cost model and a pre-registrable prediction, and (b) the block-gated ABBA rule above, written as a scorability clause for round 13 before anything is built. Bookkeeping: Annie mirrors R38 (JSON, CSV, this block); README "latest" stays r9 — there is still no scorable (i) line, and the mirror says so.
+
+### R39 — round-13 pre-registration (Clyde, 2026-11-07 afternoon, before any build; from Bonnie's `reports/memos/round13_plan.md`; all numbers *estimated* unless labelled)
+
+**Diagnosis adopted.** The non-kernel half of the expert slot (≈ 50-60 µs/slot per thread at 2,112, device: in-situ 37.8-39 vs bench 14.5 ns/row-block) is **per-4-KB-page latency** — 247 pages/slot × 300-500 ns (TLB walk on an uncached PTE + cold first line + prefetcher restart) = 25-41 µs/slot — not stream bandwidth (10 GB/s = 42 % of the ridge), not atomics (2-6 µs), not arrival (4.6 µs, and it sits in the wait line). Clyde's R37 framing ("stream / atomics / arrival") is withdrawn; "must cut bytes" applies to the dense ridge, not to the expert op. Consistent with two device facts: `Q3K_PF` was noise (prfm is dropped on a TLB miss) and `EXPERT_ANON` cut minflt 60 % with ms flat.
+
+**Fault cost (device, OLS over the 46 kern-ABBA blocks of r12, all at 2,112):** token **+0.38 ± 0.14 ms per majflt/token**, `MUL_MAT_ID` +0.22 ± 0.10, `MUL_MAT` +0.11, head +0.04. The R38 pool's +15.6 B-excess faults × 0.38 = +5.9 vs the observed token +5.63. **Position artefact (device, five kern ABBAs r10-r12):** block 1 of each ABBA group drew 74 majflt/token vs 92-105 for positions 2-4; A owns position 1 → the recurring B/A 1.18-1.23. Rounds 10-12 were biased against B by design, not by chance.
+
+**Pre-registered, round 13 (the box, verbatim from the memo):**
+1. Build: `GGML_MMID_TOUCH` (env, default off; after `fetch_add` returns a chunk, one volatile demand load of the first byte of each 4-KB page the chunk spans, then the kernel; bit-identical: random row-quads 0 differ, PPL chunks 1-3 equal to all digits, greedy 32 identical) + `cpu-bench` fields `hot` / `cold` / `cold_touch` / `cold_thp` with the bench thread pinned to {4,5,6} (print `pinned=0` if the pin fails) + kit order ABBA / BAAB / ABBA + parser `--gate T`.
+2. Bench predictions (A78 pinned, 2,112, K 1,536, ns/row-block): hot 14.5 ± 0.5; **cold 28-36**; **cold_touch 19-26**. The ABBA is scored only if **cold/hot ≥ 1.5**.
+3. ABBA `MMID_TOUCH:0:1`, line = parser `MUL_MAT_ID` (compute + wait) over counted blocks: **band −1.5..−4.5, central −3.0; pass ≤ −1.5; falsified > −0.5.**
+4. Untouched lines over counted blocks: `MUL_MAT`, head, `SSM_SCAN` each 0 ± 0.3.
+5. Scorability (block-gated, §B of the memo): a block counts iff majflt/token ≤ 10 and the modal clock of the run; ≥ 8 counted blocks per side; side means within 3 majflt/token; σ(Δ) ≤ 1.0; one re-run session; otherwise **parked** — no "whatever σ" fallback this time (R38's lesson).
+6. Class test for `MMID_TOUCH` (class K = cannot change the fault count): identical text and all per-block fields on both sides; host fresh-process `ru_minflt` equal within 2 % — recorded before the phone run. Skip / io / cache knobs are class F and keep the side-level rule.
+7. Bench falsifier for the diagnosis: cold/hot < 1.2 → the non-kernel half is not the page stream; lever 1 dead, the model withdrawn; levers 2 (`MMID_FUSE`, −0.4..−0.8) and 3 (two chunks per `fetch_add`, −0.15..−0.5) remain.
+8. If cold_touch recovers < 20 % of (cold − hot) while cold/hot ≥ 1.5: the stall is the stream but not TLB-shaped; lever 1 dead; next audit = the per-page prefetcher ramp (hardware), outside the runtime.
+9. Printed: official 32 default ×2 reported with clock and majflt, **not a scored line**. Steady arithmetic if lever 1 lands central: 52.4-53.0 (R31 clean) − kernel 2.6-3.6 (device-unshown) − 3.0 → 46-47.5 ms → **20.6-21.2 printed fault-free** — *estimated*, two device-unshown terms stacked, **not pre-registered as reached**.
+10. Kit r13 (≈ 10-11 min estimated): baseline ×1, bench, ABBA ×3 (ABBA, BAAB, ABBA), official 32 default ×2. Dropped: skip control (nine confirmations), vanilla, one baseline, both always-on stories. One session; a second only if §B says unresolved; then the line is parked.
+
+*Clyde's dissent, recorded:* the dense `MUL_MAT` line (22-25 ms, the largest, at the bandwidth ridge) is untouched and the +20 % hard limit (9.7886 → 10.853) is unspent; a runtime dense requant is the round-14 candidate if lever 1 dies. Not pre-registered; needs the owner's budget decision and a byte-rate kernel for the target format.
+
+Open after R39: Tom builds r13 (knob, bench fields + pin, kit order, parser gate, identity checks); Annie mirrors the memo + R39 + Bonnie's two CSV rows; Korean card; owner runs r13.
 
 ## 6. What worked, what didn't
 
