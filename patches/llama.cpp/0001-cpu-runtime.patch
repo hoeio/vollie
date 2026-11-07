@@ -1,19 +1,22 @@
 diff --git a/ggml/src/ggml-cpu/arch/arm/quants.c b/ggml/src/ggml-cpu/arch/arm/quants.c
-index cfbbf6617..c7a5565eb 100644
+index cfbbf6617..dea6e7bcc 100644
 --- a/ggml/src/ggml-cpu/arch/arm/quants.c
 +++ b/ggml/src/ggml-cpu/arch/arm/quants.c
-@@ -14,6 +14,10 @@
+@@ -14,6 +14,13 @@
  #include <float.h>
  #include <stdlib.h> // for qsort
  #include <stdio.h>  // for GGML_ASSERT
 +#include <time.h>   // Vollie: GGML_CPU_BENCH
 +#if !defined(_WIN32)
-+#include <sys/mman.h> // Vollie: GGML_CPU_BENCH cold arenas (r13)
++#include <sys/mman.h> // Vollie: GGML_CPU_BENCH cold arena (r13)
++#endif
++#if defined(__linux__)
++#include <sched.h>    // Vollie: GGML_CPU_BENCH core checks (r13b)
 +#endif
  
  #define GROUP_MAX_EPS 1e-15f
  #define GROUP_MAX_EPS_IQ3_XXS 1e-8f
-@@ -2015,6 +2019,10 @@ void ggml_vec_dot_q2_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
+@@ -2015,6 +2022,10 @@ void ggml_vec_dot_q2_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
  #endif
  }
  
@@ -24,7 +27,7 @@ index cfbbf6617..c7a5565eb 100644
  void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
      assert(n % QK_K == 0);
      assert(nrc == 1);
-@@ -2236,7 +2244,10 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
+@@ -2236,7 +2247,10 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
  
          ggml_uint8x16x4_t q3h;
  
@@ -36,7 +39,7 @@ index cfbbf6617..c7a5565eb 100644
  
          // Set up scales
          memcpy(aux, x[i].scales, 12);
-@@ -2247,54 +2258,115 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
+@@ -2247,54 +2261,115 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
  
          int8_t * scale = (int8_t *)utmp;
          for (int j = 0; j < 16; ++j) scale[j] -= m32;
@@ -191,7 +194,7 @@ index cfbbf6617..c7a5565eb 100644
  
      }
  
-@@ -2311,6 +2383,2222 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
+@@ -2311,6 +2386,2277 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
  
  }
  
@@ -2230,50 +2233,85 @@ index cfbbf6617..c7a5565eb 100644
 +static uint32_t ggml_q3k_bench_rng = 12345;
 +static uint32_t ggml_q3k_bench_rand(void) { ggml_q3k_bench_rng = ggml_q3k_bench_rng*1664525u + 1013904223u; return ggml_q3k_bench_rng >> 8; }
 +
-+// Vollie r13 (R39): the cold fields. A 64-MB anon arena, 2-MB aligned (huge: MADV_HUGEPAGE, else MADV_NOHUGEPAGE, Linux),
-+// holding copies of the bench slice at 4-KB-aligned slots; *map / *maplen = what to munmap. NULL if unavailable.
-+#define GGML_Q3K_ARENA ((size_t) 64 << 20)
-+static uint8_t * ggml_q3k_bench_arena(int huge, void ** map, size_t * maplen) {
-+    *map = NULL;
-+#if defined(_WIN32)
-+    GGML_UNUSED(huge); GGML_UNUSED(maplen);
-+    return NULL;
-+#else
-+    *maplen = GGML_Q3K_ARENA + ((size_t) 2 << 20);
-+    void * m = mmap(NULL, *maplen, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-+    if (m == MAP_FAILED) {
-+        return NULL;
-+    }
-+    *map = m;
-+    uint8_t * a = (uint8_t *) (((uintptr_t) m + ((uintptr_t) 2 << 20) - 1) & ~(((uintptr_t) 2 << 20) - 1));
++// Vollie r13b (R40 amendment): every timed trial checks its core. The bench thread is pinned to the A78s {4,5,6} before each
++// shape (the pin alone did not hold in r13: the thread was moved to an A55 after one sched_getcpu); a trial counts only if
++// sched_getcpu() at its start and its end are both in {4,5,6}. Off Linux there is no core id: every trial counts, cpu=-1.
++typedef struct { int first, last, migr, mhz_min, mhz_max; } ggml_q3k_bench_cpu;
++
++// Vollie r11: the core's current clock in MHz (cpufreq scaling_cur_freq, kHz), -1 if unreadable (host, cpu < 0).
++static int ggml_q3k_bench_mhz(int cpu) {
++    char path[96]; long khz = -1000;
++    snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", cpu);
++    FILE * fp = cpu >= 0 ? fopen(path, "r") : NULL;
++    if (fp) { if (fscanf(fp, "%ld", &khz) != 1) khz = -1000; fclose(fp); }
++    return (int) (khz / 1000);
++}
++
++static int ggml_q3k_bench_pin(void) {
 +#if defined(__linux__)
-+    madvise(a, GGML_Q3K_ARENA, huge ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
++    cpu_set_t big;
++    CPU_ZERO(&big);
++    CPU_SET(4, &big); CPU_SET(5, &big); CPU_SET(6, &big);
++    return sched_setaffinity(0, sizeof big, &big) == 0;
 +#else
-+    GGML_UNUSED(huge);
-+#endif
-+    return a;
++    return 0;
 +#endif
 +}
 +
-+// AnonHugePages of the process in kB (/proc/self/smaps_rollup), -1 if unreadable.
-+static long ggml_q3k_bench_anon_huge(void) {
-+    FILE * fp = fopen("/proc/self/smaps_rollup", "r");
-+    char l[256]; long kb = -1;
-+    while (fp && fgets(l, sizeof l, fp)) {
-+        if (sscanf(l, "AnonHugePages: %ld", &kb) == 1) break;
-+    }
-+    if (fp) fclose(fp);
-+    return kb;
++// The core now; counts a migration whenever it differs from the previous reading of this line.
++static int ggml_q3k_bench_see(ggml_q3k_bench_cpu * s) {
++#if defined(__linux__)
++    const int c = sched_getcpu();
++#else
++    const int c = -1;
++#endif
++    if (s->first == -2) s->first = c; else if (c != s->last) s->migr++;
++    s->last = c;
++    return c;
 +}
 +
-+// One cold trial: one pass of the new kernel over the slice at arena slot (*ct)*step mod nslots (consecutive slots >= 8 MB
-+// apart, none reused within a shape), in the in-situ order (32-row chunks, 4-row groups); touch = GGML_MMID_TOUCH's page-head
-+// loads at each chunk start. ns/row.
-+static double ggml_q3k_bench_cold(const uint8_t * arena, size_t slot, int nslots, int step, int * ct, int rows, int nb, size_t bx,
++// A trial ran from core c0 to c1: valid iff both are A78s (always off Linux); a valid trial logs c1's clock.
++static int ggml_q3k_bench_valid(ggml_q3k_bench_cpu * s, int c0, int c1) {
++#if defined(__linux__)
++    if (c0 < 4 || c0 > 6 || c1 < 4 || c1 > 6) return 0;
++#else
++    GGML_UNUSED(c0);
++#endif
++    const int m = ggml_q3k_bench_mhz(c1);
++    s->mhz_min = s->mhz_min < 0 || m < s->mhz_min ? m : s->mhz_min;
++    s->mhz_max = m > s->mhz_max ? m : s->mhz_max;
++    return 1;
++}
++
++static double ggml_q3k_bench_now(void) {
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return ts.tv_sec*1e9 + ts.tv_nsec;
++}
++
++static int ggml_q3k_bench_cmp(const void * a, const void * b) {
++    const double x = *(const double *) a, y = *(const double *) b;
++    return (x > y) - (x < y);
++}
++
++// Median of the n valid samples (-1 if none).
++static double ggml_q3k_bench_median(double * v, int n) {
++    if (n == 0) return -1;
++    qsort(v, n, sizeof *v, ggml_q3k_bench_cmp);
++    return n % 2 ? v[n/2] : 0.5*(v[n/2 - 1] + v[n/2]);
++}
++
++// The cold arena (one per bench call): GGML_Q3K_SLOTS of 4-KB-aligned copies of the bench slice, then GGML_Q3K_STREAM bytes
++// written after every fill so the fill's tail is not in L3 / the system cache when the first cold trial runs.
++#define GGML_Q3K_SLOTS  ((size_t) 32 << 20)
++#define GGML_Q3K_STREAM ((size_t) 16 << 20)
++
++// One pass of the new kernel over slice w in the in-situ order (32-row chunks, 4-row groups); touch = GGML_MMID_TOUCH's
++// page-head loads at each chunk start. Returns ns/row; *c0 / *c1 = the core at its start and end.
++static double ggml_q3k_bench_pass(ggml_q3k_bench_cpu * s, int * c0, int * c1, const uint8_t * w, int rows, int nb, size_t bx,
 +                                  int touch, float * out, const block_q8_K * yk) {
-+    const uint8_t * w = arena + (size_t) (((long long) (*ct)++ * step) % nslots) * slot;
-+    struct timespec ts0, ts1;
-+    clock_gettime(CLOCK_MONOTONIC, &ts0);
++    *c0 = ggml_q3k_bench_see(s);
++    const double t0 = ggml_q3k_bench_now();
 +    for (int r = 0; r < rows; r += 4) {
 +        if (touch && r % 32 == 0) {
 +            ggml_cpu_page_touch(w + r*bx, (size_t) (rows - r < 32 ? rows - r : 32)*bx);
@@ -2282,14 +2320,16 @@ index cfbbf6617..c7a5565eb 100644
 +                                    (const block_q3_K *) (w + (r + 2)*bx), (const block_q3_K *) (w + (r + 3)*bx) };
 +        ggml_vec_dot_q3_K_q8_K_x4_kern(nb, out + r, x, yk);
 +    }
-+    clock_gettime(CLOCK_MONOTONIC, &ts1);
-+    return ((ts1.tv_sec - ts0.tv_sec)*1e9 + (ts1.tv_nsec - ts0.tv_nsec)) / rows;
++    const double ns = (ggml_q3k_bench_now() - t0) / rows;
++    *c1 = ggml_q3k_bench_see(s);
++    return ns;
 +}
 +
-+// One shape: ns/row, best of 3 rounds x 7 trials of 2 passes over all rows (kernels interleaved per round); r13: + cold and
-+// cold_touch (1 pass on a fresh arena slice per trial, interleaved with the rest), then cold_thp (its own arena, after the
-+// first is freed: one 64-MB arena at a time). Fills line; returns 0 if a buffer could not be allocated.
-+static int ggml_q3k_bench_shape(int K, int rows, char * line, size_t len) {
++// One shape: ns/row. old/new/int8/q4x4/scalar: best of the valid trials of 3 rounds x 7 (2 passes over all rows each, kernels
++// interleaved per round). r13b: then 21 x (cold = 1 pass on a fresh arena slice; hot = the same slice again at once; cold_touch =
++// 1 pass with the page-head loads on another fresh slice), slices >= 8 MB apart and never reused within the shape; medians of
++// the valid trials. cpu_ok = the fewest valid trials of any field / 21. Fills line; returns 0 if a buffer could not be allocated.
++static int ggml_q3k_bench_shape(int K, int rows, uint8_t * arena, char * line, size_t len) {
 +    const int nb = K/QK_K;
 +    const size_t bx = (size_t) nb*sizeof(block_q3_K), b40 = (size_t) (K/QK4_0)*sizeof(block_q4_0);
 +    uint8_t * w    = malloc(bx*rows + 4*sizeof(block_q3_K));  // + the scalar prototype's look-ahead
@@ -2299,8 +2339,8 @@ index cfbbf6617..c7a5565eb 100644
 +    block_q8_K * yk = malloc(nb*sizeof(block_q8_K));
 +    block_q8_0 * y0 = malloc((K/QK8_0)*sizeof(block_q8_0));
 +    float * out[8];
-+    for (int v = 0; v < 8; ++v) out[v] = malloc(rows*sizeof(float));
-+    int ok = w && x8 && f && q40 && q4x4 && yk && y0 && out[0] && out[1] && out[2] && out[3] && out[4] && out[5] && out[6] && out[7];
++    int ok = w && x8 && f && q40 && q4x4 && yk && y0;
++    for (int v = 0; v < 8; ++v) { out[v] = malloc(rows*sizeof(float)); ok = ok && out[v]; }
 +    if (ok) {
 +        for (size_t i = 0; i < bx*rows + 4*sizeof(block_q3_K); ++i) w[i] = (uint8_t) ggml_q3k_bench_rand();
 +        for (int r = 0; r < rows; ++r) for (int b = 0; b < nb; ++b) {
@@ -2322,29 +2362,15 @@ index cfbbf6617..c7a5565eb 100644
 +                                        (const block_q3_K *) (w + (rr + 2)*bx), (const block_q3_K *) (w + (rr + 3)*bx) };
 +            ggml_vec_dot_q3_K_q8_K_x4_ilp(nb, out[0] + rr, x, bx, yk);
 +        }
-+        // r13: cold arenas. Slots of the slice rounded up to 4 KB; step = the first slot count >= 8 MB coprime with nslots
-+        const size_t slot = (bx*rows + 4095) & ~(size_t) 4095;
-+        const int nslots = (int) (GGML_Q3K_ARENA / slot);
-+        int step = (int) ((((size_t) 8 << 20) + slot - 1) / slot), ct = 0;
-+        for (;; step++) { // until gcd(step, nslots) == 1
-+            int a = step, b = nslots;
-+            while (b) { const int t = a % b; a = b; b = t; }
-+            if (a == 1) break;
-+        }
-+        void * map = NULL; size_t maplen = 0;
-+        uint8_t * arena = ggml_q3k_bench_arena(0, &map, &maplen);
-+        for (int i = 0; arena && i < nslots; ++i) memcpy(arena + (size_t) i*slot, w, bx*rows); // resident: no faults in the timing
-+        double best[8] = { 1e30, 1e30, 1e30, 1e30, 1e30, 1e30, 1e30, 1e30 };
++        ggml_q3k_bench_cpu cs = { -2, -1, 0, -1, -1 };
++        const int pinned = ggml_q3k_bench_pin();
++        int nv[8] = { 0 }, c0, c1;
++        double best[5] = { 1e30, 1e30, 1e30, 1e30, 1e30 };
 +        for (int round = 0; round < 3; ++round) {
-+            for (int v = 0; v < 7; ++v) {
++            for (int v = 0; v < 5; ++v) {
 +                for (int t = 0; t < 7; ++t) {
-+                    if (v >= 5) {
-+                        const double ns = arena ? ggml_q3k_bench_cold(arena, slot, nslots, step, &ct, rows, nb, bx, v == 6, out[v], yk) : -1;
-+                        best[v] = ns < best[v] ? ns : best[v];
-+                        continue;
-+                    }
-+                    struct timespec ts0, ts1;
-+                    clock_gettime(CLOCK_MONOTONIC, &ts0);
++                    c0 = ggml_q3k_bench_see(&cs);
++                    const double t0 = ggml_q3k_bench_now();
 +                    for (int pass = 0; pass < 2; ++pass) {
 +                        if (v == 3) {
 +                            ggml_gemv_q4_0_4x4_q8_0(K, out[3], 0, q4x4, y0, 1, rows);
@@ -2359,54 +2385,86 @@ index cfbbf6617..c7a5565eb 100644
 +                            else             ggml_q3k_bench_scalar(nb, out[4] + r, x, yk);
 +                        }
 +                    }
-+                    clock_gettime(CLOCK_MONOTONIC, &ts1);
-+                    const double ns = ((ts1.tv_sec - ts0.tv_sec)*1e9 + (ts1.tv_nsec - ts0.tv_nsec)) / (2.0*rows);
-+                    best[v] = ns < best[v] ? ns : best[v];
++                    const double ns = (ggml_q3k_bench_now() - t0) / (2.0*rows);
++                    c1 = ggml_q3k_bench_see(&cs);
++                    if (ggml_q3k_bench_valid(&cs, c0, c1)) {
++                        nv[v]++;
++                        best[v] = ns < best[v] ? ns : best[v];
++                    }
 +                }
 +            }
 +        }
-+        if (map) munmap(map, maplen);
-+        arena = ggml_q3k_bench_arena(1, &map, &maplen);
-+        for (int i = 0; arena && i < nslots; ++i) memcpy(arena + (size_t) i*slot, w, bx*rows);
-+        const long huge_kb = arena ? ggml_q3k_bench_anon_huge() : -1;
-+        ct = 0;
-+        for (int t = 0; t < 21; ++t) {
-+            const double ns = arena ? ggml_q3k_bench_cold(arena, slot, nslots, step, &ct, rows, nb, bx, 0, out[7], yk) : -1;
-+            best[7] = ns < best[7] ? ns : best[7];
++        // cold: slots of the slice rounded up to 4 KB; step = the first slot count >= 8 MB coprime with nslots (42 of 98 used)
++        const size_t slot = (bx*rows + 4095) & ~(size_t) 4095;
++        const int nslots = (int) (GGML_Q3K_SLOTS / slot);
++        int step = (int) ((((size_t) 8 << 20) + slot - 1) / slot), ct = 0;
++        for (;; step++) { // until gcd(step, nslots) == 1
++            int a = step, b = nslots;
++            while (b) { const int t = a % b; a = b; b = t; }
++            if (a == 1) break;
 +        }
-+        if (map) munmap(map, maplen);
++        double cold[21], hot[21], touch[21];
++        if (arena) {
++            for (int i = 0; i < nslots; ++i) memcpy(arena + (size_t) i*slot, w, bx*rows); // resident: no faults in the timing
++            memset(arena + GGML_Q3K_SLOTS, K & 0xff, GGML_Q3K_STREAM);
++            for (int t = 0; t < 21; ++t) {
++                const uint8_t * s0 = arena + (size_t) ((ct++ * step) % nslots) * slot;
++                const double nc = ggml_q3k_bench_pass(&cs, &c0, &c1, s0, rows, nb, bx, 0, out[5], yk);
++                if (ggml_q3k_bench_valid(&cs, c0, c1)) cold[nv[5]++] = nc;
++                const double nh = ggml_q3k_bench_pass(&cs, &c0, &c1, s0, rows, nb, bx, 0, out[6], yk);
++                if (ggml_q3k_bench_valid(&cs, c0, c1)) hot[nv[6]++] = nh;
++                const uint8_t * s1 = arena + (size_t) ((ct++ * step) % nslots) * slot;
++                const double nt = ggml_q3k_bench_pass(&cs, &c0, &c1, s1, rows, nb, bx, 1, out[7], yk);
++                if (ggml_q3k_bench_valid(&cs, c0, c1)) touch[nv[7]++] = nt;
++            }
++        }
++        int okn = 21;
++        for (int v = 0; v < 8; ++v) okn = nv[v] < okn ? nv[v] : okn;
++        const double mc = ggml_q3k_bench_median(cold, nv[5]), mh = ggml_q3k_bench_median(hot, nv[6]), mt = ggml_q3k_bench_median(touch, nv[7]);
++        for (int v = 0; v < 5; ++v) if (!nv[v]) best[v] = -1;
 +        int ex[8];
 +        for (int v = 1; v < 8; ++v) ex[v] = memcmp(out[v], out[0], rows*sizeof(float)) == 0;
++        char inst[32] = ""; // the built-in falsifier (R40): fresh slices at K 512 must be >= 5 % slower than the same slice re-run
++        if (K == 512) snprintf(inst, sizeof inst, " instrument=%s", mc > 0 && mh > 0 && mc/mh >= 1.05 ? "ok" : "invalid");
 +        snprintf(line, len, "cpu-bench q3k threads=1 K=%d rows=%d old=%.2f new=%.2f int8=%.2f q4x4=%.2f scalar=%.2f exact_new=%d exact_int8=%d exact_scalar=%d "
-+                 "hot=%.2f cold=%.2f cold_touch=%.2f cold_thp=%.2f exact_cold=%d exact_cold_touch=%d exact_cold_thp=%d anon_huge_kb=%ld",
-+                 K, rows, best[0], best[1], best[2], best[3], best[4], ex[1], ex[2], ex[4],
-+                 best[1], best[5], best[6], best[7], ex[5], ex[6], ex[7], huge_kb);
++                 "hot=%.2f cold=%.2f cold_touch=%.2f exact_hot=%d exact_cold=%d exact_cold_touch=%d%s cpu=%d-%d migr=%d cpu_ok=%d/21 pinned=%d mhz=%d/%d",
++                 K, rows, best[0], best[1], best[2], best[3], best[4], ex[1], ex[2], ex[4], mh, mc, mt, ex[6], ex[5], ex[7], inst,
++                 cs.first, cs.last, cs.migr, okn, pinned, cs.mhz_min, cs.mhz_max);
 +    }
 +    free(w); free(x8); free(f); free(q40); free(q4x4); free(yk); free(y0);
 +    for (int v = 0; v < 8; ++v) free(out[v]);
 +    return ok;
 +}
-+
-+// Vollie r11: the core's current clock in MHz (cpufreq scaling_cur_freq, kHz), -1 if unreadable (host, cpu < 0).
-+static int ggml_q3k_bench_mhz(int cpu) {
-+    char path[96]; long khz = -1000;
-+    snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", cpu);
-+    FILE * fp = cpu >= 0 ? fopen(path, "r") : NULL;
-+    if (fp) { if (fscanf(fp, "%ld", &khz) != 1) khz = -1000; fclose(fp); }
-+    return (int) (khz / 1000);
-+}
 +#endif
 +
-+// Writes the two "cpu-bench q3k" lines (K 1,536 x 512 rows, K 512 x 1,536 rows) to stderr; 1 thread (the caller's).
-+// r13: pinned = the caller pinned this thread to the big cores (ggml-cpu.c).
-+void ggml_cpu_q3k_bench(int cpu, int pinned) {
++// Writes the two "cpu-bench q3k" lines (K 1,536 x 512 rows, K 512 x 1,536 rows) to stderr; 1 thread (the caller's). r13b: the
++// caller's affinity is saved, the thread re-pinned to cpu 4-6 before each shape and its mask restored after; one arena.
++void ggml_cpu_q3k_bench(void) {
 +#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
++#if defined(__linux__)
++    cpu_set_t saved;
++    const int had = sched_getaffinity(0, sizeof saved, &saved) == 0;
++#endif
 +    char line[768];
-+    int m0 = ggml_q3k_bench_mhz(cpu);
-+    if (ggml_q3k_bench_shape(1536, 512, line, sizeof line)) { int m1 = ggml_q3k_bench_mhz(cpu); fprintf(stderr, "%s cpu=%d pinned=%d mhz=%d/%d\n", line, cpu, pinned, m0, m1); m0 = m1; }
-+    if (ggml_q3k_bench_shape(512, 1536, line, sizeof line)) fprintf(stderr, "%s cpu=%d pinned=%d mhz=%d/%d\n", line, cpu, pinned, m0, ggml_q3k_bench_mhz(cpu));
++    uint8_t * arena = NULL;
++#if !defined(_WIN32)
++    const size_t alen = GGML_Q3K_SLOTS + GGML_Q3K_STREAM;
++    void * m = mmap(NULL, alen, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    arena = m == MAP_FAILED ? NULL : (uint8_t *) m;
++#if defined(__linux__)
++    if (arena) madvise(arena, alen, MADV_NOHUGEPAGE);
++#endif
++#endif
++    if (ggml_q3k_bench_shape(1536, 512, arena, line, sizeof line)) fprintf(stderr, "%s\n", line);
++    if (ggml_q3k_bench_shape(512, 1536, arena, line, sizeof line)) fprintf(stderr, "%s\n", line);
++#if !defined(_WIN32)
++    if (arena) munmap(arena, alen);
++#endif
++#if defined(__linux__)
++    if (had) sched_setaffinity(0, sizeof saved, &saved);
++#endif
 +#else
-+    fprintf(stderr, "cpu-bench q3k unsupported (needs arm64 dotprod) cpu=%d pinned=%d\n", cpu, pinned);
++    fprintf(stderr, "cpu-bench q3k unsupported (needs arm64 dotprod)\n");
 +#endif
 +    fflush(stderr);
 +}
@@ -2415,7 +2473,7 @@ index cfbbf6617..c7a5565eb 100644
  static inline svuint32_t ggml_decode_q4scales_and_mins_for_mmla(const uint32_t * vx_scales) {
      const svbool_t pg_all   = svptrue_pat_b32(SV_VL4);
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index ab82e3d6c..97872147d 100644
+index ab82e3d6c..8394b5ecd 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -197,6 +197,8 @@ typedef void * thread_ret_t;
@@ -3404,9 +3462,8 @@ index ab82e3d6c..97872147d 100644
      if (ggml_cpu_disable_fusion || cplan->use_ref) {
 -        return 0;
 +        return false;
-     }
- 
--    struct ggml_tensor * node = cgraph->nodes[node_n];
++    }
++
 +    const struct ggml_tensor * node = cgraph->nodes[node_n];
 +    const enum ggml_op fuse_ops[] = { GGML_OP_RMS_NORM, GGML_OP_MUL };
 +    if (node->op != GGML_OP_RMS_NORM || !ggml_can_fuse(cgraph, node_n, fuse_ops, 2)) {
@@ -3421,22 +3478,8 @@ index ab82e3d6c..97872147d 100644
 +           mul_w->ne[0]        == node->ne[0]   &&
 +           mul_w->nb[0]        == sizeof(float);
 +}
- 
--    if (node->op == GGML_OP_RMS_NORM) {
--        // RMS_NORM + MUL fusion
--        const enum ggml_op fuse_ops[] = { GGML_OP_RMS_NORM, GGML_OP_MUL };
--        if (ggml_can_fuse(cgraph, node_n, fuse_ops, 2)) {
--            struct ggml_tensor * mul_node = cgraph->nodes[node_n + 1];
--            const struct ggml_tensor * mul_w = (mul_node->src[0] == node)
--                ? mul_node->src[1] : mul_node->src[0];
--            if (node->src[0]->type  == GGML_TYPE_F32 &&
--                mul_node->type      == GGML_TYPE_F32 &&
--                mul_w->type         == GGML_TYPE_F32 &&
--                mul_w->ne[0]        == node->ne[0]   &&
--                mul_w->nb[0]        == sizeof(float)) {
- 
--                ggml_compute_forward_rms_norm_mul_fused(params, node, mul_node);
--                return 1;
++
++
 +// Vollie: an op on a few thousand elements takes less time than the barrier
 +// that follows it, and a decode graph is mostly such ops (Granite 4.0 H Tiny:
 +// ~3300 nodes per token). Tiny ops run on thread 0 alone, and the barrier
@@ -3626,9 +3669,9 @@ index ab82e3d6c..97872147d 100644
 +                    ggml_cpu_ssm_cpy[p]  = ggml_cpu_ssm_cpy[ggml_cpu_ssm_n];
 +                }
 +                break;
-             }
-         }
-     }
++            }
++        }
++    }
 +    static int logged = 0;
 +    if (!logged++) {
 +        fprintf(stderr, "ssm-inplace layers=%d\n", ggml_cpu_ssm_n); // once per process
@@ -3667,7 +3710,7 @@ index ab82e3d6c..97872147d 100644
 +    const char * pa = a->data, * pb = b->data;
 +    return pa && pb && pa < pb + ggml_nbytes(b) && pb < pa + ggml_nbytes(a);
 +}
- 
++
 +static void ggml_cpu_conv_apply(struct ggml_cgraph * g) {
 +    ggml_cpu_conv_n = 0;
 +    for (int j = 0; j < g->n_nodes && ggml_cpu_conv_n < 64; j++) {
@@ -3738,7 +3781,7 @@ index ab82e3d6c..97872147d 100644
 +        memset(ggml_cpu_conv_op[p]->op_params, 0, sizeof(void *));
 +        ggml_cpu_conv_cat[p]->flags |= GGML_TENSOR_FLAG_COMPUTE;
 +        ggml_cpu_conv_cpy[p]->flags |= GGML_TENSOR_FLAG_COMPUTE;
-+    }
+     }
 +    ggml_cpu_conv_n = 0;
 +}
 +
@@ -3767,14 +3810,29 @@ index ab82e3d6c..97872147d 100644
 +// (it otherwise inherits thread 0's big-core affinity and competes with the compute threads).
 +static bool ggml_cpu_helper_mask[GGML_MAX_N_THREADS];
 +static bool ggml_cpu_helper_mask_set = false;
-+
+ 
+-    struct ggml_tensor * node = cgraph->nodes[node_n];
 +// Per-thread compute time inside MUL_MAT_ID (GGML_CPU_PROF): shows imbalance between cores.
 +static struct { int64_t us; char pad[56]; } ggml_cpu_prof_mmid_thr[GGML_MAX_N_THREADS];
-+
+ 
+-    if (node->op == GGML_OP_RMS_NORM) {
+-        // RMS_NORM + MUL fusion
+-        const enum ggml_op fuse_ops[] = { GGML_OP_RMS_NORM, GGML_OP_MUL };
+-        if (ggml_can_fuse(cgraph, node_n, fuse_ops, 2)) {
+-            struct ggml_tensor * mul_node = cgraph->nodes[node_n + 1];
+-            const struct ggml_tensor * mul_w = (mul_node->src[0] == node)
+-                ? mul_node->src[1] : mul_node->src[0];
+-            if (node->src[0]->type  == GGML_TYPE_F32 &&
+-                mul_node->type      == GGML_TYPE_F32 &&
+-                mul_w->type         == GGML_TYPE_F32 &&
+-                mul_w->ne[0]        == node->ne[0]   &&
+-                mul_w->nb[0]        == sizeof(float)) {
 +#define GGML_CPU_RANDOM_MAX 1024
 +static struct { const void * data; size_t size; } ggml_cpu_random_done[GGML_CPU_RANDOM_MAX];
 +static int ggml_cpu_random_n = 0;
-+
+ 
+-                ggml_compute_forward_rms_norm_mul_fused(params, node, mul_node);
+-                return 1;
 +static void ggml_cpu_madvise(const void * p, size_t n, int advice) {
 +#if !defined(_WIN32)
 +    static uintptr_t page = 0;
@@ -3810,7 +3868,7 @@ index ab82e3d6c..97872147d 100644
 +            int k = 0;
 +            while (k < n && seen[k] != t->data) {
 +                k++;
-+            }
+             }
 +            if (k < n || n == (int) (sizeof seen / sizeof seen[0])) { // ponytail: past 2,048 weights, the rest are not advised
 +                continue;
 +            }
@@ -3819,8 +3877,8 @@ index ab82e3d6c..97872147d 100644
 +#ifdef MADV_WILLNEED
 +            ggml_cpu_madvise(t->data, ggml_nbytes(t), MADV_WILLNEED);
 +#endif
-+        }
-+    }
+         }
+     }
 +    if (ggml_cpu_prof_on) {
 +        fprintf(stderr, "cpu-prof willneed tensors=%d mb=%.1f us=%lld\n", n, bytes/1e6, (long long) (ggml_time_us() - t0));
 +    }
@@ -3881,7 +3939,7 @@ index ab82e3d6c..97872147d 100644
 +        }
 +    }
 +}
-+
+ 
 +static uint64_t ggml_cpu_pred_take(const void * key) {
 +    for (int i = 0; i < GGML_CPU_PRED_KEYS && ggml_cpu_pred_masks[i].key; i++) {
 +        if (ggml_cpu_pred_masks[i].key == key) {
@@ -4451,7 +4509,7 @@ index ab82e3d6c..97872147d 100644
          }
      }
  
-@@ -3398,6 +5191,235 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3398,6 +5191,222 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
      int n_threads                               = cplan->n_threads;
      struct ggml_threadpool * threadpool = cplan->threadpool;
  
@@ -4552,20 +4610,7 @@ index ab82e3d6c..97872147d 100644
 +    const int kbench_n = kbench && *kbench ? atoi(kbench) : 0;
 +    if (kbench_n > 0 && kbench_n != ggml_cpu_kbench_n) {
 +        ggml_cpu_kbench_n = kbench_n;
-+#if defined(__linux__)
-+        // Vollie r13: the bench thread on the A78s {4,5,6} for the bench only (r12's landed on an A55), then its mask back
-+        cpu_set_t old_set, big;
-+        const bool had = sched_getaffinity(0, sizeof old_set, &old_set) == 0;
-+        CPU_ZERO(&big);
-+        CPU_SET(4, &big); CPU_SET(5, &big); CPU_SET(6, &big);
-+        const bool pinned = had && sched_setaffinity(0, sizeof big, &big) == 0;
-+        ggml_cpu_q3k_bench(sched_getcpu(), pinned);
-+        if (pinned) {
-+            sched_setaffinity(0, sizeof old_set, &old_set);
-+        }
-+#else
-+        ggml_cpu_q3k_bench(-1, 0);
-+#endif
++        ggml_cpu_q3k_bench(); // Vollie r13b: pins itself to cpu 4-6 per shape and checks the core of every trial
 +    }
 +    const char * bbench = getenv("GGML_BARRIER_BENCH");
 +    const int bbench_n = bbench ? atoi(bbench) : 0;
@@ -4687,7 +4732,7 @@ index ab82e3d6c..97872147d 100644
      bool disposable_threadpool = false;
  
      if (threadpool == NULL) {
-@@ -3455,6 +5477,47 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+@@ -3455,6 +5464,47 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
  
      // don't leave affinity set on the main thread
      clear_numa_thread_affinity();
@@ -4864,7 +4909,7 @@ index 7a73e138e..84f6503b1 100644
 +    }
 +}
 diff --git a/ggml/src/ggml-cpu/quants.h b/ggml/src/ggml-cpu/quants.h
-index 93ea7eeff..e6211b7ed 100644
+index 93ea7eeff..17efc07fa 100644
 --- a/ggml/src/ggml-cpu/quants.h
 +++ b/ggml/src/ggml-cpu/quants.h
 @@ -51,6 +51,17 @@ void ggml_vec_dot_nvfp4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
@@ -4873,7 +4918,7 @@ index 93ea7eeff..e6211b7ed 100644
  void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
 +// Vollie: four consecutive Q3_K rows (stride bx bytes) against one Q8_K row; s[0..3]. NEON only.
 +void ggml_vec_dot_q3_K_q8_K_x4(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy);
-+void ggml_cpu_q3k_bench(int cpu, int pinned); // Vollie: GGML_CPU_BENCH (arch/arm/quants.c)
++void ggml_cpu_q3k_bench(void); // Vollie: GGML_CPU_BENCH (arch/arm/quants.c)
 +// Vollie: GGML_MMID_TOUCH (r13) and its cpu-bench twin: one volatile demand load (not prfm) of the first byte of each
 +// 4-KB page that [p, p + n) spans, so the page walks and first-line fills start together. Reads only, results unchanged.
 +// ponytail: 4-KB pages assumed (Android arm64); on 16-KB-page hosts it touches 4x more often than needed, still exact

@@ -1,42 +1,37 @@
-# Research kit (round 13) — what it runs, the result file, how to run it
+# Research kit (round 13b) — what it runs, the result file, how to run it
 
-The kit is the **"Run research kit (~15 min)"** button in Vollie's Settings (app 2.2.17+40, kit `r13`; rounds 11-12 were
-2.2.16+39 / `r11`). It measures the round-13 runs on the phone as it is (about 10-11 minutes; the button label is
-unchanged), and puts one JSON report on the clipboard ("Copy research results"). `tools/research_parse.py` turns that
-JSON into `results.csv` rows and R-log text; `--gate 10` adds the block-gated score.
+The kit is the **"Run research kit (~15 min)"** button in Vollie's Settings (app 2.2.18+41, kit `r13b`; round 13 was
+2.2.17+40 / `r13`). Round 13b is a **check of the timing instrument only, about 2 minutes, no A/B** (R40 amendment in
+`reports/03_final.md`; Bonnie's §D in `reports/memos/round13_plan.md`; build `lab/logs/r39/`). It puts one JSON report on
+the clipboard ("Copy research results"); `tools/research_parse.py` reads it as before (the button label is unchanged).
 
-What changed in the round-13 build (pre-registration R39 in `reports/03_final.md`; Bonnie's memo
-`reports/memos/round13_plan.md`; build and checks `lab/logs/r39/`):
+What changed in the round-13b build (bench-only code; model path, knobs and compiled defaults as r13):
 
-- **Default unchanged from r11** (compiled in, not a saved setting): `GGML_EXPERT_SKIP=117 GGML_HEAD2=2048 GGML_HEAD2_Q=q4_0
-  VOLLIE_SAMPLER_BYPASS=1` (`Research.served`) and the module's `GGML_Q3K_KERN=1`.
-- **New knob `GGML_MMID_TOUCH` (default off, bit-identical):** in the one-token expert path (`GGML_MMID=3`), after a
-  thread claims a 32-row chunk and before the kernel runs, one demand load of the first byte of each 4-KB page the chunk's
-  weight rows span (gate/up 5-6 pages, down 2-3), so the page walks overlap. Identity: `lab/logs/r39/id.out` (2 × 10⁵
-  random row-quads 0 differ; PPL chunks 1-3 at −ub 1 / −ub 32 / −b 512 equal to r9-r11 on every digit, stock and served,
-  touch unset / '' / 1; greedy 32 on both kit prompts identical to the r34 text). `cpu-prof` lines carry `touch=` after
-  `kern=`; the ABBA mechanism takes `knob:MMID_TOUCH:A:B`.
-- **Block order `GGML_CPU_AB_BAAB=1`:** post-warm-up blocks go B A A B … (warm-up still A; `ab=` still names the side,
-  A = the first value). The kit runs the ABBA three times: ABBA, BAAB, ABBA (R39: cancels the position-1 fault advantage).
-- **`cpu-bench`:** the bench thread is pinned to cpu 4-6 for the bench only (`pinned=1`, `0` if the pin failed; r12's
-  landed on an A55) and each line adds `hot=` (= `new`) `cold=` (the same kernel on a fresh slice of a 64-MB anon arena
-  each trial, slices ≥ 8 MB apart, 32-row chunks of 4-row groups) `cold_touch=` (cold + the knob's page-head loads at each
-  chunk start) `cold_thp=` (cold on a 2-MB-aligned arena with `MADV_HUGEPAGE`; diagnostic) with `exact_cold*` flags and
-  `anon_huge_kb=` (AnonHugePages from `/proc/self/smaps_rollup`, −1 unreadable). The parser prints `cold/hot` and
-  `(cold − cold_touch)/(cold − hot)`. The bench maps one 64-MB arena at a time (freed before the next).
-- **Dropped:** the skip control, vanilla, the second baseline, both always-on stories.
+- **`cpu-bench` checks its core on every trial.** r13's bench ran on an A55 although it printed `cpu=5 pinned=1`: the core
+  was read once after the pin and the thread was moved afterwards. Now the thread is re-pinned to cpu 4-6 before each
+  shape, `sched_getcpu()` is read at the start and end of every timed trial, and a trial counts only if both are 4-6. Each
+  line ends `cpu=<first>-<last> migr=<core changes seen> cpu_ok=<fewest valid trials of any field>/21 pinned=0|1
+  mhz=<min>/<max>` (the clock of the core that ran each valid trial, read at its end).
+- **Cold fields:** one 48-MB arena per bench (32 MB of 4-KB-aligned slice copies + 16 MB written after each fill so the
+  fill's tail is out of the caches). 21 × (`cold` = one pass on a fresh slice, `hot` = the same slice again at once,
+  `cold_touch` = one pass with the `GGML_MMID_TOUCH` page-head loads on another fresh slice); slices ≥ 8 MB apart, never
+  reused within a shape; each field is the **median** of its valid trials. `hot` is now a real measurement (r13 printed
+  `new` twice). `cold_thp` and `anon_huge_kb` are gone (no anon THP on this phone, R40). `old`/`new`/`int8`/`q4x4`/`scalar`
+  as before (best of the valid trials).
+- **Built-in falsifier:** the K 512 line carries `instrument=ok` if its cold/hot ≥ 1.05, else `instrument=invalid`. The
+  parser prints it, the `cpu_ok` fraction, and `UNVERIFIED` when `cpu_ok` < 5.
+- Decision rule (R40, written before the run): on lines with `cpu_ok` ≥ 5, cold/hot ≥ 1.5 at K 1,536 and ≥ 1.3 at K 512 →
+  the ABBA ×3 is the one remaining session (r14); < 1.2 → lever 1 parked; 1.2-1.5 → one more bench-only check.
 
-## What one run does (about 10-11 minutes, no settings to change)
+## What one run does (about 2 minutes, no settings to change)
 
 | phase | runs | what | knob |
 |---|---|---|---|
 | `baseline` | 1 | official benchmark prompt, 32 tokens, saved settings + the default | — |
 | `bench` | 1 | the kernel timing: a one-token reply ("Hi") with `GGML_CPU_BENCH=1`; its two `cpu-bench q3k` lines are in `prof` | `GGML_CPU_BENCH=1` |
-| `ab` | 3 | ABBA `MMID_TOUCH:0:1` over the 200-token story on the default, `GGML_CPU_PROF=1`, block orders ABBA / BAAB / ABBA (one name: the parser pools them) | `GGML_CPU_AB=knob:MMID_TOUCH:0:1` (+ `GGML_CPU_AB_BAAB=1` on the second) |
-| `on` | 2 | official 32 on the default ×2 (reported with clock and faults; not a scored line) | — |
 
-Memory: as r9 (the default holds the 86.7 MB head copy); the knob allocates nothing; the bench mallocs ≈ 7 MB of synthetic
-slices per shape plus one 66-MB arena at a time, all freed before the reply. Load-time copy: head ≈ 0.23-0.34 s (r8 device).
+Memory: as r9 (the default holds the 86.7 MB head copy); the bench mallocs ≈ 7 MB of synthetic slices per shape plus one
+48-MB arena, all freed before the reply. Load-time copy: head ≈ 0.23-0.34 s (r8 device).
 
 The parser's A/B Δ is always B − A, per side mean ± sd over the post-warm-up blocks, ± 1σ, and the per ABBA group
 (B̄ − Ā) mean and sd; runs of one name are pooled, so eio 1 and eio 0 stay apart; the `MUL_MAT` line includes the head. Every story run also logs `mhz_blocks`: the cpu4
@@ -87,7 +82,9 @@ run:
   io_read_bytes        bytes read from storage during the run (process-wide)
   prof                 [str] cpu-prof / cpu-bench / repack-release lines the module printed during the run (r10: the
                        bench run's two "cpu-bench q3k" lines; r11: each ends cpu=<core> mhz=<start>/<end>; r13: + hot=
-                       cold= cold_touch= cold_thp= exact_cold*= anon_huge_kb= and pinned= before mhz=)
+                       cold= cold_touch= cold_thp= exact_cold*= anon_huge_kb= and pinned= before mhz=; r13b: hot= cold=
+                       cold_touch= exact_hot/cold/cold_touch=, instrument= (K 512), cpu=a-b migr= cpu_ok=n/21 pinned=
+                       mhz=min/max; no cold_thp / anon_huge_kb)
   text                 first 80 chars of the reply
   mem_before_load      (release/after load) memInfo() before the reload
   error                exception text if the run failed
@@ -111,24 +108,21 @@ The run's own `majflt`, `minflt` divided by `tokens` = faults per token over the
 
 ## 실행 안내 (한국어)
 
-**이번 회차(r13)에서 바뀐 것:**
-- **기본 설정은 지난 회차와 같습니다**(전문가 생략 117 + 두 단계 출력층 + 샘플러 빠른 경로 + 새 전문가 커널). 저장된 설정도 그대로.
-- **새 실험 스위치 하나(`MMID_TOUCH`)를 A/B로 잽니다** — 전문가 가중치를 읽기 직전에 메모리 페이지 머리를 먼저 한 번씩
-  건드려, 페이지를 찾는 시간을 겹치게 하는 방법입니다. 답은 한 글자도 달라지지 않습니다(컴퓨터에서 확인). 같은 A/B를
-  세 번 돌리고, 두 번째는 순서를 뒤집어(BAAB) 순서 때문에 생기는 치우침을 없앱니다.
-- **커널 시간 재기(`cpu-bench`)** — 이번에는 큰 코어(4-6번)에 고정해서 재고, 캐시에 없는(차가운) 메모리에서 읽을 때의
-  시간도 함께 잽니다(몇 초, 모델이나 답에는 아무 변화 없음).
-- 시간을 줄이려고 비교 기준 A/B, vanilla, 두 번째 기준 측정, 긴 이야기 두 개를 뺐습니다.
+**이번 회차(r13b)는 약 2분짜리 점검입니다.** 지난 회차의 커널 시간 재기(`cpu-bench`)가 큰 코어가 아닌 작은 코어에서
+돌았던 것으로 밝혀져, 재는 도구 자체만 다시 확인합니다. A/B는 없습니다.
+- 기본 설정은 지난 회차와 같습니다(저장된 설정도 그대로). 모델이나 답에는 아무 변화가 없습니다.
+- 이번에는 매번 잴 때마다 실제로 큰 코어(4-6번)에서 돌았는지 확인하고, 아닌 것은 버립니다.
+- 메모리가 부족한 날이어도 상관없습니다. 언제 돌려도 됩니다.
 
-**가장 중요한 한 가지: 실행하는 동안(약 10-11분) 전화기를 만지지 마세요.** 다른 앱을 열거나 화면을 끄지 말고 그대로 두세요.
+**가장 중요한 한 가지: 실행하는 동안(약 2분) 전화기를 만지지 마세요.** 다른 앱을 열거나 화면을 끄지 말고 그대로 두세요.
 
-**준비:** Vollie 2.2.17+40 설치(APK, `vollie-2.2.17+40-research-r13.apk`), 모델이 이미 받아져 있고 평소처럼 쓰는 상태면 됩니다.
-전화기 설정은 아무것도 바꾸지 마세요(다른 앱도 그대로). 이번 회차는 추가 다운로드가 없습니다.
+**준비:** Vollie 2.2.18+41 설치(APK, `vollie-2.2.18+41-research-r13b.apk`), 모델이 이미 받아져 있고 평소처럼 쓰는 상태면 됩니다.
+전화기 설정은 아무것도 바꾸지 마세요(다른 앱도 그대로). 추가 다운로드는 없습니다.
 
-1. Vollie → 설정(Settings) → **"Run research kit (~15 min)"** 탭(버튼 이름은 그대로지만 이번에는 약 10-11분 걸립니다).
+1. Vollie → 설정(Settings) → **"Run research kit (~15 min)"** 탭(버튼 이름은 그대로지만 이번에는 약 2분 걸립니다).
 2. 끝날 때까지 화면을 켠 채로 둡니다(앱이 켜둡니다). 진행 상황은 버튼 아래에 `Research · 분:초 · 단계`로 보입니다.
 3. 끝나면 **"Copy research results"** 탭 → 클립보드에 JSON이 복사됩니다. 그대로 제게 붙여 보내 주세요
-   (길이 30-100 KB). 같은 내용이 앱 파일 폴더에 `research-r13-<시각>.json`으로도 저장됩니다.
+   (길이 10-30 KB). 같은 내용이 앱 파일 폴더에 `research-r13b-<시각>.json`으로도 저장됩니다.
 4. 중간에 멈추려면 **"Stop research run"**. 그때까지의 결과도 복사할 수 있습니다.
 
 **보내 주실 것:** 붙여 넣은 JSON 한 개. 가능하면 실행 직전의 전화기 상태 한 줄(예: 충전 중 여부, 방금

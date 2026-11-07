@@ -38,22 +38,29 @@ def outside_graph(x):
     return (dur - ttft - win_ms - rest * steady) / (tok - 1), dur - ttft, win_ms, rest, steady
 
 def bench_ratios(line):
-    """r10: the pre-registered ratios of one 'cpu-bench q3k' line (§9.9 (iii)); r11 adds the core clock (mhz=start/end)."""
+    """r10: the pre-registered ratios of one 'cpu-bench q3k' line (§9.9 (iii)); r11 adds the core clock (mhz=start/end); r13b: the
+    core check (cpu=first-last migr= cpu_ok=; UNVERIFIED if fewer than 5 valid trials in some field), medians, instrument=."""
     d = dict(re.findall(r'(\w+)=([^\s]+)', line))
     try:
         o, n, i8, q4, sc = (float(d[k]) for k in ('old', 'new', 'int8', 'q4x4', 'scalar'))
     except (KeyError, ValueError):
         return 'ratios: missing fields'
     mhz = d.get('mhz')  # r11: core clock 'start/end' MHz; r10 lines have none
-    clock = f"  cpu{d.get('cpu', '?')} at {mhz} MHz (start/end)" if mhz else f"  cpu{d.get('cpu', '?')} clock not logged (pre-r11)"
+    clock = (f"  {mhz} MHz (min/max over valid trials)" if 'cpu_ok' in d else f"  cpu{d.get('cpu', '?')} at {mhz} MHz (start/end)") if mhz \
+        else f"  cpu{d.get('cpu', '?')} clock not logged (pre-r11)"
     if 'pinned' in d:  # r13: the module pins the bench thread to cpu 4-6
         clock += '  pinned' if d['pinned'] == '1' else '  UNPINNED'
+    if 'cpu_ok' in d:  # r13b: trials whose start and end core were both in 4-6, fewest of any field / trials per field
+        ok_n = int(d['cpu_ok'].split('/')[0])
+        clock += f"  cpu {d.get('cpu')} migr {d.get('migr')} cpu_ok {d['cpu_ok']}" + ('  UNVERIFIED' if ok_n < 5 else '')
     cold = ''
-    try:  # r13 (R39): page-stream fields; cold/hot >= 1.5 opens the ABBA, < 1.2 falsifies the diagnosis
+    try:  # r13 (R39): page-stream fields; r13b: hot is measured (same slice re-run), cold / hot / cold_touch are medians
         h, c, ct = (float(d[k]) for k in ('hot', 'cold', 'cold_touch'))
         rec = f"{(c - ct) / (c - h):.2f}" if c != h else 'n/a (cold = hot)'
-        cold = (f"\n    cold/hot {c/h:.3f}  (cold - cold_touch)/(cold - hot) {rec}  cold_thp/hot {float(d.get('cold_thp', 'nan'))/h:.3f}"
-                f"  anon_huge_kb {d.get('anon_huge_kb')}  exact cold/touch/thp {d.get('exact_cold')}/{d.get('exact_cold_touch')}/{d.get('exact_cold_thp')}")
+        thp = f"  cold_thp/hot {float(d['cold_thp'])/h:.3f}  anon_huge_kb {d.get('anon_huge_kb')}" if 'cold_thp' in d else ''
+        cold = (f"\n    cold/hot {c/h:.3f}  (cold - cold_touch)/(cold - hot) {rec}{thp}"
+                f"  exact cold/touch {d.get('exact_cold')}/{d.get('exact_cold_touch')}"
+                + (f"  instrument={d['instrument']}" if 'instrument' in d else ''))
     except (KeyError, ValueError, ZeroDivisionError):
         pass
     return f"new/old {n/o:.3f}  int8/old {i8/o:.3f}  scalar/old {sc/o:.3f}  old/q4x4 {o/q4:.2f}" + clock + cold
