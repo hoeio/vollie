@@ -2473,7 +2473,7 @@ index cfbbf6617..dea6e7bcc 100644
  static inline svuint32_t ggml_decode_q4scales_and_mins_for_mmla(const uint32_t * vx_scales) {
      const svbool_t pg_all   = svptrue_pat_b32(SV_VL4);
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index ab82e3d6c..6130d6cd4 100644
+index ab82e3d6c..a69812d0b 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -197,6 +197,8 @@ typedef void * thread_ret_t;
@@ -4144,11 +4144,11 @@ index ab82e3d6c..6130d6cd4 100644
 +// so its 2-6 page walks overlap instead of serialising inside the kernel. Bit-identical (reads only; the touch takes the
 +// minor fault the kernel would have taken). Not on the GGML_EXPERT_Q4_LAYERS copies.
 +static int ggml_cpu_mmid_touch = 0;
-+// Vollie: env GGML_MMID_FUSE=1 (r14, R42; off unless set, "" = unset): a one-token expert layer's gate and up MUL_MAT_IDs and
++// Vollie: env GGML_MMID_FUSE=1 (r14, R42; default since R47 (device pass, r15), =0 off, "" = unset = on): a one-token expert layer's gate and up MUL_MAT_IDs and
 +// their SWIGLU run as one op (ggml_cpu_mmid_fuse_ok / ggml_cpu_mmid_decode_fused): one activation quantize, one chunk loop
 +// per expert over both weights with the swiglu applied per chunk, no barriers between the three. Bit-identical (same vec_dot
 +// per row, same ggml_vec_swiglu_f32 per element). The GLU line of the profile loses the fused ops, MUL_MAT_ID absorbs them.
-+// Vollie: env GGML_MMID_CHUNK2=1 (r14, R42; off unless set): the no-barrier path claims two chunks per fetch_add while
++// Vollie: env GGML_MMID_CHUNK2=1 (r14, R42; default since R47, =0 off): the no-barrier path claims two chunks per fetch_add while
 +// >= 2*nth remain (ggml_cpu_mmid_claim). Bit-identical. GGML_CPU_AB=knob:MMID_FUSE+CHUNK2:0:1 flips both.
 +// Vollie: env GGML_MMID_TEST1=1 (r13, host test only; off unless set, the kit never sets it): the no-barrier path also at
 +// 1 thread, so the MMID_TOUCH class-K fault test can run without concurrent faults. Same results (same from_float, same vec_dot).
@@ -5215,8 +5215,8 @@ index ab82e3d6c..6130d6cd4 100644
 +    ggml_cpu_router_prep(cgraph, ggml_cpu_router_plan_type()); // Vollie r15: ROUTER_CAST A/B makes the copies on side A's graphs too
 +    ggml_cpu_shexp_prep(cgraph); // Vollie: GGML_SHEXP_PRUNE (C4), off unless set
 +    const char * mfu = getenv("GGML_MMID_FUSE"), * mc2 = getenv("GGML_MMID_CHUNK2");
-+    ggml_cpu_mmid_fuse   = mfu && *mfu ? atoi(mfu) != 0 : 0; // Vollie: off unless set (bit-identical, R42)
-+    ggml_cpu_mmid_chunk2 = mc2 && *mc2 ? atoi(mc2) != 0 : 0; // Vollie: off unless set (bit-identical, R42)
++    ggml_cpu_mmid_fuse   = mfu && *mfu ? atoi(mfu) != 0 : 1; // Vollie: default since R47 (bit-identical, R42); =0 turns it off
++    ggml_cpu_mmid_chunk2 = mc2 && *mc2 ? atoi(mc2) != 0 : 1; // Vollie: default since R47 (bit-identical, R42); =0 turns it off
 +    const char * mt1 = getenv("GGML_MMID_TEST1");
 +    ggml_cpu_mmid_test1 = mt1 && *mt1 && atoi(mt1) != 0;
 +    const char * skip = getenv("GGML_EXPERT_SKIP");
