@@ -932,3 +932,85 @@ Scored with `tools/research_parse.py <json> --pairs --gate 10` under R46 + amend
 
 Open after R47: Tom flips fuse+chunk2 to the compiled default (bit-exact, `id.sh` 30/30) and drops C1 from the kit; Annie mirrors R47 + the r15 JSON; next round's subject is the official-32 cold path (prefill + first-token faults), to be pre-registered with the clock fixed or cycle-normalized.
 *R47 follow-up (host, Tom, 2026-11-08 night; logs `lab/logs/r47/`):* `GGML_MMID_FUSE` and `GGML_MMID_CHUNK2` default to on in the CPU module (`=0` turns each off); `lab/tiny-op.patch` 285,967 B (the mirror keeps the r15 patch until a build ships this one); `lab/logs/r47/id.sh` exit 0 — 36/36 PPL lines identical across unset / `=0` / per-token / block paths, 3,600 expert slot rows 0 differing, greedy 32 = r34 on both prompts (8/8), fused graph by default (host counts 80 / 76 / 1759 / 650; device offset +16 nodes and barriers as R42 am. 2). Kit: the C1 runs and the full-F16 check removed from `research.dart` (kit name unchanged; the next round bumps it); kit replay PASS. Parser: `fuse_hygiene` reports "n/a" instead of FAIL when both sides are fused (r15 output byte-identical). No APK built.
+
+### R48 — round-16 pre-registration: the official 32 under the shipping build, decomposed (Clyde, 2026-11-08 night, before any build; the owner: "the last round until this weekend, plan wisely"; Bonnie was unavailable (model usage limit) — this plan is Clyde's alone, without the usual second opinion, and says so)
+
+**Why this round.** Both pending lines resolved in R47. The fuse is the compiled default, and the kernel has been the default since R35. Nothing is left to A/B that would change a decision. The goal metric is the official 32, and we have **no per-token data on it**: r15's two default runs printed 18.2 / 15.3 (fuse off) against an estimated fault-free 20.9. The weekend's work has to aim at whatever that gap is. One round that locates it is worth more than one more knob.
+
+**Facts from the r15 per-token re-read (device; Clyde, 2026-11-08 night).**
+- **Outside-graph cost.** decode wall − Σ in-graph token time ≈ 0.75 ms/token.
+- **Clock is a first-order term.** The fault-free median is 47.1-47.3 ms at 2112/2035 and 55.9-57.4 at 1,670-1,555. The core clock fell 2112 → 1555 within the kit, as the kit's own load heated the phone.
+- **A fault-free ramp.** In the first fused run, tokens 1-12 ran 52-57 ms at 0 majflt and a logged 2,112. Dense `MUL_MAT` was 29-30 ms against a steady 22.6; `MUL_MAT_ID` was +1, and minflt was normal (28-33). The next run, started straight after, began at 47 with no ramp. The fourth began at 52 at 1,881 and settled by token 9 at the same logged clock. Dense `MUL_MAT` sits at the bandwidth ridge, so the leading hypothesis is a **memory-bus (DDR) frequency ramp after idle**. The kit does not log that clock. The alternative is cache, TLB or residency warm-up that does not show as faults.
+- **The official 32 has 31 decode tokens.** A 10-token ramp at +6 ms costs ≈ 1.2 tok/s there, and faults add on top.
+
+**Pre-registered, round 16 (thresholds set here, before the build):**
+
+1. **Build (Tom, bit-exact, no new knob).** The compiled defaults are the R47 follow-up build: fuse+chunk2 on, kern on, skip 117, head2, sampler bypass. The kit gets a **profiled official 32**: the exact official prompt, 32 tokens, greedy, under `GGML_CPU_AB_TOKEN=1` with an A/A label (same value on both sides). That emits per-token lines (op table, majflt, minflt, mhz) with no change to arithmetic; R47 showed the A/A null holds. The kit also gets the kit's own **idle pause** (a sleep inside the kit, no phone-state change), and a run field for the prefill share of faults (run majflt − Σ decode-token majflt). There is no bench and no A/B of any knob. Host check: profiled and plain official 32 give the same greedy text, bit for bit.
+
+2. **Kit r16 (≈ 6-8 min, estimated).** Runs in order:
+   - baseline official 32 · 3t (cold, as always);
+   - warm-up story 200, profiled (dropped);
+   - steady reference story 200, profiled (the run's fault-free median per clock);
+   - then four groups of official 32 runs, each group plain → profiled → profiled → plain:
+     - group 1 back-to-back;
+     - group 2 after the kit's own 20 s idle pause;
+     - group 3 back-to-back;
+     - group 4 after a 20 s idle pause;
+   - official 32 plain ×2 last.
+
+   That is 10 plain and 8 profiled official runs (16 in the groups, 2 at the end).
+
+3. **Scored line 1 — the goal metric.** Printed official-32 decode tok/s over the 10 plain default runs (the cold baseline excluded), as median and best. Each is reported with the clock after the run and the run's majflt. **Prediction: median 18.0-20.0, central 19.0; best ≥ 20.0 in at least one plain run: coin flip (p ≈ 0.5).** "20 reached on the owner's benchmark" is claimed **iff the median of the plain runs is ≥ 20.0**. It is not claimed from a best run.
+
+4. **Scored line 2 — the decomposition.**
+   - **Steady reference.** For each profiled official run and each counted clock, steady S(f) = the fault-free median of the reference story at the same logged clock. If the story did not run at that clock, S(f) is S at the nearest logged clock scaled linearly by f, and this is flagged.
+   - **Excess.** E = Σ over decode tokens 2..32 of (token ms − S(f_token)). Token 1 is excluded because it carries the prefill handover.
+   - **Split.** E = E_fault (tokens with majflt > 0) + E_clean (tokens at 0 majflt).
+   - **Ramp-dominated** iff E_clean ≥ 0.5 E in ≥ 6 of 8 profiled runs. **Fault-dominated** iff E_fault > 0.5 E in ≥ 6 of 8. **Mixed** otherwise.
+   - **Prediction: ramp-dominated in the after-pause groups and mixed overall (central E_clean share 0.6).** The ramp is predicted to sit ≥ 60 % on dense `MUL_MAT` at an unchanged logged core clock. That is the bus signature, and it is falsified if the excess sits on `MUL_MAT_ID` or tracks the logged clock.
+   - **Pause contrast (reported with its σ, a fact line).** Mean E of the 4 after-pause profiled runs minus the 4 back-to-back profiled runs. **Prediction: +80..+250 ms per run (central +150).**
+
+5. **Validity.**
+   - **Profiling overhead.** Within each group, plain vs profiled printed tok/s, averaged over the 4 groups. If profiled is more than 5 % slower, line 2 still stands relative to S but is flagged.
+   - **Text.** Greedy text is identical across every official run. If any differs, the session is void.
+   - **Steady reference.** The reference story has ≥ 100 fault-free tokens at one modal clock, or line 2 is unscorable.
+
+6. **Reported, not scored.**
+   - prefill majflt and ttft per run;
+   - per-token minflt;
+   - per-token clock trace;
+   - the outside-graph ms per token;
+   - the first token's ms.
+
+7. **What each outcome sends to the weekend.** Decided now, so the result cannot pick its own story:
+   - **Ramp-dominated.** A runtime-only bus-warm study. It asks whether the decode can begin on a warm bus by overlapping the last prefill chunk with the first decode, or by keeping the runtime's own threads streaming across the prefill→decode handover. It must be host-checkable and generalizable. It may not ask the owner to change anything.
+   - **Fault-dominated.** A decode-start residency study, keeping clear of the closed list (Q3_K prefetch, anon cache and `DENSE_WILLNEED` as a window-1 lever stay closed).
+   - **Mixed.** Both, ranked by E share.
+   - **Median ≥ 20.** The campaign's goal is shown on the owner's benchmark. The weekend turns to generalization: a second model or device, as the goal's item 4 requires.
+
+8. **Excluded.** Re-scoring R38, R45 or R47. Any A/B in this kit. Any claim of 20 from a story run or from a best run.
+
+9. **Honest expected outcome.** The plain median lands around 19 and does not reach the 20 claim. The decomposition shows a start ramp on dense `MUL_MAT` that is largest after a pause. Clock falls through the kit, as in r15, which keeps the last runs lowest. Where 20 stands (estimated): 31 decode tokens at 47.8 ms ≈ 20.9 if both the ramp and the faults are gone. The ramp alone is worth ≈ +1 tok/s.
+
+**R48 amendment 1 (Clyde, 2026-11-08 night, before the freeze; from Tom's host build, logs `lab/logs/r48/`).** Tom stopped before the freeze on a conflict in the spec. The plain official runs must be the r15 path, and that path waits at the cool-down gate: up to 90 s, until headroom < 0.65. Both r15 official runs started above 0.65, so both waited the full 90 s; ≈ 11 of r15's 14.5 min were gate waits. "Back-to-back" groups cannot hold under that gate. Decisions:
+(1) **The gate stays on every official run (`coolOfficial = true`).** Line 1 stays comparable with r15's 18.2. Each official run starts from the state of a user running the benchmark once, cooled and idle. A back-to-back kit heats the phone (r15: 2112 → 1555 within the kit) and would bias line 1 low. The kit is ≈ 9-35 min (estimated), not 6-8.
+(2) **The pause contrast in item 4 is withdrawn as a contrast.** Every run now sits idle before it starts, so "20 s pause vs back-to-back" becomes "≈ 110 s vs ≈ 90 s". Replacement: every run logs `cool_ms` and `idle_ms`, the time since the previous reply ended. **E against `idle_ms` is reported as a fact line, not scored.** The 20 s pauses stay as built.
+(3) **Clock scaling (item 4) clarified.** S at an unlogged clock = S(f0) · f0 / f from the nearest logged clock by cpu4 MHz, holding cycles constant, and flagged. This is what "scaled linearly by f" meant.
+(4) **Runs with E ≤ 0 count as neither ramp- nor fault-dominated.** As first written, E < 0 with E_fault = 0 satisfied "E_fault > 0.5 E" and would have counted as fault-dominated. If ≥ 5 of 8 profiled runs have E ≤ 0, the outcome is **"no gap"**: the plain runs' loss is not in the decode tokens.
+(5) **Token range.** On the device a 32-token run has 32 decode graphs (tok 1..32). E uses tok 2..32, as written.
+*Fact from Tom (device r15, not a score):* llamadart decodes each sampled token after printing it, including the 32nd. So `decode_ms` (1,699.7) ≈ duration − ttft (1,707.0) holds a 32nd decode graph whose logits are never used. That is ≈ 3 % of the official number (estimated). Skipping that wasted decode would be a real, bit-exact, generalizable runtime saving: the reply also ends sooner. It is **not** in r16; it is a weekend candidate, to be pre-registered on its own, because it changes the benchmark's denominator.
+Everything else in R48 is unchanged.
+
+**R48 amendment 2 (Clyde, 2026-11-08 night) — r16 frozen.**
+- **APK:** `lab/dist/vollie-2.2.21+44-research-r16.apk`, 17,145,414 B, sha256 17dae212f5f690b75e45be0b45ba9612e8e5f4265ebc5a6d3e7c3a55e4664d90. `coolOfficial = true`.
+- **Byte checks:** `libllama.so` (4,283,416 B) and the CPU module (1,731,064 B) are byte-identical between the APK and the local build. The Dart snapshot carries `2.2.21+44` and `knob:MMID_FUSE+CHUNK2:1:1`, with no stale strings.
+- **Host checks (Tom, `lab/logs/r48/`):**
+  - `id.sh` (r47) exit 0: 36/36 PPL lines, 0 differing floats, greedy 32 = r34;
+  - kit replay PASS: all 19 official runs give the same ids;
+  - profiled and plain official 32 text bit-identical at `-t 3` / `-t 6`;
+  - `official_check.py` PASS, including the amendment-1 "neither" / NO GAP cases and the idle slope;
+  - the parser without `--official` is byte-identical on all 17 device JSONs.
+- **Patch:** `lab/tiny-op.patch` 285,967 B, the first build to ship fuse+chunk2 as the default, so the mirror patch moves.
+- **Kit:** ≈ 9-35 min (estimated), JSON ≈ 170-180 KB (estimated).
+- **Scoring:** `tools/research_parse.py <json> --official` → **R49**.
+- **Handed to the owner 2026-11-08 night.**
