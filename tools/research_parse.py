@@ -24,7 +24,7 @@ def fuse_hygiene(blocks):
     if not fus:
         return []
     if not ref:
-        return ['HYGIENE FAIL: no fuse=0 block to compare against']
+        return ['hygiene n/a: fuse=1 on both sides (compiled default since R47), no fuse=0 reference']
     m, g, n, br = max(set(ref), key=ref.count)
     L = m // 3
     want = (m - L, g - L, n - 2 * L, br - 2 * L)
