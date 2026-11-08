@@ -1040,7 +1040,7 @@ Scored with `tools/research_parse.py <json> --official` under R48 and amendments
 
 - **Median 20.51 tok/s**, best 20.95. Every plain run ended at fast-core clocks 2112/2035.
 - **The prediction missed high.** It was median 18.0-20.0, central 19.0, so the result sits above the band. The pre-registered criterion "20 reached iff median ≥ 20.0" is met.
-- **What it is, stated plainly.** 8 of 10 runs printed 20.2-20.95. The two that missed (14.1, 18.5) were the first two after the reference stories, when 39-65 k pages faulted back in. The kit's first run, the cold baseline at 3 threads, printed 12.3. **≥ 20 holds once the model's pages are resident, at the clocks this phone holds after the kit's cool-down gate. A cold start under memory pressure still prints 12-18.**
+- **What it is, stated plainly.** 8 of 10 runs printed 20.2-20.95. The two that missed (14.1, 18.5) were the first two after the reference stories, when 39-65 k pages faulted back in. The kit's first run, the cold baseline at 3 threads, printed 12.3. **≥ 20 holds once the model's pages are resident, at the clocks this phone holds after the kit's cool-down gate. A cold start under memory pressure still prints 12.3-18.5 (the cold baseline 12.3 and the two misses 14.1 / 18.5).**
 - **Benchmark definition.** The time base is unchanged (llamadart's own `decodeTokensPerSec`); the wasted 32nd decode (R48 am. 1) is still inside it.
 
 **Line 2 — the decomposition: UNSCORABLE (validity clause 5c).** The reference story ran throttled at 1,555 MHz with only 39 fault-free tokens (< 100). The S(f) scaling 55.70 × 1555/2112 = 41.0 ms also understates the real fault-free official token at 2,112 (≈ 45-46 ms), which inflates every E. Classifier output, reported only: 4 ramp / 4 fault → "mixed".
