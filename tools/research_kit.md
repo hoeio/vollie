@@ -1,33 +1,47 @@
-# Research kit (round 14) — what it runs, the result file, how to run it
+# Research kit (round 15) — what it runs, the result file, how to run it
 
-The kit is the **"Run research kit (~15 min)"** button in Vollie's Settings (app 2.2.19+42, kit `r14`; round 13b was
-2.2.18+41 / `r13b`). Round 14 is the **R42 pre-registration: one ABBA ×3 of the fused expert path, about 10-11 minutes**
-(`reports/03_final.md` R42; build `lab/logs/r42/`). It puts one JSON report on the clipboard ("Copy research results");
-`tools/research_parse.py` reads it as before (the button label is unchanged).
+The kit is the **"Run research kit (~15 min)"** button in Vollie's Settings (app 2.2.20+43, kit `r15`; round 14 was
+2.2.19+42 / `r14`). APK: `lab/dist/vollie-2.2.20+43-research-r15.apk`, 17,142,970 B, sha256
+`3a9a76afed833577262dfdcd17e40776695db1ca03f221cfcefc485ff2b3d4cf` (the kernel line is in: `Research.kernLine` = true). Round 15 is the **R46 pre-registration: a measurement round, about 8-10 minutes** (`reports/03_final.md`
+R46; build `lab/logs/r46/`). It puts one JSON report on the clipboard ("Copy research results"); read it with
+`python3 -I tools/research_parse.py <json> --pairs --gate 10 --sigma 0.4`.
 
-What changed in the round-14 build (compiled defaults unchanged: skip 117, head2 q4_0/2048, sampler bypass, Q3K_KERN=1;
-MMID_TOUCH, MMID_FUSE, MMID_CHUNK2 off):
+What changed in the round-15 build (compiled defaults unchanged: skip 117, head2 q4_0/2048, sampler bypass, Q3K_KERN=1;
+MMID_TOUCH, MMID_FUSE, MMID_CHUNK2, the router cast off):
 
-- **`GGML_MMID_FUSE=1`** (off unless set, bit-identical): a one-token expert layer's gate and up `MUL_MAT_ID`s and their
-  `SWIGLU` run as one op — one activation quantize, one chunk loop per expert over both weights with the swiglu applied
-  per chunk, no barriers between them. The fused op is counted as one `MUL_MAT_ID`: per token `MUL_MAT_ID` 120 → 80,
-  `GLU` 116 → 76, `nodes` −80 and `barriers` −80 (both the up→gate and gate→GLU barriers go; device r13: 1855/746 →
-  1775/666). Profile header `fuse=0|1`.
-- **`GGML_MMID_CHUNK2=1`** (off unless set, bit-identical): the no-barrier path claims two 32-row chunks per `fetch_add`
-  while ≥ 2·threads remain, one at the tail. Header `chunk2=0|1`.
-- `GGML_CPU_AB=knob:MMID_FUSE+CHUNK2:0:1` flips both (side B = both on).
-- Parser: `MUL_MAT_ID+GLU` (compute + wait, the scored line) and `GLU compute` in the ABBA and `--gate` tables; per side
-  `MMID/GLU cnt`; a `hygiene` line that is `HYGIENE FAIL` if any fuse=1 block lacks the fused graph (run void);
-  `--sigma S` sets the gate's σ limit on the scored line (r14: `--sigma 0.4`).
+- **`GGML_CPU_AB_TOKEN=1`** (off unless set): with `GGML_CPU_AB=knob:<NAME>:<A>:<B>` the knob flips per decode graph (= per
+  token) in the order A B B A A B B A … (block 1, no warm-up), so pair k = tokens (2k−1, 2k) holds one A and one B. One short
+  `cpu-prof` line per token (below). `knob:<NAME>:0:0` is the A/A null: the same code path, both labels side A's value.
+- **`GGML_CPU_AB=knob:ROUTER_CAST:0:1`** (C1-F16, R43, a **declared numerics experiment** on side B): the 40 MoE routers
+  (`ffn_gate_inp`, F32 in the file) get one F16 copy in anonymous memory (7.9 MB, made at the run's prompt graph, kept until
+  exit); side B's router `MUL_MAT`s read it. `GGML_ROUTER_CAST=f16` casts every graph (the kit's official-prompt check).
+  Every `cpu-prof` line now ends its header with `router=<µs/token of the router MUL_MATs> rcast=f32|f16`.
+- The `cpu-bench` guard re-arms per kit run (the kit passes its own `GGML_CPU_BENCH` value; R45).
+- Consecutive A/B story runs wait only while the thermal headroom is ≥ 0.85 (other runs still cool to < 0.65, ≤ 90 s).
+- `GGML_HEAD2_LOWRANK` (C2) and `GGML_SHEXP_PRUNE` (C4) are compiled in, off, and never set by the kit.
 
-## What one run does (about 10-11 minutes, no settings to change)
+## What one run does (about 8-10 minutes, no settings to change)
 
 | phase | runs | what | knob |
 |---|---|---|---|
-| `baseline` | 1 | official benchmark prompt, 32 tokens, saved settings + the default | — |
-| `bench` | 1 | the kernel timing (r13b format, a core check): a one-token reply ("Hi"); its two `cpu-bench q3k` lines are in `prof` | `GGML_CPU_BENCH=1` |
-| `ab` | 3 | story 200, ABBA blocks (warm 16, block 8), orders ABBA / BAAB / ABBA, profiled | `GGML_CPU_AB=knob:MMID_FUSE+CHUNK2:0:1` (+ `GGML_CPU_AB_BAAB=1` on the 2nd) |
+| `baseline` | 1 | official benchmark prompt, 32 tokens, saved settings + the default (its text = the F32 reference) | — |
+| `bench` | 1 | the kernel timing (r13b format, a core check): a one-token reply ("Hi") | `GGML_CPU_BENCH=<kit's value>` |
+| `warmup` | 1 | story 200 at the default, **dropped, unscored** (its text = the F32 story reference) | — |
+| `ab` | 1 | story 200 per token, **A/A null** | `GGML_CPU_AB=knob:MMID_FUSE+CHUNK2:0:0`, `GGML_CPU_AB_TOKEN=1` |
+| `ab` | 3 | story 200 per token, the fuse | `knob:MMID_FUSE+CHUNK2:0:1`, `GGML_CPU_AB_TOKEN=1` |
+| `ab` | 2 | story 200 per token, the kernel (`Research.kernLine` = true: the owner said yes, R46) | `knob:Q3K_KERN:0:1`, `GGML_CPU_AB_TOKEN=1` |
+| `ab` | 2 | story 200, block ABBA / BAAB (warm 16, block 8), the fuse (r14 continuity) | `knob:MMID_FUSE+CHUNK2:0:1` (+ `GGML_CPU_AB_BAAB=1`) |
 | `on` | 2 | official benchmark prompt, 32 tokens, the default (reported with clock and faults, not scored) | — |
+| `ab` | 2 | **last (R46 am. 1 (4))**: story 200, block ABBA / BAAB, C1-F16; `text_same` / `text_diverge_at` reported only | `knob:ROUTER_CAST:0:1` (+ BAAB) |
+| `check` | 1 | official 32 with the cast on every token; `text_same` must be true (the C1 voiding check) | `GGML_ROUTER_CAST=f16` |
+
+The C1 runs come last because the 7.9 MB router copy stays allocated until the process exits; no printed run follows it.
+Report-level `router_text_same` = the `check` run's `text_same` (false voids the C1 runs, R46 item 2 + amendment 1 (1)); a
+200-token story diverging from the F32 text is a reported fact, not a void.
+Parser rules from R46 amendment 1: the A/A null is valid iff every scored line has |z| ≤ 3, Σz² over the seven lines ≤ 14.07
+(χ²₇ at 0.95) and the minflt ratio is 1.00 ± 0.05; the interleaved A-token vs block-ABBA A mean is reported, not voiding.
+Size: one per-token line ≈ 210-220 characters → ≈ 44 KB per interleaved run; the whole JSON ≈ 240-260 KB without the kernel
+line, ≈ 330-350 KB with it (host replay 319 KB with it).
 
 Memory: as r9 (the default holds the 86.7 MB head copy); the bench mallocs ≈ 7 MB of synthetic slices per shape plus one
 48-MB arena, all freed before the reply. Load-time copy: head ≈ 0.23-0.34 s (r8 device).
@@ -90,6 +104,9 @@ run:
   mhz_blocks           [[cpu4, cpu7] MHz] every 8 received tokens (story runs, r5)
   sample_ms, decode_ms (r9) llamadart's sampling (+ token-to-piece) and llama_decode time over the reply
   warmup_ms, warmup    (r9) the one-token warm-up before the run (only when its module copies differ) and its requant lines
+  text_same            (r15, C1-F16 runs) the whole reply equals the F32 reference run's
+  text_diverge_at, text_len   (r15, when text_same is false) first differing character; [this reply, reference] lengths
+router_text_same       (r15, report level) every C1-F16 run's text_same
 ```
 
 Reading a `cpu-prof` line (A/B runs from r5: `cpu-prof ab=A blk=3 graphs=8 …`, one per block): `… graphs=32 tokens=32 … us/token=98176 compute=74768 wait=23016 nodes=1963 barriers=818 mmid_thr=22387/23027/22477 | MUL_MAT_ID 120:34214+16861 …` —
@@ -103,27 +120,31 @@ that side (0 when `GGML_EXPERT_IO=0`); r5 lines have no `adv`. `majflt`, `minflt
 that line's graphs, per side; `head` = µs per token of the output head op; `head2` = GGML_HEAD2's M on that side (0 = stock);
 `chunk` (r9) = GGML_MM_CHUNK on that side; `expq4` (r9) = layers reading the expert Q4_0 copy on that side; `kern`
 (r10) = GGML_Q3K_KERN on that side; `touch` (r13) = GGML_MMID_TOUCH on that side; `fuse`, `chunk2` (r14) = GGML_MMID_FUSE /
-GGML_MMID_CHUNK2 on that side.
+GGML_MMID_CHUNK2 on that side; `router`, `rcast` (r15) = µs per token of the router `MUL_MAT`s / their weight type on that side.
+Per-token line (r15, `GGML_CPU_AB_TOKEN=1`): `cpu-prof ab=B tok=2 us/token= head= router= majflt= minflt= mhz=<cpu4>/<cpu7>
+nodes= barriers= kern= fuse= chunk2= | …` (no compute= / wait= / rcast=: the op table and the run's env carry them) — faults are that token's counts (not per-token means), `mhz` is read
+from sysfs right after the token (-1 where there is none), the op table holds only the scored ops `MUL_MAT_ID`, `MUL_MAT`, `GLU`,
+`SSM_SCAN` (by cost).
 The run's own `majflt`, `minflt` divided by `tokens` = faults per token over the whole run (the parser prints both).
 
 ## 실행 안내 (한국어)
 
-**(2026-11-08 14:15) 재실행까지 끝났습니다(R45). 지금 돌릴 것은 없습니다 — 다음 회차(r15) 카드가 나오면 다시 안내합니다.**
-
-**이번 회차(r14)는 약 10-11분 걸립니다.** 전문가(expert) 계산에서 따로 돌던 세 단계(gate, up, 그리고 둘을 합치는 GLU)를
-한 번에 묶어 돌리고, 일을 나눠 가져가는 횟수를 줄이는 두 가지 변경을 켠 쪽(B)과 끈 쪽(A)을 번갈아 재서 비교합니다.
-답의 내용은 한 글자도 바뀌지 않는 변경이고, 기본 설정은 지난 회차와 같습니다(저장된 설정도 그대로).
+**이번 회차(r15)는 약 8-10분 걸립니다.** 이번에는 새 기능을 켜는 회차가 아니라 **측정 방법을 바꾸는 회차**입니다. 지난 두 번은
+8토큰 묶음 단위로 켠 쪽(B)과 끈 쪽(A)을 번갈아 쟀는데, 이번에는 **토큰 하나마다** 번갈아 재서 같은 시간에 훨씬 많은 비교를
+얻습니다. 같은 쪽을 두 이름으로 재는 "비교 대조" 한 번, 지난 회차의 묶음 비교 두 번, 그리고 라우터 가중치를 F16으로 읽는
+변경(답이 한 글자라도 바뀌면 그 결과는 무효 처리됩니다) 비교가 들어 있습니다. 기본 설정과 저장된 설정은 그대로입니다.
 - 메모리가 부족한 날이어도 상관없습니다. 언제 돌려도 됩니다.
 
-**가장 중요한 한 가지: 실행하는 동안(약 10-11분) 전화기를 만지지 마세요.** 다른 앱을 열거나 화면을 끄지 말고 그대로 두세요.
+**가장 중요한 한 가지: 실행하는 동안(약 8-10분) 전화기를 만지지 마세요.** 다른 앱을 열거나 화면을 끄지 말고 그대로 두세요.
 
-**준비:** Vollie 2.2.19+42 설치(APK, `vollie-2.2.19+42-research-r14.apk`), 모델이 이미 받아져 있고 평소처럼 쓰는 상태면 됩니다.
+**준비:** Vollie 2.2.20+43 설치(APK, `vollie-2.2.20+43-research-r15.apk`, 17,142,970 바이트, sha256 `3a9a76af…b3d4cf`), 모델이 이미 받아져 있고 평소처럼 쓰는 상태면 됩니다.
 전화기 설정은 아무것도 바꾸지 마세요(다른 앱도 그대로). 추가 다운로드는 없습니다.
 
-1. Vollie → 설정(Settings) → **"Run research kit (~15 min)"** 탭(버튼 이름은 그대로지만 이번에는 약 10-11분 걸립니다).
+1. Vollie → 설정(Settings) → **"Run research kit (~15 min)"** 탭(버튼 이름은 그대로지만 이번에는 약 8-10분 걸립니다).
 2. 끝날 때까지 화면을 켠 채로 둡니다(앱이 켜둡니다). 진행 상황은 버튼 아래에 `Research · 분:초 · 단계`로 보입니다.
 3. 끝나면 **"Copy research results"** 탭 → 클립보드에 JSON이 복사됩니다. 그대로 제게 붙여 보내 주세요
-   (길이 30-80 KB). 같은 내용이 앱 파일 폴더에 `research-r14-<시각>.json`으로도 저장됩니다.
+   (이번에는 길이가 약 240-350 KB로 평소보다 깁니다). 같은 내용이 앱 파일 폴더에 `research-r15-<시각>.json`으로도 저장됩니다
+   — 붙여 넣기가 잘리거나 복사가 안 되면 그 파일을 보내 주세요.
 4. 중간에 멈추려면 **"Stop research run"**. 그때까지의 결과도 복사할 수 있습니다.
 
 **보내 주실 것:** 붙여 넣은 JSON 한 개. 가능하면 실행 직전의 전화기 상태 한 줄(예: 충전 중 여부, 방금

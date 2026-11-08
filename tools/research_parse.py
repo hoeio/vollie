@@ -4,7 +4,11 @@ Prints a human table per phase (device-measured numbers), the A/B splits from th
 barrier cost, the speculation stats, and, with --csv, the rows to append to reports/results.csv.
 --gate T (r13, R39 / reports/memos/round13_plan.md §B): the block-gated ABBA score, class-K knobs only.
 --sigma S (r14, R42): the gate's σ limit on the scored line (default 1.0; r14 MMID_FUSE: 0.4). The scored line is
-MUL_MAT_ID+GLU (compute + wait of both) when the run carries fuse= (r14+), else MUL_MAT_ID."""
+MUL_MAT_ID+GLU (compute + wait of both) when the run carries fuse= (r14+), else MUL_MAT_ID.
+--pairs (r15, R46): the per-token interleaved runs (GGML_CPU_AB_TOKEN, lines 'cpu-prof ab=A|B tok=n'): pairs (2k−1, 2k), a pair
+counts iff both tokens have majflt 0 and the run's modal clock; Δ = mean(B − A), σ = sd/√N per line; the sequential verdict per
+knob (THRESH); validity (A/A null, A-token vs block-ABBA A mean, hygiene); confirmation and reported-not-scored lines. With
+--gate, a ROUTER_CAST block ABBA also gets the sequential verdict on MUL_MAT over counted blocks."""
 import json, re, sys, statistics
 
 def op_sum(o, *ops):
@@ -97,6 +101,7 @@ def abba_summary(runs):
                ('MUL_MAT_ID', lambda d, o: sum(o.get('MUL_MAT_ID', (0, 0, 0))[1:])),
                ('MUL_MAT', lambda d, o: sum(o.get('MUL_MAT', (0, 0, 0))[1:])),
                ('head', lambda d, o: int(d.get('head', 0)))] + \
+              ([('router', lambda d, o: int(d.get('router', 0)))] if any('router' in b[2] for x in runs for b in abba_blocks(x)) else []) + \
               ([('MUL_MAT_ID+GLU', lambda d, o: op_sum(o, 'MUL_MAT_ID', 'GLU')),  # r14: the line the fuse moves work between
                 ('GLU compute', lambda d, o: o.get('GLU', (0, 0, 0))[1])] if any('fuse' in b[2] for x in runs for b in abba_blocks(x)) else []) + \
               [(op, (lambda op: lambda d, o: sum(o.get(op, (0, 0, 0))[1:]))(op)) for op in ('SSM_SCAN', 'CPY', 'CONCAT', 'SSM_CONV')]
@@ -124,7 +129,7 @@ def abba_summary(runs):
         rows.append(('MMID/GLU cnt', f"A {' '.join(f'{m}/{g}' for m, g in oc['A'])}  B {' '.join(f'{m}/{g}' for m, g in oc['B'])}"))
         for h in fuse_hygiene([b for _, b in blocks]):
             rows.append(('hygiene', h))
-    for key in ('chunk', 'expq4', 'kern', 'touch', 'fuse', 'chunk2'):  # r9/r10/r13 header fields, per side (absent before r9 / r10 / r13)
+    for key in ('chunk', 'expq4', 'kern', 'touch', 'fuse', 'chunk2', 'rcast'):  # r9/r10/r13 header fields, per side (absent before r9 / r10 / r13)
         v = {sd_: sorted({d[key] for _, (s2, _, d, _) in blocks if s2 == sd_ and key in d}) for sd_ in 'AB'}
         if v['A'] or v['B']:
             rows.append((key, f"A {' '.join(v['A'])}  B {' '.join(v['B'])}"))
@@ -148,6 +153,148 @@ GATE_LINES = [('MUL_MAT_ID', lambda d, o: sum(o.get('MUL_MAT_ID', (0, 0, 0))[1:]
 GATE_FUSE = [('MUL_MAT_ID+GLU', lambda d, o: op_sum(o, 'MUL_MAT_ID', 'GLU')),  # r14 (R42): scored line, then its low-variance part
              ('GLU compute', lambda d, o: o.get('GLU', (0, 0, 0))[1])]
 SIGMA = 1.0  # --sigma
+
+# r15 (R46 items 3-4): knob -> (scored line, pass threshold, falsify threshold), ms/token, Δ = B − A. Sequential verdict: pass iff
+# Δ + 1.645σ <= pass; falsified iff Δ − 1.645σ > falsify; else continue (next session). A session counts with >= MIN_PAIRS pairs.
+THRESH = {'MMID_FUSE+CHUNK2': ('MUL_MAT_ID+GLU', -0.4, -0.15),
+          'Q3K_KERN': ('MUL_MAT_ID compute', -3.0, -1.5),
+          'ROUTER_CAST': ('MUL_MAT', -0.15, 0.0)}
+MIN_PAIRS = 60
+NULL_CHI2 = 14.07  # R46 amendment 1 (2): χ²₇ at 0.95 over the seven PAIR_LINES
+Z = 1.645
+
+def seq_verdict(m, se, ps, fa):
+    if m != m or se != se: return 'no data'
+    return 'PASS' if m + Z * se <= ps else 'FALSIFIED' if m - Z * se > fa else 'continue'
+
+def knob_of(x):
+    """('NAME', a, b) of a run's GGML_CPU_AB=knob:NAME:a:b (first triple), else None."""
+    m = re.match(r'knob:([^:,]+):([^:,]+):([^:,]+)', (x.get('env') or {}).get('GGML_CPU_AB', ''))
+    return (m.group(1), m.group(2), m.group(3)) if m else None
+
+PAIR_LINES = [('MUL_MAT_ID+GLU', lambda d, o: op_sum(o, 'MUL_MAT_ID', 'GLU')),
+              ('MUL_MAT_ID compute', lambda d, o: o.get('MUL_MAT_ID', (0, 0, 0))[1]),
+              ('MUL_MAT', lambda d, o: op_sum(o, 'MUL_MAT')),
+              ('head', lambda d, o: int(d.get('head', 0))),
+              ('SSM_SCAN', lambda d, o: op_sum(o, 'SSM_SCAN')),
+              ('GLU compute', lambda d, o: o.get('GLU', (0, 0, 0))[1]),
+              ('token total', lambda d, o: int(d['us/token']))]
+
+def token_lines(x):
+    """(side, tok, fields, ops) of every per-token line (tok >= 1) of an interleaved run."""
+    out = []
+    for line in x.get('prof', []):
+        m = re.search(r' ab=([AB]) tok=(\d+)', line)
+        if m and m.group(2) != '0':
+            d, o = prof_fields(line)
+            out.append((m.group(1), int(m.group(2)), d, o))
+    return out
+
+def token_pairs(x):
+    """[(k, A, B, counted)] for pairs k = tokens (2k−1, 2k) holding one A and one B, and the run's modal clock (cpu4/cpu7 'mhz=' over
+    all its tokens). counted iff both tokens have majflt 0 and the modal clock."""
+    toks = token_lines(x)
+    mz = [d.get('mhz') for _, _, d, _ in toks]
+    modal = max(set(mz), key=mz.count) if mz else None
+    by = {}
+    for t in toks:
+        by.setdefault((t[1] + 1) // 2, {})[t[0]] = t
+    out = []
+    for k in sorted(by):
+        p = by[k]
+        if 'A' in p and 'B' in p:
+            ok = all(float(t[2].get('majflt', 'inf')) == 0 and t[2].get('mhz') == modal for t in (p['A'], p['B']))
+            out.append((k, p['A'], p['B'], ok))
+    return out, modal
+
+def paired(prs, f):
+    """Δ = mean(B − A), σ = sd/√N over counted pairs, ms/token; N."""
+    dd = [(f(b[2], b[3]) - f(a[2], a[3])) / 1000 for _, a, b, ok in prs if ok]
+    if len(dd) < 2: return float('nan'), float('nan'), len(dd)
+    return statistics.mean(dd), statistics.stdev(dd) / len(dd) ** 0.5, len(dd)
+
+def minflt_ratio(prs, counted=True):
+    a = sum(float(p[1][2].get('minflt', 0)) for p in prs if p[3] or not counted)
+    b = sum(float(p[2][2].get('minflt', 0)) for p in prs if p[3] or not counted)
+    return b / a if a else float('nan')
+
+def print_pairs(inter, abba, T):
+    print("\n== per-token pairs (r15, R46; interleaved A B B A ...; pair k = tokens (2k−1, 2k); counted iff both tokens majflt 0 at the "
+          f"run's modal clock; Δ = mean(B − A) ± σ = sd/√N, ms/token; verdict: pass iff Δ + {Z}σ ≤ pass, falsified iff Δ − {Z}σ > falsify, "
+          f"else continue; a session counts with ≥ {MIN_PAIRS} counted pairs)")
+    null_ok = None
+    for name, xs in inter.items():
+        kn = knob_of(xs[0]) or ('?', '0', '1')
+        is_null = kn[1] == kn[2]
+        print(f"  {name}  ({len(xs)} run{'s' if len(xs) > 1 else ''}){'  A/A NULL (same value under both labels)' if is_null else ''}")
+        allp = []
+        for i, x in enumerate(xs):
+            prs, modal = token_pairs(x)
+            allp += prs
+            toks = token_lines(x)
+            print(f"    run {i+1}: tokens {len(toks)}  pairs {len(prs)}  counted {sum(p[3] for p in prs)}  modal clock {modal}  "
+                  f"minflt B/A counted {minflt_ratio(prs):.3f} all {minflt_ratio(prs, False):.3f}")
+            for h in fuse_hygiene([t for t in toks]):
+                print(f"      hygiene (every B token) {h}")
+        res = {lab: paired(allp, f) for lab, f in PAIR_LINES}
+        n = res['token total'][2]
+        for lab, (m, se, nn) in res.items():
+            print(f"    pooled {lab:20s} Δ {m:+7.3f} ± {se:.3f}  (N {nn})")
+        if is_null:  # R46 amendment 1 (2): every |z| <= 3, Σz² over the seven lines <= 14.07 (χ²₇ at 0.95), minflt 1.00 ± 0.05
+            z = {lab: m / se if se and se == se and se > 0 else (0.0 if m == 0 else float('inf')) for lab, (m, se, _) in res.items()}
+            big = [k for k, v in z.items() if not abs(v) <= 3]
+            chi = sum(v * v for v in z.values())
+            mr = minflt_ratio(allp)
+            null_ok = not big and chi <= NULL_CHI2 and abs(mr - 1) <= 0.05
+            print(f"    validity A/A null: z {' '.join(f'{k} {v:+.2f}' for k, v in z.items())}")
+            print(f"      every |z| ≤ 3: {'✓' if not big else '✗ ' + ' '.join(big)}; Σz² {chi:.2f} {'✓' if chi <= NULL_CHI2 else '✗'} (≤ {NULL_CHI2}); "
+                  f"minflt ratio {mr:.3f} {'✓' if abs(mr - 1) <= 0.05 else '✗'} (1.00 ± 0.05) -> {'null OK' if null_ok else 'SESSION VOID'}")
+            continue
+        line, ps, fa = THRESH.get(kn[0], (None, None, None))
+        if line:
+            m, se, _ = res[line]
+            v = seq_verdict(m, se, ps, fa)
+            cnt = n >= MIN_PAIRS
+            print(f"    SCORED {line}: Δ {m:+.3f} ± {se:.3f}, N {n}; pass ≤ {ps}, falsified > {fa}: Δ+{Z}σ {m + Z*se:+.3f}, Δ−{Z}σ {m - Z*se:+.3f} -> {v}"
+                  f"{'' if cnt else f'  (session does NOT count: N {n} < {MIN_PAIRS})'}")
+        # validity: interleaved A-token mean vs the block ABBAs' A mean (same knob, counted blocks at --gate T)
+        blk = [x for nm, ys in abba.items() for x in ys if knob_of(x) and knob_of(x)[0] == kn[0]]
+        ia = [int(p[1][2]['us/token']) / 1000 for p in allp if p[3]]
+        if blk and ia:
+            ba = [int(d['us/token']) / 1000 for x in blk for s2, _, d, o, ok in gate_blocks(x, T)[0] if ok and s2 == 'A']
+            if ba:
+                dm = statistics.mean(ia) - statistics.mean(ba)
+                print(f"    reported A-token mean {statistics.mean(ia):.2f} (N {len(ia)}) vs block-ABBA A mean {statistics.mean(ba):.2f} "
+                      f"(counted blocks T={T}, n {len(ba)}): {dm:+.2f} (R46 am. 1 (3): reported, not voiding; the gates differ)")
+            else:
+                print(f"    reported A-token vs block-ABBA A mean: no counted block-ABBA A block at T={T}")
+        else:
+            print("    reported A-token vs block-ABBA A mean: no block ABBA of this knob in the report")
+        # confirmation (fuse) and reported, not scored
+        if kn[0].startswith('MMID_FUSE'):
+            m, se, _ = res['GLU compute']
+            print(f"    confirmation GLU compute Δ {m:+.3f} ± {se:.3f} (pre-registered −0.12..−0.18: {'✓' if -0.18 <= m <= -0.12 else '✗'})")
+            for i, x in enumerate(xs):
+                r_ = minflt_ratio(token_pairs(x)[0], False)
+                print(f"    confirmation run {i+1} fused-side minflt ratio (all tokens) {r_:.3f} (0.65-0.85: {'✓' if 0.65 <= r_ <= 0.85 else '✗'})")
+        for lab in ('token total', 'MUL_MAT'):
+            m, se, _ = res[lab]
+            print(f"    reported {lab} Δ {m:+.3f} ± {se:.3f}")
+        for sd_ in 'AB':
+            v = sorted(int(p[1 if sd_ == 'A' else 2][2]['us/token']) / 1000 for p in allp if p[3])
+            if v: print(f"    reported floor side {sd_}: min {v[0]:.2f}  p10 {v[len(v) // 10]:.2f}  median {statistics.median(v):.2f} ms/token (counted tokens)")
+        if line:
+            f = dict(PAIR_LINES)[line]
+            for sd_ in 'AB':
+                xy = [(float(t[2]['minflt']), f(t[2], t[3]) / 1000) for p in allp if p[3] for t in [p[1 if sd_ == 'A' else 2]]]
+                if len(xy) > 2 and len({a for a, _ in xy}) > 1:
+                    mx, my = statistics.mean(a for a, _ in xy), statistics.mean(b for _, b in xy)  # least squares (py3.9: no linear_regression)
+                    sl = sum((a - mx) * (b - my) for a, b in xy) / sum((a - mx) ** 2 for a, _ in xy)
+                    print(f"    reported minflt slope side {sd_}: {sl * 100:+.2f} ms per 100 minflt/token on {line} (diagnostic)")
+    if null_ok is not None:
+        print(f"  SESSION {'valid (A/A null OK)' if null_ok else 'VOID (A/A null failed)'}")
+    else:
+        print("  no A/A null run in this report: session validity not established")
 
 def gate_blocks(x, T):
     """r13 §B: (side, blk, d, o, counted) per post-warm-up block of one ABBA run, and the run's modal clock. A block counts iff
@@ -200,10 +347,23 @@ def print_gate(abba, T):
             bias = [(k, res[k][0]) for k in ('MUL_MAT', 'head', 'SSM_SCAN') if abs(res[k][0]) > 0.3]
             bt = '  bias: ' + ', '.join(f"{k} {v:+.2f}" for k, v in bias) + f" (line scored only if |Δ| > {2 * max(abs(v) for _, v in bias):.2f})" if bias else ''
             print(f"            {'  '.join(f'{k} {chr(10003) if v else chr(10007)}' for k, v in flags.items())} -> {verdict}{bt}")
+            kn = knob_of(xs[0])
+            if kn and kn[0] == 'ROUTER_CAST' and title == 'pooled':  # r15 (R46 item 3): C1-F16, sequential rule on counted blocks
+                cnt = {s: [(d, o) for s2, _, d, o, ok in bl if ok and s2 == s] for s in 'AB'}
+                for lab, f in [('router', lambda d, o: int(d.get('router', 0)))]:
+                    a_ = [f(d, o) / 1000 for d, o in cnt['A']]; b_ = [f(d, o) / 1000 for d, o in cnt['B']]
+                    if len(a_) > 1 and len(b_) > 1:
+                        print(f"            router (µs field) Δ {statistics.mean(b_) - statistics.mean(a_):+.3f} ± "
+                              f"{(statistics.variance(a_) / len(a_) + statistics.variance(b_) / len(b_)) ** 0.5:.3f} (reported)")
+                line, ps, fa = THRESH['ROUTER_CAST']
+                m, se = res[line]
+                print(f"            SCORED {line} (C1-F16): Δ {m:+.3f} ± {se:.3f}; pass ≤ {ps}, falsified > {fa} -> {seq_verdict(m, se, ps, fa)}"
+                      f"  (side means majflt A {mf['A']:.1f} B {mf['B']:.1f}; text identity: see the reply-text section)")
 
 def main():
     path = sys.argv[1]; want_csv = '--csv' in sys.argv
     gate = float(sys.argv[sys.argv.index('--gate') + 1]) if '--gate' in sys.argv else None
+    pairs = '--pairs' in sys.argv
     global SIGMA
     SIGMA = float(sys.argv[sys.argv.index('--sigma') + 1]) if '--sigma' in sys.argv else 1.0
     r = json.load(open(path))
@@ -235,8 +395,11 @@ def main():
             rows.append((x['phase'], x['name'], x.get('threads'), x.get('heat'), tps, pp, x.get('majflt'), x.get('minflt'), io))
     print('\n== A/B pairs (per-token profile, µs; B − A)')
     abba = {}
+    inter = {}
     for x in runs:
         if x['phase'] != 'ab': continue
+        if any(' tok=' in l for l in x.get('prof', [])):  # r15: per-token interleaved run -> --pairs
+            inter.setdefault(x['name'], []).append(x); continue
         if any(' blk=' in l for l in x.get('prof', [])):
             abba.setdefault(x['name'], []).append(x); continue
         a = b = None
@@ -264,9 +427,14 @@ def main():
                 if mb: print(f"    mhz cpu4/cpu7 every 8 tokens: {' '.join(f'{a}/{b}' for a, b in mb)}")
         if gate is not None:
             print_gate(abba, gate)
+    if inter:
+        if pairs:
+            print_pairs(inter, abba, gate if gate is not None else 10)
+        else:
+            print(f"\n== {sum(len(v) for v in inter.values())} per-token interleaved runs ({', '.join(inter)}): run with --pairs")
     print('\n== r3 fields per run (last cpu-prof line; faults per generated token)')
     for x in runs:
-        lines = [l for l in x.get('prof', []) if l.startswith('cpu-prof')]
+        lines = [l for l in x.get('prof', []) if l.startswith('cpu-prof') and ' tok=' not in l]
         if not lines: continue
         tok = x.get('tokens') or 0
         for line in lines[-2:] if x['phase'] == 'ab' else lines[-1:]:
@@ -298,7 +466,12 @@ def main():
     for x in runs:
         if x.get('text') is not None:
             sm = x.get('sample_ms'); tok = x.get('tokens') or 0
-            print(f"  {x['phase']:8s} {x['name'][:52]:52s} {'' if sm is None or not tok else f'sample {sm / tok:.2f} ms/tok ':20s}{x['text']!r}")
+            print(f"  {x['phase']:8s} {x['name'][:52]:52s} {'' if sm is None or not tok else f'sample {sm / tok:.2f} ms/tok ':20s}{x['text']!r}"
+                  + ('' if 'text_same' not in x else f"  whole reply = F32 reference: {'same' if x['text_same'] else 'DIFFERENT'}"
+                         + (f" from char {x['text_diverge_at']} (lengths {x.get('text_len')})" if 'text_diverge_at' in x else '')
+                         + ('' if 'text_same' not in x else '  [voiding check]' if x['phase'] == 'check' else '  [reported]')))
+    if 'router_text_same' in r:  # r15 (R46 item 2, amendment 1 (1)): only the full-F16 official 32 voids; story divergence is reported
+        print(f"  C1-F16 greedy-text identity (official 32 under full F16 vs the baseline): {'same' if r['router_text_same'] else 'DIFFERENT -> C1 runs VOID'}")
     print('\n== best per setting (phases threads/baseline/release/spec)')
     best = {}
     for x in runs:

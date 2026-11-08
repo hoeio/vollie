@@ -18,7 +18,7 @@ static const char * knobs[] = {"GGML_CPU_PROF", "GGML_CPU_AB", "GGML_MMID", "GGM
                                "GGML_SSM_INPLACE", "GGML_CONV_RING", "GGML_CPU_AB_WARM", "GGML_CPU_AB_BLOCK",
                                "GGML_HEAD2", "GGML_HEAD2_Q", "GGML_HEAD2_BATCH", "GGML_MM_CHUNK",
                                "GGML_EXPERT_Q4_LAYERS", "GGML_DENSE_WILLNEED", "GGML_Q3K_KERN", "GGML_CPU_BENCH", "GGML_MMID_TOUCH", "GGML_CPU_AB_BAAB",
-                               "VOLLIE_SAMPLER_BYPASS"};
+                               "VOLLIE_SAMPLER_BYPASS", "GGML_MMID_FUSE", "GGML_MMID_CHUNK2", "GGML_CPU_AB_TOKEN", "GGML_ROUTER_CAST"};
 
 static void set_tokens(llama_batch_ext * b, const llama_token * t, int n, llama_pos p0) {
     llama_batch_ext_clear(b);
@@ -85,13 +85,16 @@ int main(int argc, char ** argv) {
         llama_sampler_reset(smpl);
         set_tokens(batch, pt.data(), (int) pt.size(), 0);
         int pos = 0, nt = (int) pt.size();
+        std::string ids; // r15: the run's greedy token ids, so runs can be compared for identity
         for (int i = 0; i < n; i++) {
             if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch)) return 1;
             pos += nt;
             llama_token id = llama_sampler_sample(smpl, ctx, -1);
+            ids += (i ? "," : "") + std::to_string(id);
             set_tokens(batch, &id, 1, pos); // ponytail: EOG not checked, the kit's 72/200 runs never hit it on this prompt
             nt = 1;
         }
+        fprintf(stderr, "ids %d %s\n", r - 2, ids.c_str());
     }
     llama_batch_ext_free(batch);
     llama_sampler_free(smpl);
