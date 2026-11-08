@@ -1,27 +1,156 @@
-# Vollie — serving a MoE LLM fast on a phone CPU
+# Vollie: a mixture-of-experts LLM at 20 tok/s on a 2021 phone CPU
 
-**What / why / result:** Runtime patches for llama.cpp that make a 7B mixture-of-experts model (Granite-4.0-H-Tiny) write at **20.51 tok/s median on the official 32-token bench** (R49, round 16, research build 2.2.21+44; 10 runs, 8 of them 20.2-20.95; device, resident model, fast cores at 2,112 MHz) on a 2021 Android phone (Snapdragon 888, 8 GB). A cold start under memory pressure still prints 12.3-18.5 tok/s (the cold baseline and the two runs that followed heavy memory use): the remaining loss is page residency at the start of a run, not arithmetic. For scale: stock llama.cpp printed 8.5 the same day as R31; the bit-identical runtime alone gave 12.0 vs 9.4 stock (×1.28, R25). Same model file throughout. Output is bit-identical to the served file except one expert-skip rule that costs +1.91 % perplexity (budget +2 %); the served config is skip 117 + two-stage head q4_0/2048 + the sampler fast path (PPL 9.7886). What got it there: R31 (skip 117 + two-stage head) 16.4; a bit-identical in-register Q3_K expert kernel (default since R35; its device line falsified under the pooled rule in R38, then passed on new data in R47, measured on throttled clocks); a bit-identical fused expert op (passed R47, −0.80 ± 0.10 ms/token, default since R47). Every prediction was written down before its phone run, and every number is measured on the phone and logged round by round, wins and losses alike (table below).
+## What Vollie is
 
-**Reproduce (no phone needed):** `git clone https://github.com/hoeio/vollie && cd vollie && tools/reproduce.sh` builds llama.cpp at the pinned base with the patches, downloads the model (3.16 GB, sha256-checked) and wikitext-2, and checks the two host claims: bit-identity of the runtime knobs (per-chunk PPL to the last digit) and the perplexity gate (stock vs `GGML_EXPERT_SKIP=118`, PASS/FAIL against the +2 % budget; ~1-1.5 h on a laptop, `--quick` screens it in ~15 min). The Android CPU module needs the NDK: `android/build_cpu.sh` (see `android/README.md`). Every phone number comes from the device JSONs, which need the phone. Verified 2026-11-05 from a clean clone on macOS arm64 (Apple M4, 8 threads): identity equal, stock 9.6051, skip 118 9.7952; not yet run on Linux (log `lab/logs/r27/reproduce_macos-arm64.log`, kept in the maintainers' workspace; summary row in `reports/results.csv`).
+Vollie is an on-device assistant app for Android. This repository is its serving research: runtime
+patches for llama.cpp, the tools that check them, and the full log of every measurement. The app itself
+is not here.
 
-**Here / not here:** Here: CPU-module patches, build script, on-device research kit and parser, perplexity gate, the full log with raw device JSON (`reports/device/`). Not here: the Flutter app, CI, releases. The evidence is the device JSONs and the pre-registered predictions scored against them.
+- Device: Samsung Galaxy Z Flip 3 (Snapdragon 888: 1x Cortex-X1 + 3x A78 + 4x A55, 8 GB).
+- Model: Granite-4.0-H-Tiny abliterated (7B mixture-of-experts, 64 experts, Mamba-2 hybrid), one frozen
+  GGUF ([recipe and sha256](models/granite-4.0-h-tiny-d6-e6.md); weights on Hugging Face in
+  [HoeioUser/vollie-qwen3.5-4b](https://huggingface.co/HoeioUser/vollie-qwen3.5-4b), a repository name
+  from before the switch to Granite).
 
-**Store builds lag.** The store version of the app can be behind the builds measured here, because store review takes time (on 2026-11-04 the store version is 2.1.10, per the owner; its numbers are the last column of the table below). The other numbers come from builds the owner measured: the app's own speed test before 2.2.6+29, research-kit APKs from 2.2.6+29 on (latest: 2.2.21+44, kit r16).
+## The result
 
-Research and runtime code for running an LLM well on an 8 GB Android phone with llama.cpp. It
-comes from Vollie, an on-device assistant. Its model files are on Hugging Face in
-[HoeioUser/vollie-qwen3.5-4b](https://huggingface.co/HoeioUser/vollie-qwen3.5-4b); that repository name
-predates the switch to Granite (the app ran Qwen3.5-4B in October): the repository holds one Qwen3.5-4B file and
-three Granite-4.0-H-Tiny files, and the Granite file used here is identified by its sha256
-([models/](models/granite-4.0-h-tiny-d6-e6.md)).
-This repository holds only the serving side: the CPU-module patches, the app-side tuning code, the
-evaluation tools, and the full research log. The app itself is not part of it.
+Vollie's own benchmark (official prompt, 32 tokens, greedy, llamadart's `decodeTokensPerSec`) printed a
+**median of 20.51 tok/s** over 10 runs (*device*, R49, round 16, research build 2.2.21+44, kit r16).
 
-Test device: Samsung Galaxy Z Flip 3 (Snapdragon 888: 1x Cortex-X1 + 3x A78 + 4x A55, 8 GB LPDDR5).
-Model: Granite-4.0-H-Tiny abliterated (7B mixture-of-experts, 64 experts, Mamba-2 hybrid), one fixed
-GGUF ([recipe](models/granite-4.0-h-tiny-d6-e6.md)). Goal: 20 tok/s printed. The one hard limit:
-wikitext-2 perplexity at most 20 % above the same model's F16 weights; the working budget for the
-speed rule is +2 % over the served file. All conditions are in [RULES.md](RULES.md).
+- 8 of 10 runs printed 20.2-20.95. Best 20.95. The 10 runs: 14.09, 18.47, 20.63, 20.62, 20.23, 20.83,
+  20.95, 20.40, 20.84, 20.25.
+- Every one of them ended with the fast cores at 2,112 / 2,035 MHz. Each run waited first at the kit's
+  cool-down gate, as the app's speed test does.
+- The claim rule was written before the run: "20 reached iff the median of the 10 plain runs is
+  ≥ 20.0", never from a best run. The prediction was median 18.0-20.0, central 19.0. It missed high.
+- Greedy text was identical across all 19 official runs of the session.
+
+**Cold start is slower: 12.3-18.5 tok/s** (*device*, R49). That is the kit's cold baseline (12.3, its first
+run) and the two runs after the heavy memory use of the reference stories (14.09, 18.47). The cause is
+page residency, not arithmetic: those runs started after the stories or idle time had evicted the
+model's pages, which then faulted back in during the prefill and the first decode tokens. Every plain run
+held the 2,112 MHz clock. Once the pages are resident, the steady official token is ≈ 45.5 ms in the
+graph + ≈ 1.05 ms outside it (*device*, read from the per-token lines of three resident runs, not a
+scored line).
+
+For scale, two earlier days, each measured against Vollie in the same session (*device*, same phone,
+same model file):
+
+| | official 32, printed tok/s | where logged |
+|---|---|---|
+| stock llama.cpp settings (every Vollie knob off; see the footnote of the table at the end) | 9.4 (2026-11-04) / 8.50 (2026-11-06) | R25 / R31 |
+| Vollie, bit-identical runtime only | 12.0 (2026-11-04, better of 8.2 and 12.0) | R25 |
+| Vollie, served config, round 16 | 20.51 median (2026-11-08) | R49 |
+
+## The rules it was done under
+
+The full text is [RULES.md](RULES.md). In short:
+
+- **Quality gate:** wikitext-2 perplexity (`llama-perplexity`, test set, context 512, all chunks,
+  `tools/ppl.sh`). Hard limit +20 % over the model's F16 weights (9.0438, so ≤ 10.853). The served file's
+  stock PPL is 9.6051.
+- **One approved numerics budget for speed:** router-weight expert skip, +2 % over the served file
+  (≤ 9.797), final for the campaign. The served config spends +1.91 % (9.7886, *host*; perplexity is
+  machine-independent). That covers skip 117 and the two-stage head together.
+- **Everything else is bit-identical:** `llama-perplexity` per-chunk values equal at `-ub 1`, `-ub 32`
+  and `-b 512`, and every new knob is off-switchable.
+- **The served file is frozen.** Speed comes from the runtime only. Nothing is asked of the user's phone.
+- **Measured on the phone, predicted in advance.** Every speed number here is measured on the device by
+  its owner through the app. The prediction and the pass rule of each round are written into
+  [reports/03_final.md](reports/03_final.md) before the run, and scored as written, misses included.
+- Labels: *device* = measured on the phone; *host* = measured on a laptop (Apple M4), relative or
+  machine-independent only; *estimated* = arithmetic, not a measurement.
+
+## What got there
+
+The levers that survived, in the served config. Effects are *device* in-run A/Bs in ms per token unless
+labelled; minus is faster.
+
+| lever | output | device effect | log |
+|---|---|---|---|
+| bit-identical runtime stack: sync-skipping around small ops, no-barrier expert op, 4-row Q3_K kernel with independent chains, SSM state in place, expert prefetch | identical | steady token 91.0 → 63.9 ms vs stock settings (ratio 1.42); official 32 9.4 → 12.0 | R25 |
+| expert skip at threshold 117 (experts with a small normalised router weight are not computed) | PPL +1.89 % alone (9.7869, *host*) | at threshold 118: token −7.90 ± 2.12, `MUL_MAT_ID` −8.28 ± 1.14 at 2,112 MHz | R25, R31 |
+| two-stage output head: a runtime Q4_0 copy screens all rows, the top 2,048 are recomputed exactly | PPL +0.01 % alone (9.6061, *host*); with skip 117: 9.7886 | head op −1.70 ± 0.13 (on skip 118); −1.60 ± 0.14 in the 118 → 117 + head swap | R31 |
+| sampler fast path: the repetition penalty visits only the ≤ 64 penalised tokens | identical | outside-graph time 1.90 → 1.13 ms per token (at 1,555 MHz) | R33 |
+| in-register Q3_K expert kernel | identical (greedy text identical on the device, four times) | compiled default since R35. **Falsified** under the pre-registered pooled rule in R38: `MUL_MAT_ID` +1.84 ± 4.22 on fault-heavy days; the verdict stands. A new pre-registered experiment **passed** in R47: −3.530 ± 0.117, measured on throttled clocks (1,670 and 1,555 MHz); ≈ −2.67 at 2,112 MHz by clock scaling (*estimated*) | R35, R38, R47 |
+| fused expert op: gate, up and SwiGLU in one op, two chunks per claim | identical | `MUL_MAT_ID` + `GLU` −0.802 ± 0.100; compiled default from the r16 build | R47, R48 |
+
+## What did not work
+
+Each was measured and closed; numbers are in the log.
+
+- Draft-model speculation and batched verification: 0.48-0.76x the plain rate on the device; the SD888
+  CPU is compute-bound at any batch above one (R20). n-gram, EAGLE-3 and MTP drafting lost on the host.
+- Early exit: the cheapest layer to drop already costs +2.5 % perplexity (*host*, R21).
+- 4 compute threads, and the expert-guess helper on an A55 (R18).
+- Expert skip above threshold 118: 119 fails the +2 % budget (9.8087, *host*, R25).
+- Anonymous-memory hot-expert cache and Q3_K software prefetch (R23).
+- Finer dense mat-mul chunks (R33).
+- Static Q4_0 copy of the 4 most-routed layers' experts: over budget, no device effect (R32, R33).
+- Q2_K / Q3_K screens for the two-stage head: compute-bound, slower than the stock head (R29).
+- Touching expert pages ahead of the kernel (`MMID_TOUCH`): parked (R41).
+- Dense structural numerics under a separate +5 % budget: router cast to F16 changed the device's greedy
+  text (R47), low-rank head screen and shared-expert pruning failed perplexity (R43).
+- OpenCL on the Adreno 660: 0.7-2.9 tok/s, always below the CPU (*device*, see "Didn't" in
+  [reports/03_final.md](reports/03_final.md)).
+
+## How to reproduce, and where things are
+
+**Host checks, no phone needed.** `tools/reproduce.sh` builds llama.cpp at the pinned base with the
+patches, downloads the model (sha256-checked) and wikitext-2, and checks two claims: bit-identity of the
+runtime knobs (per-chunk PPL to the last digit) and the perplexity gate for stock vs
+`GGML_EXPERT_SKIP=118`. `--quick` screens it. Verified 2026-11-05 from a clean clone on an Apple M4:
+stock 9.6051, skip 118 9.7952 (`reports/results.csv`, R27 reproduce row). It checks skip 118, not the
+served 117 + two-stage head pair.
+
+**Android CPU module.** Apply the patches to the commit in `patches/llama.cpp/BASE`, then build with the
+NDK:
+
+```sh
+git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
+git checkout $(cat ../vollie/patches/llama.cpp/BASE)
+for p in 0001-cpu-runtime 0002-granite-rollback 0003-sampler-bypass; do git apply ../vollie/patches/llama.cpp/$p.patch; done
+../vollie/android/build_cpu.sh . out/        # libggml-cpu-android_armv8.2_2.so
+```
+
+Knobs are environment variables ([docs/runtime-knobs.md](docs/runtime-knobs.md)); the app sets them
+on the phone, and `GGML_EXPERT_SKIP` stays off unless set. Example:
+
+```sh
+GGML_TINY_OP=262144 GGML_EXPERT_IO=5 llama-cli -m model.gguf -t 3 ...
+```
+
+| path | what |
+|---|---|
+| [RULES.md](RULES.md) | the conditions every change must meet |
+| [reports/03_final.md](reports/03_final.md) | the R-log, R1 to R49, with pre-registrations and verdicts |
+| [reports/results.csv](reports/results.csv) | one row per result, wins and losses |
+| [reports/device/](reports/device/) | raw device JSON of every research-kit round (r1 to r16) |
+| [reports/04_campaign.md](reports/04_campaign.md), [reports/05_compute_less.md](reports/05_compute_less.md), [reports/memos/](reports/memos/) | campaign plan, compute-less memo, research memos |
+| [patches/llama.cpp/](patches/llama.cpp/) | CPU-module patch, Granite rollback patch, sampler patch, pinned `BASE` |
+| [patches/llamadart/](patches/llamadart/) | Dart-binding patch: change threads without reload, extra-buffer switch |
+| [tools/](tools/) | `reproduce.sh`, `ppl.sh` (quality gate), `research_parse.py` (device JSON parser; `--official` for round 16), `research_kit.md` (the kit card), host benchmarks, `checks/` |
+| [android/](android/), [runtime/dart/](runtime/dart/) | build the module for Android; app-side helpers |
+| [docs/](docs/), [models/](models/) | findings, runtime knobs, tuning; how the served GGUF was made |
+
+## Honest limits
+
+- **Cold start.** The first run after memory pressure printed 12.3-18.5, not 20 (R49). The loss is page
+  residency at the start of a run. Fixing it in the runtime is open.
+- **One device, one model.** Everything here is one Snapdragon 888 phone and one Granite file. The goal
+  includes that the method generalizes to other models and devices; that is the next step and is not
+  shown yet.
+- **The metric.** The printed number is llamadart's `decodeTokensPerSec`. Its time includes one final
+  decode whose logits are never used, ≈ 3 % of the official number (*estimated*, R48). It was left in, so
+  the benchmark's definition did not change.
+- **Not scored.** Round 16's second line, which was to split the gap between ramp and faults, was
+  unscorable (R49): its reference story ran throttled.
+- **The app in the store lags.** The 20.51 is the research build 2.2.21+44. The production app has not
+  been updated with it; that is the owner's call.
+
+---
+
+The table below is the round-5 comparison (2026-11-04), kept unchanged from earlier versions of this page.
 
 ## Vanilla llama.cpp vs Vollie, same phone
 
@@ -71,58 +200,6 @@ weights with repack off, big-core pinning + 3 threads, the Granite rollback patc
 decoding. The repack row is the first Q4_0 file (the served file's Q3_K experts have no repack path, so stock
 llama.cpp may well load it). *Device* = measured on the phone by its owner through the app; *host* = Apple M4 Pro,
 CPU only, relative or machine-independent only.
-
-## What Vollie's runtime does differently
-
-Sync-skipping around small ops: tiny ops run on one thread without a sync of all threads (R3, R7;
-barrier latency measured at 0.3 µs in R18 — the waits are imbalance, not sync cost). Page-cache-aware
-expert prefetch of the routed experts that are not skipped (skip-aware since R26), plus next-layer expert guessing a layer early (R12-R13;
-85 % right on the device). Faster NEON Q3_K dot, dynamic 32-row expert chunks and a 4-row Q3_K kernel
-(R15, R17-R20). SSM state and conv state updated in place instead of copied (R24-R27, bit-identical). Router-weight
-expert skip: experts with a small normalised router weight are not computed, under the +2 % PPL budget
-(R21-R27; threshold 118 since round 5, 115 before). What was tried and closed (4 compute threads, helper on an A55, n-gram and
-draft-model speculation, early exit, hot-expert cache) is in the log with numbers. Findings in the
-order they were made: [docs/findings.md](docs/findings.md).
-
-## How it is measured
-
-On the real phone, by its owner, through the app's own speed test and a research kit that returns one
-JSON per round. Every number is labelled *device*, *host* or *estimated*. Predictions are written down
-before each round (`reports/03_final.md`, "pre-registered") and scored against the result, misses
-included. Small differences are scored by in-generation A/B (the setting alternates inside one
-generation); the parser is `tools/research_parse.py`. Work goes round by round; every result is one
-row in `reports/results.csv` and one entry in the R-log, appended, never rewritten.
-
-## Where to look
-
-| path | what |
-|---|---|
-| [RULES.md](RULES.md) | the conditions every change must meet |
-| [reports/03_final.md](reports/03_final.md) | the living log, R1, R2, ... with verdicts |
-| [reports/04_campaign.md](reports/04_campaign.md) | the 20 tok/s campaign plan and round results |
-| [reports/05_compute_less.md](reports/05_compute_less.md) | the compute-less-per-token memo and predictions |
-| [reports/results.csv](reports/results.csv), [reports/device/](reports/device/) | one row per measurement; raw device JSON |
-| [patches/llama.cpp/](patches/llama.cpp/) | CPU-module patches against a pinned llama.cpp commit (`BASE`) |
-| [patches/llamadart/](patches/llamadart/) | Dart-binding patch: change threads without reload, extra-buffer switch |
-| [tools/](tools/) | perplexity gate, host benchmarks, on-device research kit and parser |
-| [android/](android/), [runtime/dart/](runtime/dart/) | build the module for Android; app-side helpers |
-| [docs/](docs/), [models/](models/) | findings, runtime knobs, tuning; how the served GGUF was made (weights on Hugging Face) |
-
-## Quick start
-
-```sh
-git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
-git checkout $(cat ../vollie/patches/llama.cpp/BASE)
-for p in 0001-cpu-runtime 0002-granite-rollback 0003-sampler-bypass; do git apply ../vollie/patches/llama.cpp/$p.patch; done
-../vollie/android/build_cpu.sh . out/        # libggml-cpu-android_armv8.2_2.so
-```
-
-Knobs are environment variables ([docs/runtime-knobs.md](docs/runtime-knobs.md)); the app sets them
-on the phone, and `GGML_EXPERT_SKIP` stays off unless set. Example:
-
-```sh
-GGML_TINY_OP=262144 GGML_EXPERT_IO=5 llama-cli -m model.gguf -t 3 ...
-```
 
 ## License
 
