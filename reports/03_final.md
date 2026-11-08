@@ -1014,3 +1014,46 @@ Everything else in R48 is unchanged.
 - **Kit:** ≈ 9-35 min (estimated), JSON ≈ 170-180 KB (estimated).
 - **Scoring:** `tools/research_parse.py <json> --official` → **R49**.
 - **Handed to the owner 2026-11-08 night.**
+
+### R49 — round 16 scored: the official 32 prints ≥ 20 tok/s on the device by the pre-registered criterion (Clyde, 2026-11-08 night; device JSON `reports/device/r16_2026-11-08.json`, kit r16, app 2.2.21+44, 19:45-20:07, 21 runs, not stopped early; parser output `lab/logs/r48/r49_parse.txt`)
+
+Scored with `tools/research_parse.py <json> --official` under R48 and amendments 1-2, nothing re-read or re-gated after the fact. All numbers *device* unless labelled.
+
+**Validity.**
+- **Text.** Greedy text is identical across all 19 official runs, plain and profiled. The session is valid.
+- **Profiling overhead.** Group means −9.7 / +5.3 / +9.4 / +4.9 %, mean +2.5 % ≤ 5 % → ok. Groups 2 and 3 each exceed 5 % by themselves; that is logged, not voiding.
+
+**Line 1 — the goal metric: 20 REACHED (median ≥ 20.0).** The 10 plain official-32 runs under the shipping build (fuse+chunk2+kern default, skip 117, head2, sampler bypass), printed decode tok/s:
+
+| run | group | tok/s | majflt in run | ttft (ms) | idle before (ms) |
+|---|---|---|---|---|---|
+| 1 | 1 | 14.09 | 65,038 | 7,786 | 90,147 |
+| 2 | 1 | 18.47 | 39,454 | 5,277 | 90,142 |
+| 3 | 2 | 20.63 | 35,450 | 4,007 | 110,136 |
+| 4 | 2 | 20.62 | 8 | 3,586 | 86 |
+| 5 | 3 | 20.23 | 73,524 | 4,049 | 60,115 |
+| 6 | 3 | 20.83 | 16 | 3,603 | 40,081 |
+| 7 | 4 | 20.95 | 7 | 3,609 | 20,044 |
+| 8 | 4 | 20.40 | 33 | 3,544 | 17 |
+| 9 | – | 20.84 | 4 | 3,595 | 40,087 |
+| 10 | – | 20.25 | 6 | 3,563 | 16 |
+
+- **Median 20.51 tok/s**, best 20.95. Every plain run ended at fast-core clocks 2112/2035.
+- **The prediction missed high.** It was median 18.0-20.0, central 19.0, so the result sits above the band. The pre-registered criterion "20 reached iff median ≥ 20.0" is met.
+- **What it is, stated plainly.** 8 of 10 runs printed 20.2-20.95. The two that missed (14.1, 18.5) were the first two after the reference stories, when 39-65 k pages faulted back in. The kit's first run, the cold baseline at 3 threads, printed 12.3. **≥ 20 holds once the model's pages are resident, at the clocks this phone holds after the kit's cool-down gate. A cold start under memory pressure still prints 12-18.**
+- **Benchmark definition.** The time base is unchanged (llamadart's own `decodeTokensPerSec`); the wasted 32nd decode (R48 am. 1) is still inside it.
+
+**Line 2 — the decomposition: UNSCORABLE (validity clause 5c).** The reference story ran throttled at 1,555 MHz with only 39 fault-free tokens (< 100). The S(f) scaling 55.70 × 1555/2112 = 41.0 ms also understates the real fault-free official token at 2,112 (≈ 45-46 ms), which inflates every E. Classifier output, reported only: 4 ramp / 4 fault → "mixed".
+
+**Facts read from the per-token lines** (not scores):
+- **Fault-free runs barely ramp.** In profiled runs 4, 6 and 7 (decode majflt 3 / 4 / 42), tokens 2-3 run at 47-57 ms and tokens 4-32 at 44-48 ms. The steady official token at 2112/2035 is **≈ 45.5 ms in-graph + ≈ 1.05 ms outside** = 46.5 ms → ≈ 21.5 tok/s per token.
+- **The DDR-ramp hypothesis is weak.** The dense `MUL_MAT` ramp seen in r15 is ≤ 2-3 tokens on a resident model.
+- **Faulting runs carry the loss.** In profiled runs 1, 3, 5 and 8, the decode tokens fault (361-1,131 majflt over the decode). Tokens 1-8 run 55-104 ms and settle by token ≈ 10-18.
+- **What makes a run slow is residency at its start.** That is the 39-73 k majflt of the prefill, plus a few hundred more in the first decode tokens, after the stories or idle evicted the model's pages. Clock is not it: every plain run held 2,112.
+- **E against idle time** (reported): slope +1.41 ± 1.08 ms per s, not resolved. After-pause groups mean E 208 vs 312: the opposite sign to a pause effect.
+
+**Decision, per R48 item 7 (fixed before the run): median ≥ 20 → the campaign's goal is shown on the owner's benchmark, and the weekend turns to generalization (goal item 4).** Two follow-ups are logged as candidates, not decided:
+- **Cold-start residency.** Runs 1-2 and the baseline show that the first run after memory pressure misses 20. That is a robustness question for the same method, inside the closed-list limits.
+- **The wasted 32nd decode** (≈ 3 %, estimated), to be pre-registered on its own.
+
+The served research build is r16 (`2.2.21+44`). The production app has not been updated; that is the owner's call.
