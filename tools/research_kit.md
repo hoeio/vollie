@@ -1,58 +1,49 @@
-# Research kit (round 15) — what it runs, the result file, how to run it
+# Research kit (round 16) — what it runs, the result file, how to run it
 
-The kit is the **"Run research kit (~15 min)"** button in Vollie's Settings (app 2.2.20+43, kit `r15`; round 14 was
-2.2.19+42 / `r14`). APK: `lab/dist/vollie-2.2.20+43-research-r15.apk`, 17,142,970 B, sha256
-`3a9a76afed833577262dfdcd17e40776695db1ca03f221cfcefc485ff2b3d4cf` (the kernel line is in: `Research.kernLine` = true). Round 15 is the **R46 pre-registration: a measurement round, about 8-10 minutes** (`reports/03_final.md`
-R46; build `lab/logs/r46/`). It puts one JSON report on the clipboard ("Copy research results"); read it with
-`python3 -I tools/research_parse.py <json> --pairs --gate 10 --sigma 0.4`.
+The kit is the **"Run research kit (~15 min)"** button in Vollie's Settings (app 2.2.21+44, kit `r16`; round 15 was
+2.2.20+43 / `r15`). APK: `lab/dist/vollie-2.2.21+44-research-r16.apk`, 17,145,414 B, sha256
+`17dae212f5f690b75e45be0b45ba9612e8e5f4265ebc5a6d3e7c3a55e4664d90`. Round 16 is the **R48 pre-registration: the official 32 under the shipping build, decomposed**
+(`reports/03_final.md` R48; build `lab/logs/r48/`), about 9-35 min (*estimated*). It puts one JSON report on the clipboard
+("Copy research results"); read it with `python3 -I tools/research_parse.py <json> --official`.
 
-What changed in the round-15 build (compiled defaults unchanged: skip 117, head2 q4_0/2048, sampler bypass, Q3K_KERN=1;
-MMID_TOUCH, MMID_FUSE, MMID_CHUNK2, the router cast off):
+What changed in the round-16 build: **nothing in the CPU module** (the R47 follow-up build: compiled defaults kern on, fuse +
+chunk2 on, MMID=3, Q3K_X4, tiny-op 262,144; served skip 117 + head2 q4_0/2048 + sampler bypass; `lab/tiny-op.patch` 285,967 B).
+The kit has no bench and no A/B of any knob. New in the kit only:
 
-- **`GGML_CPU_AB_TOKEN=1`** (off unless set): with `GGML_CPU_AB=knob:<NAME>:<A>:<B>` the knob flips per decode graph (= per
-  token) in the order A B B A A B B A … (block 1, no warm-up), so pair k = tokens (2k−1, 2k) holds one A and one B. One short
-  `cpu-prof` line per token (below). `knob:<NAME>:0:0` is the A/A null: the same code path, both labels side A's value.
-- **`GGML_CPU_AB=knob:ROUTER_CAST:0:1`** (C1-F16, R43, a **declared numerics experiment** on side B): the 40 MoE routers
-  (`ffn_gate_inp`, F32 in the file) get one F16 copy in anonymous memory (7.9 MB, made at the run's prompt graph, kept until
-  exit); side B's router `MUL_MAT`s read it. `GGML_ROUTER_CAST=f16` casts every graph (the kit's official-prompt check).
-  Every `cpu-prof` line now ends its header with `router=<µs/token of the router MUL_MATs> rcast=f32|f16`.
-- The `cpu-bench` guard re-arms per kit run (the kit passes its own `GGML_CPU_BENCH` value; R45).
-- Consecutive A/B story runs wait only while the thermal headroom is ≥ 0.85 (other runs still cool to < 0.65, ≤ 90 s).
-- `GGML_HEAD2_LOWRANK` (C2) and `GGML_SHEXP_PRUNE` (C4) are compiled in, off, and never set by the kit.
+- **Profiled official 32**: the exact official prompt (`assistant.dart` `_benchPrompt`), 32 tokens, greedy, with
+  `GGML_CPU_PROF=1 GGML_CPU_AB_TOKEN=1 GGML_CPU_AB=knob:MMID_FUSE+CHUNK2:1:1` — the A/A label (the compiled default under both
+  labels), so every decode token prints one per-token `cpu-prof` line and the arithmetic is the shipping build's.
+- **The kit's own idle pause**: 20 s of sleep inside the kit before groups 2 and 4 (no phone-state change).
+- Run fields `group`, `pause_s`, `cool_ms` (time spent in the cool-down gate), `idle_ms` (from the previous run's reply end to
+  this run's start); official runs keep their **whole** reply text (`text`), so greedy identity is checked over all 32 tokens.
+- `Research.coolOfficial` (true in this build): true = every official 32 of the groups and the last two waits for the
+  r15 cool-down gate (headroom < 0.65, ≤ 90 s) first; false = they start straight away (heat only read).
 
-## What one run does (about 8-10 minutes, no settings to change)
+## What one run does (about 9-35 min, no settings to change)
 
-| phase | runs | what | knob |
+| phase | runs | what | env |
 |---|---|---|---|
-| `baseline` | 1 | official benchmark prompt, 32 tokens, saved settings + the default (its text = the F32 reference) | — |
-| `bench` | 1 | the kernel timing (r13b format, a core check): a one-token reply ("Hi") | `GGML_CPU_BENCH=<kit's value>` |
-| `warmup` | 1 | story 200 at the default, **dropped, unscored** (its text = the F32 story reference) | — |
-| `ab` | 1 | story 200 per token, **A/A null** | `GGML_CPU_AB=knob:MMID_FUSE+CHUNK2:0:0`, `GGML_CPU_AB_TOKEN=1` |
-| `ab` | 3 | story 200 per token, the fuse | `knob:MMID_FUSE+CHUNK2:0:1`, `GGML_CPU_AB_TOKEN=1` |
-| `ab` | 2 | story 200 per token, the kernel (`Research.kernLine` = true: the owner said yes, R46) | `knob:Q3K_KERN:0:1`, `GGML_CPU_AB_TOKEN=1` |
-| `ab` | 2 | story 200, block ABBA / BAAB (warm 16, block 8), the fuse (r14 continuity) | `knob:MMID_FUSE+CHUNK2:0:1` (+ `GGML_CPU_AB_BAAB=1`) |
-| `on` | 2 | official benchmark prompt, 32 tokens, the default (reported with clock and faults, not scored) | — |
-| `ab` | 2 | **last (R46 am. 1 (4))**: story 200, block ABBA / BAAB, C1-F16; `text_same` / `text_diverge_at` reported only | `knob:ROUTER_CAST:0:1` (+ BAAB) |
-| `check` | 1 | official 32 with the cast on every token; `text_same` must be true (the C1 voiding check) | `GGML_ROUTER_CAST=f16` |
+| `baseline` | 1 | official 32, saved settings + the default, cold, as always | — |
+| `warmup` | 1 | story 200, profiled, **dropped** | profiled |
+| `ref` | 1 | story 200, profiled: the steady reference S(f) per logged clock | profiled |
+| `on` / `prof` | 16 | four groups, each plain → profiled → profiled → plain official 32; groups 2 and 4 start with a 20 s idle pause (`pause_s` 20 on the group's first run); groups 1 and 3 back-to-back | plain: — ; profiled: as above |
+| `on` | 2 | official 32 plain, last | — |
 
-The C1 runs come last because the 7.9 MB router copy stays allocated until the process exits; no printed run follows it.
-Report-level `router_text_same` = the `check` run's `text_same` (false voids the C1 runs, R46 item 2 + amendment 1 (1)); a
-200-token story diverging from the F32 text is a reported fact, not a void.
-Parser rules from R46 amendment 1: the A/A null is valid iff every scored line has |z| ≤ 3, Σz² over the seven lines ≤ 14.07
-(χ²₇ at 0.95) and the minflt ratio is 1.00 ± 0.05; the interleaved A-token vs block-ABBA A mean is reported, not voiding.
-Size: one per-token line ≈ 210-220 characters → ≈ 44 KB per interleaved run; the whole JSON ≈ 240-260 KB without the kernel
-line, ≈ 330-350 KB with it (host replay 319 KB with it).
+10 plain and 8 profiled official runs. Plain official runs are the r15 "official 32 · default" path.
+Size (*estimated*): one per-token line ≈ 220 characters; 2 × 200 + 8 × 32 = 656 lines → the JSON ≈ 170-180 KB (host replay
+153 KB).
 
-Memory: as r9 (the default holds the 86.7 MB head copy); the bench mallocs ≈ 7 MB of synthetic slices per shape plus one
-48-MB arena, all freed before the reply. Load-time copy: head ≈ 0.23-0.34 s (r8 device).
-
-The parser's A/B Δ is always B − A, per side mean ± sd over the post-warm-up blocks, ± 1σ, and the per ABBA group
-(B̄ − Ā) mean and sd; runs of one name are pooled, so eio 1 and eio 0 stay apart; the `MUL_MAT` line includes the head. Every story run also logs `mhz_blocks`: the cpu4
-and cpu7 clock every 8 received text chunks (r12: 3 entries per 200-token story, so several blocks share one entry).
-`--gate T` (r13, R39 §B, class-K knobs): a block counts iff its `majflt` per token ≤ T and its `mhz_blocks` entry (mapped
-by token position) is the run's modal clock; per run and pooled over runs of one name: counted blocks per side, side
-majflt means, Δ ± σ of `MUL_MAT_ID` (compute + wait), `MUL_MAT`, head, `SSM_SCAN`; flags ≥ 8 per side, side means within
-3, σ ≤ 1.0 → `scorable`, else `unresolved`; an untouched line beyond ± 0.3 is printed as a bias flag.
+Parser `--official` (R48 items 3-6): line 1 = median and best printed tok/s of the 10 plain runs (cold baseline excluded) with
+the clock after the run and its majflt; "20 reached" iff the median ≥ 20.0. Line 2 = per profiled run E = Σ over decode tokens
+tok=2..32 of (token ms − S(f_token)), S(f) = the reference story's fault-free median at the token's logged clock (else the
+nearest logged clock, cpu4 MHz, scaled as S(f0)·f0/f, flagged); E_fault (majflt > 0) / E_clean (majflt 0), E_clean share, excess
+by op (`MUL_MAT` dense incl. head / `MUL_MAT_ID` / rest); R48 am. 1: a run with E ≤ 0 is neither; ≥ 5 of 8 with E ≤ 0 = NO GAP;
+else ramp-dominated iff E_clean ≥ 0.5 E in ≥ 6 of 8, fault-dominated iff E_fault > 0.5 E in ≥ 6 of 8, else mixed. Reported, not
+scored: E against `idle_ms` per run with the least-squares slope ± σ, and mean E of groups 2, 4 vs 1, 3. Validity: profiling
+overhead per group and averaged (flag > 5 %), greedy text identical across every official run (else VOID), ≥ 100 fault-free
+reference tokens at one modal clock (else line 2 unscorable). Reported: prefill majflt (run − Σ decode tokens), ttft,
+outside-graph ms/token ((duration − ttft − Σ token lines) / (tokens − 1)), the tok=1 line's ms, per-token ms / majflt / minflt /
+clock traces. Check: `python3 -I lab/checks/official_check.py`.
 
 **Vanilla rows (r11 and earlier; not in r13), what is off:** `GGML_TINY_OP=0`, `GGML_MMID=0`, `GGML_Q3K_X4=0`, `GGML_Q3K_VEC=0`, `GGML_Q3K_ILP=0`,
 `GGML_SSM_INPLACE=0`, `GGML_CONV_RING=0`, `GGML_EXPERT_SKIP=0`, `GGML_EXPERT_IO=0` (expert prefetch and next-layer
@@ -65,7 +56,8 @@ the speed test's pick; the Granite rollback patch (`llama-arch.cpp`) is inert wi
 chat template and greedy sampling are the app's. The patched module's code is present but each path above is the
 upstream one when its knob is off.
 
-Every run waits for thermal headroom < 0.65 (≤ 90 s) like the speed test, and records the headroom
+Every run waits for thermal headroom < 0.65 (≤ 90 s) like the speed test (r16: except the official 32 of the groups and the
+last two when `Research.coolOfficial` is false), and records the headroom
 it started at, core clocks before/after, `/proc/meminfo` + the process's RssAnon/RssFile, major/minor
 page faults, bytes read from storage (`/proc/self/io`, absent where Android denies it), token counts, time to
 first token, duration, the module's `cpu-prof` lines, and the first 80 characters of the reply (same text
@@ -98,7 +90,9 @@ run:
                        cold= cold_touch= cold_thp= exact_cold*= anon_huge_kb= and pinned= before mhz=; r13b: hot= cold=
                        cold_touch= exact_hot/cold/cold_touch=, instrument= (K 512), cpu=a-b migr= cpu_ok=n/21 pinned=
                        mhz=min/max; no cold_thp / anon_huge_kb)
-  text                 first 80 chars of the reply
+  text                 first 80 chars of the reply (r16: official runs keep the whole reply)
+  group, pause_s       (r16) official-run group 1-4 (absent outside the groups) and the kit's idle pause before the run, s
+  cool_ms, idle_ms     (r16) time in the cool-down gate; time from the previous run's reply end to this run's start
   mem_before_load      (release/after load) memInfo() before the reload
   error                exception text if the run failed
   mhz_blocks           [[cpu4, cpu7] MHz] every 8 received tokens (story runs, r5)
@@ -129,25 +123,26 @@ The run's own `majflt`, `minflt` divided by `tokens` = faults per token over the
 
 ## 실행 안내 (한국어)
 
-**이번 회차(r15)는 약 8-10분 걸립니다.** 이번에는 새 기능을 켜는 회차가 아니라 **측정 방법을 바꾸는 회차**입니다. 지난 두 번은
-8토큰 묶음 단위로 켠 쪽(B)과 끈 쪽(A)을 번갈아 쟀는데, 이번에는 **토큰 하나마다** 번갈아 재서 같은 시간에 훨씬 많은 비교를
-얻습니다. 같은 쪽을 두 이름으로 재는 "비교 대조" 한 번, 지난 회차의 묶음 비교 두 번, 그리고 라우터 가중치를 F16으로 읽는
-변경(답이 한 글자라도 바뀌면 그 결과는 무효 처리됩니다) 비교가 들어 있습니다. 기본 설정과 저장된 설정은 그대로입니다.
+**이번 회차(r16)는 약 9-35분 걸립니다(추정).** 이번 주말 전 마지막 회차입니다. 새 기능을 켜거나 끄는 비교는 없습니다.
+지금 앱에 들어 있는 그대로의 설정으로 **공식 벤치마크(32토큰)를 여러 번** 돌리고, 그중 일부는 토큰마다 시간을 기록해서
+"공식 32가 왜 20 tok/s에 못 미치는지"를 나눠 봅니다. 중간에 키트가 스스로 20초씩 두 번 쉬는 구간이 있는데, 정상입니다
+(멈춘 것이 아닙니다). 기본 설정과 저장된 설정은 그대로입니다.
 - 메모리가 부족한 날이어도 상관없습니다. 언제 돌려도 됩니다.
 
-**가장 중요한 한 가지: 실행하는 동안(약 8-10분) 전화기를 만지지 마세요.** 다른 앱을 열거나 화면을 끄지 말고 그대로 두세요.
+**가장 중요한 한 가지: 실행하는 동안 전화기를 만지지 마세요.** 다른 앱을 열거나 화면을 끄지 말고 그대로 두세요.
 
-**준비:** Vollie 2.2.20+43 설치(APK, `vollie-2.2.20+43-research-r15.apk`, 17,142,970 바이트, sha256 `3a9a76af…b3d4cf`), 모델이 이미 받아져 있고 평소처럼 쓰는 상태면 됩니다.
+**준비:** Vollie 2.2.21+44 설치(APK, `vollie-2.2.21+44-research-r16.apk`, 17,145,414 바이트, sha256 `17dae212…664d90`), 모델이 이미 받아져 있고 평소처럼 쓰는 상태면 됩니다.
 전화기 설정은 아무것도 바꾸지 마세요(다른 앱도 그대로). 추가 다운로드는 없습니다.
 
-1. Vollie → 설정(Settings) → **"Run research kit (~15 min)"** 탭(버튼 이름은 그대로지만 이번에는 약 8-10분 걸립니다).
-2. 끝날 때까지 화면을 켠 채로 둡니다(앱이 켜둡니다). 진행 상황은 버튼 아래에 `Research · 분:초 · 단계`로 보입니다.
+1. Vollie → 설정(Settings) → **"Run research kit (~15 min)"** 탭(버튼 이름은 그대로지만 이번에는 약 9-35분 걸립니다).
+2. 끝날 때까지 화면을 켠 채로 둡니다(앱이 켜둡니다). 진행 상황은 버튼 아래에 `Research · 분:초 · 단계`로 보입니다
+   (`idle 20s`가 보이면 키트가 일부러 쉬는 중입니다).
 3. 끝나면 **"Copy research results"** 탭 → 클립보드에 JSON이 복사됩니다. 그대로 제게 붙여 보내 주세요
-   (이번에는 길이가 약 240-350 KB로 평소보다 깁니다). 같은 내용이 앱 파일 폴더에 `research-r15-<시각>.json`으로도 저장됩니다
+   (길이 약 170-180 KB). 같은 내용이 앱 파일 폴더에 `research-r16-<시각>.json`으로도 저장됩니다
    — 붙여 넣기가 잘리거나 복사가 안 되면 그 파일을 보내 주세요.
 4. 중간에 멈추려면 **"Stop research run"**. 그때까지의 결과도 복사할 수 있습니다.
 
-**보내 주실 것:** 붙여 넣은 JSON 한 개. 가능하면 실행 직전의 전화기 상태 한 줄(예: 충전 중 여부, 방금
+**보내 주실 것:** 붙여 넣은 JSON 한 개(또는 저장된 파일). 가능하면 실행 직전의 전화기 상태 한 줄(예: 충전 중 여부, 방금
 다른 무거운 앱을 썼는지)도 함께 적어 주세요.
 
 **주의:** 결과 파일에는 성능 숫자와 기기 정보(칩, 메모리, 클럭)만 담기고 대화 내용은 들어가지 않습니다.

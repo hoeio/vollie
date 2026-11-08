@@ -8,7 +8,11 @@ MUL_MAT_ID+GLU (compute + wait of both) when the run carries fuse= (r14+), else 
 --pairs (r15, R46): the per-token interleaved runs (GGML_CPU_AB_TOKEN, lines 'cpu-prof ab=A|B tok=n'): pairs (2k−1, 2k), a pair
 counts iff both tokens have majflt 0 and the run's modal clock; Δ = mean(B − A), σ = sd/√N per line; the sequential verdict per
 knob (THRESH); validity (A/A null, A-token vs block-ABBA A mean, hygiene); confirmation and reported-not-scored lines. With
---gate, a ROUTER_CAST block ABBA also gets the sequential verdict on MUL_MAT over counted blocks."""
+--gate, a ROUTER_CAST block ABBA also gets the sequential verdict on MUL_MAT over counted blocks.
+--official (r16, R48 items 3-6): the official 32 decomposed: line 1 = plain-run median / best printed tok/s (claim iff median ≥ 20.0);
+line 2 = excess E over decode tokens tok=2..32 of the profiled official runs against the reference story's fault-free median
+S(f) per logged clock, its fault / clean split, the 6-of-8 classifier (R48 am. 1 (4): E ≤ 0 = neither; ≥ 5 of 8 with E ≤ 0 =
+NO GAP); validity; reported lines incl. E against idle_ms (am. 1 (2)) and the after-pause / back-to-back means."""
 import json, re, sys, statistics
 
 def op_sum(o, *ops):
@@ -360,6 +364,170 @@ def print_gate(abba, T):
                 print(f"            SCORED {line} (C1-F16): Δ {m:+.3f} ± {se:.3f}; pass ≤ {ps}, falsified > {fa} -> {seq_verdict(m, se, ps, fa)}"
                       f"  (side means majflt A {mf['A']:.1f} B {mf['B']:.1f}; text identity: see the reply-text section)")
 
+def clock_of(d):
+    """cpu4/cpu7 MHz of a per-token line's mhz= field, e.g. (2112, 2035)."""
+    try:
+        return tuple(int(v) for v in d.get('mhz', '').split('/'))
+    except ValueError:
+        return None
+
+def tok_ms(d, o, what):
+    """ms of one per-token line: the token total, or an op (compute + wait), or 'head' / 'router' fields."""
+    if what == 'token': return int(d['us/token']) / 1000
+    if what in ('head', 'router'): return int(d.get(what, 0)) / 1000
+    return op_sum(o, what) / 1000
+
+STEADY = ('token', 'MUL_MAT', 'MUL_MAT_ID')
+
+def steady_ref(x):
+    """R48 item 4: S(f) = median over the reference story's fault-free tokens (majflt 0) at logged clock f, per quantity in STEADY.
+    Returns ({clock: {what: ms}}, {clock: n fault-free tokens})."""
+    by = {}
+    for _, _, d, o in token_lines(x):
+        c = clock_of(d)
+        if c is not None and float(d.get('majflt', 'inf')) == 0:
+            by.setdefault(c, []).append((d, o))
+    return {c: {w: statistics.median(tok_ms(d, o, w) for d, o in v) for w in STEADY} for c, v in by.items()}, {c: len(v) for c, v in by.items()}
+
+def steady_at(S, c):
+    """(S at clock c, flag). Exact logged clock if the story ran there; else the nearest logged clock by cpu4 MHz (ties: cpu7),
+    scaled linearly in f as cycles: S(c0) × f0 / f on cpu4 MHz, flagged. ponytail: cpu4 (the A78 cluster) stands for the clock."""
+    if c in S: return S[c], ''
+    if not S or not c or c[0] <= 0: return None, 'no reference'
+    c0 = min(S, key=lambda k: (abs(k[0] - c[0]), abs(k[1] - c[1]) if len(k) > 1 and len(c) > 1 else 0))
+    r = c0[0] / c[0] if c0[0] > 0 else 1.0
+    return {w: v * r for w, v in S[c0].items()}, f"scaled {'/'.join(map(str, c0))}->{'/'.join(map(str, c))}"
+
+def print_official(runs):
+    print('\n== official 32 decomposed (r16, R48; all numbers from the report; ms unless labelled)')
+    fmt_c = lambda x: ','.join((x.get('mhz_after') or '').replace('mhz=', '').split(',')[4:]) or '-'
+    plain = [x for x in runs if x['phase'] == 'on' and x.get('decode_tps') is not None and not x.get('error')]
+    profd = [x for x in runs if x['phase'] == 'prof' and not x.get('error')]
+    offs = [x for x in runs if x['phase'] in ('baseline', 'on', 'prof')]
+    # line 1
+    print(f"  LINE 1 (goal metric): printed decode tok/s over the {len(plain)} plain official runs (cold baseline excluded)")
+    for i, x in enumerate(plain):
+        print(f"    plain {i+1:2d} group {x.get('group') or '-'} pause {x.get('pause_s', '-')} s  {x['decode_tps']:5.2f} tok/s  cpu4-7 after {fmt_c(x)}  "
+              f"majflt {x.get('majflt')}  ttft {x.get('ttft_ms') or 0:.0f}  idle before {x.get('idle_ms', '-')} ms (cool {x.get('cool_ms', '-')})")
+    if plain:
+        tps = [x['decode_tps'] for x in plain]
+        med = statistics.median(tps)
+        best = max(plain, key=lambda x: x['decode_tps'])
+        mid = sorted(plain, key=lambda x: x['decode_tps'])
+        mids = mid[(len(mid) - 1) // 2: len(mid) // 2 + 1]
+        print(f"    median {med:.2f} tok/s (middle run{'s' if len(mids) > 1 else ''}: " +
+              '; '.join(f"{x['decode_tps']:.2f} at {fmt_c(x)}, majflt {x.get('majflt')}" for x in mids) + ')')
+        print(f"    best   {best['decode_tps']:.2f} tok/s at {fmt_c(best)}, majflt {best.get('majflt')}")
+        print(f"    prediction median 18.0-20.0 (central 19.0); best ≥ 20.0 coin flip -> best {'≥' if best['decode_tps'] >= 20 else '<'} 20.0")
+        print(f"    20 reached on the owner's benchmark (median ≥ 20.0): {'YES' if med >= 20.0 else 'no'}" + ('' if len(plain) == 10 else f'  (NOTE: {len(plain)} plain runs, 10 planned)'))
+    # validity: text
+    texts = {x.get('text') for x in offs if x.get('text') is not None}
+    text_ok = len(texts) == 1
+    print(f"  VALIDITY text: greedy text identical across all {len(offs)} official runs: {'yes' if text_ok else 'NO -> SESSION VOID'}"
+          + ('' if text_ok else f" ({len(texts)} distinct texts)"))
+    # validity: profiling overhead per group
+    ov = []
+    for g in sorted({x.get('group') for x in runs if x.get('group')}):
+        p_ = [x['decode_tps'] for x in plain if x.get('group') == g]
+        q_ = [x['decode_tps'] for x in profd if x.get('group') == g and x.get('decode_tps') is not None]
+        if p_ and q_:
+            o_ = 1 - statistics.mean(q_) / statistics.mean(p_)
+            ov.append(o_)
+            print(f"  VALIDITY profiling overhead group {g}: plain {statistics.mean(p_):.2f} profiled {statistics.mean(q_):.2f} tok/s -> {o_ * 100:+.1f} %"
+                  f"{'  (> 5 %)' if o_ > 0.05 else ''}")
+    if ov:
+        m_ = statistics.mean(ov)
+        print(f"    mean over {len(ov)} groups {m_ * 100:+.1f} % -> {'FLAGGED (> 5 %): line 2 stands relative to S but is flagged' if m_ > 0.05 else 'ok (≤ 5 %)'}")
+    # steady reference
+    ref = [x for x in runs if x['phase'] == 'ref']
+    S, nS = steady_ref(ref[0]) if ref else ({}, {})
+    modal = max(nS, key=nS.get) if nS else None
+    ok_ref = bool(modal) and nS[modal] >= 100
+    print(f"  VALIDITY steady reference: fault-free reference-story tokens per logged clock: " +
+          (', '.join(f"{'/'.join(map(str, c))} {n}" for c, n in sorted(nS.items(), key=lambda t: -t[1])) or 'none') +
+          f" -> modal {'/'.join(map(str, modal)) if modal else '-'} {nS.get(modal, 0)} {'≥' if ok_ref else '<'} 100: " +
+          ('ok' if ok_ref else 'LINE 2 UNSCORABLE'))
+    for c in sorted(S, key=lambda c: -nS[c]):
+        print(f"    S({'/'.join(map(str, c))}) token {S[c]['token']:.2f}  MUL_MAT {S[c]['MUL_MAT']:.2f}  MUL_MAT_ID {S[c]['MUL_MAT_ID']:.2f}  (n {nS[c]})")
+    # line 2
+    print(f"  LINE 2 (decomposition{'' if ok_ref else ', UNSCORABLE: reported only'}): E = Σ over decode tokens tok=2..32 of (token ms − S(f_token)); "
+          "E_fault = tokens with majflt > 0, E_clean = majflt 0; op excess = Σ (op ms − S_op(f)), rest = E − MUL_MAT − MUL_MAT_ID")
+    res = []
+    for i, x in enumerate(profd):
+        toks = sorted(token_lines(x), key=lambda t: t[1])
+        E = Ef = Ec = 0.0; op = {'MUL_MAT': 0.0, 'MUL_MAT_ID': 0.0}; opc = {'MUL_MAT': 0.0, 'MUL_MAT_ID': 0.0}; flags = set(); n = 0
+        for _, k, d, o in toks:
+            if not 2 <= k <= 32: continue
+            s_, fl = steady_at(S, clock_of(d))
+            if fl: flags.add(fl)
+            if s_ is None: continue
+            n += 1
+            e = tok_ms(d, o, 'token') - s_['token']
+            E += e
+            clean = float(d.get('majflt', 'inf')) == 0
+            if clean: Ec += e
+            else: Ef += e
+            for w in op:
+                v = tok_ms(d, o, w) - s_[w]
+                op[w] += v
+                if clean: opc[w] += v
+        ramp, fault = E > 0 and Ec >= 0.5 * E, E > 0 and Ef > 0.5 * E  # R48 am. 1 (4): E ≤ 0 is neither
+        res.append((x, E, Ef, Ec, ramp, fault))
+        share = Ec / E if E else float('nan')
+        print(f"    prof {i+1} group {x.get('group') or '-'} pause {x.get('pause_s', '-')} s: tokens {n}  E {E:+8.1f}  E_fault {Ef:+8.1f}  E_clean {Ec:+8.1f}  "
+              f"E_clean share {share:.2f}{'  (E ≤ 0)' if E <= 0 else ''}  -> {'ramp' if ramp else ''}{'+' if ramp and fault else ''}{'fault' if fault else ''}{'' if ramp or fault else 'neither'}{' (E ≤ 0)' if E <= 0 else ''}"
+              + (f"  FLAG {'; '.join(sorted(flags))}" if flags else ''))
+        print(f"           by op, all tokens: MUL_MAT {op['MUL_MAT']:+.1f}  MUL_MAT_ID {op['MUL_MAT_ID']:+.1f}  rest {E - op['MUL_MAT'] - op['MUL_MAT_ID']:+.1f};  "
+              f"clean tokens: MUL_MAT {opc['MUL_MAT']:+.1f} ({opc['MUL_MAT'] / Ec * 100 if Ec else float('nan'):.0f} % of E_clean)  "
+              f"MUL_MAT_ID {opc['MUL_MAT_ID']:+.1f}  rest {Ec - opc['MUL_MAT'] - opc['MUL_MAT_ID']:+.1f}")
+    if res:
+        nr, nf = sum(r[4] for r in res), sum(r[5] for r in res)
+        neg = sum(r[1] <= 0 for r in res)
+        cls = 'NO GAP' if neg >= 5 else 'RAMP-DOMINATED' if nr >= 6 else 'FAULT-DOMINATED' if nf >= 6 else 'MIXED'
+        both = ' (both rules met: listed first match)' if neg < 5 and nr >= 6 and nf >= 6 else ''
+        print(f"    classifier (R48 + am. 1 (4)): E ≤ 0 in {neg}/{len(res)} (≥ 5 -> NO GAP), E_clean ≥ 0.5 E > 0 in {nr}/{len(res)}, "
+              f"E_fault > 0.5 E > 0 in {nf}/{len(res)} (≥ 6 of 8) -> {cls}{both}"
+              + ('' if len(res) == 8 else f'  (NOTE: {len(res)} profiled runs, 8 planned)'))
+        # R48 am. 1 (2): the pause contrast is withdrawn as a contrast; E against idle_ms is a reported fact line
+        xy = [(r[0]['idle_ms'] / 1000, r[1]) for r in res if r[0].get('idle_ms') is not None]
+        print('    E vs idle before the run (reported, not scored; idle_ms = previous reply end -> this run start):')
+        for r in res:
+            print(f"      group {r[0].get('group') or '-'} pause {r[0].get('pause_s', '-')} s  idle {r[0].get('idle_ms', '-')} ms (cool {r[0].get('cool_ms', '-')})  E {r[1]:+.1f}")
+        if len(xy) > 2 and len({a for a, _ in xy}) > 1:
+            mx, my = statistics.mean(a for a, _ in xy), statistics.mean(b for _, b in xy)
+            sxx = sum((a - mx) ** 2 for a, _ in xy)
+            sl = sum((a - mx) * (b - my) for a, b in xy) / sxx
+            ssr = sum((b - my - sl * (a - mx)) ** 2 for a, b in xy)
+            print(f"      slope {sl:+.2f} ± {(ssr / (len(xy) - 2) / sxx) ** 0.5:.2f} ms of E per s idle (least squares, n {len(xy)}; reported, not scored)")
+        else:
+            print('      slope: fewer than 3 runs with distinct idle_ms')
+        aft = [r[1] for r in res if r[0].get('group') in (2, 4)]
+        b2b = [r[1] for r in res if r[0].get('group') in (1, 3)]
+        if aft and b2b:
+            print(f"    mean E groups 2, 4 (after the 20 s pause) {statistics.mean(aft):+.1f} (n {len(aft)}); groups 1, 3 {statistics.mean(b2b):+.1f} "
+                  f"(n {len(b2b)}) (reported, not scored)")
+    # reported, not scored
+    print('  REPORTED (not scored): per profiled run prefill majflt = run majflt − Σ decode-token majflt; outside-graph = (duration − ttft − '
+          'Σ us/token over all its token lines) / (tokens − 1); token-1 = the tok=1 line')
+    for i, x in enumerate(profd):
+        toks = sorted(token_lines(x), key=lambda t: t[1])
+        dm = sum(float(d.get('majflt', 0)) for _, _, d, _ in toks)
+        tin = sum(int(d['us/token']) for _, _, d, _ in toks) / 1000
+        dur, ttft, n = x.get('duration_ms'), x.get('ttft_ms'), x.get('tokens') or 0
+        og = (dur - ttft - tin) / (n - 1) if None not in (dur, ttft) and n > 1 else float('nan')
+        t1 = next((int(d['us/token']) / 1000 for _, k, d, _ in toks if k == 1), float('nan'))
+        mj = x.get('majflt')
+        print(f"    prof {i+1} group {x.get('group') or '-'}: prefill majflt {mj - dm if mj is not None else float('nan'):.0f} (run {mj}, decode {dm:.0f})  "
+              f"ttft {ttft or 0:.0f}  outside-graph {og:.2f} ms/token  token-1 {t1:.2f}  idle before {x.get('idle_ms', '-')} ms (cool {x.get('cool_ms', '-')})")
+        ms = ' '.join(f"{int(d['us/token']) / 1000:.1f}" for _, _, d, _ in toks)
+        print(f"      ms     {ms}")
+        print(f"      majflt {' '.join(d.get('majflt', '?') for _, _, d, _ in toks)}")
+        print(f"      minflt {' '.join(d.get('minflt', '?') for _, _, d, _ in toks)}")
+        print(f"      mhz    {' '.join(d.get('mhz', '?') for _, _, d, _ in toks)}")
+    for x in offs:
+        if x['phase'] != 'prof':
+            print(f"    {x['phase']:8s} group {x.get('group') or '-'}: ttft {x.get('ttft_ms') or 0:.0f}  majflt {x.get('majflt')}  decode_ms {x.get('decode_ms')}")
+
 def main():
     path = sys.argv[1]; want_csv = '--csv' in sys.argv
     gate = float(sys.argv[sys.argv.index('--gate') + 1]) if '--gate' in sys.argv else None
@@ -480,6 +648,8 @@ def main():
         best[k] = max(best.get(k, 0), x['decode_tps'])
     for (ph, nm), v in best.items():
         print(f"  {ph:9s} {nm:40s} best {v:5.1f} tok/s")
+    if '--official' in sys.argv:
+        print_official(runs)
     if want_csv:
         print('\n== results.csv rows')
         for ph, nm, thr, heat, tps, pp, mj, mn, io in rows:
