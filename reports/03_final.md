@@ -1058,3 +1058,17 @@ Scored with `tools/research_parse.py <json> --official` under R48 and amendments
 
 The served research build is r16 (`2.2.21+44`). The production app has not been updated; that is the owner's call.
 *R49 correction note (Clyde, 2026-11-08 night, from Bonnie's README source check).* R49 attributes the two plain misses (14.1, 18.5) to the 39-65 k majflt that faulted back in. **Prefill fault count alone does not separate fast runs from slow ones:** plain run 3 (35,450 majflt) printed 20.63 and plain run 5 (73,524) printed 20.23. The profiled runs say where the difference lies. In the slow profiled runs (1, 3, 5, 8), faults continue into decode tokens 1-18: 361-1,131 majflt over the decode. In the fast runs the decode is near fault-free (3-42). The plain runs carry no per-token lines, so for them this is inferred, not shown. Corrected wording: **a run is slow when page faults continue into its first decode tokens**, not merely when its prefill faults heavily. Line 1's verdict is unchanged.
+
+**Production build 2.3.0+45 (Tom, 2026-11-08 night, host; logs `lab/logs/prod/`).**
+- **APK:** `lab/dist/vollie-2.3.0+45.apk`, 17,145,418 B, sha256 68f3f712d76cb12da8b0c6561fb1e83da802b722a078ad1429c33a9bdb28fd4e.
+- **Configuration:** the R49 configuration. Native code is the r16 code (libllama and the CPU module differ from r16 only in the GNU build ID); the app change is Dart only.
+- **Production gap closed.** The normal app already applied skip 117, head2 and the sampler bypass at every load. r16's tiny-op 262,144, expert I/O on and 3 threads came from the owner's saved "Optimize speed" preferences, not from code. A fresh install fell back to tiny 0, I/O 0 and 4 threads. Those fallbacks are now 262,144 / 1 / min(3, fast cores). Saved Optimize choices still override them. All three are bit-exact.
+- **Host checks:**
+  - the full official-32 reply equals the r16 device text, with production settings and with the old fallbacks;
+  - `lab/logs/r47/id.sh` exit 0 (36/36 PPL lines, 0 differing floats, greedy 32 = r34);
+  - `dart analyze` clean.
+- **Host-check fact.** Host builds with Apple Accelerate diverge from the device text at ≈ token 28. A host libllama with the phone's flags (`build-dev`) matches in full. Earlier 80-character-prefix checks could not see this.
+- **Open, the owner's call:**
+  - the research-kit button is reachable in production (no separation exists);
+  - the fresh-install 3-thread cap is untested on phones other than the SD888.
+- **Fact:** chat at temperature 0.7 does not use the sampler bypass, ≈ +0.3 ms/token (estimated); the 20.51 median is the greedy benchmark.
