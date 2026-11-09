@@ -59,8 +59,7 @@ What to expect:
 the results here come from one phone and one model, and reports from other devices are the evidence we cannot
 produce ourselves.
 
-- **Where:** the support email shown on the app's
-  [Google Play page](https://play.google.com/store/apps/details?id=com.insaneutils.vollie).
+- **Where:** woobin3069@gmail.com.
 - **Attach** the report as a file. It is plain JSON of roughly 170-180 KB (*estimated*), too long to paste into
   a message.
 - **Write in the email:** the phone's model name and Android version, because the report does not contain
