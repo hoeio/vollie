@@ -1,0 +1,28 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 760 300' width='760' height='300' role='img' aria-labelledby='t d'>
+<title id='t'>Printed decode speed: stock 9.4, bit-identical 12.0, served 20.51 tok/s</title><desc id='d'>Bar chart of the official 32-token benchmark on the device: stock llama.cpp settings 9.4 tok/s, Vollie bit-identical runtime 12.0, Vollie served configuration median 20.51.</desc>
+<rect width='100%' height='100%' fill='#ffffff'/>
+<text x='24' y='32' font-size='17' fill='#1f2328' text-anchor='start' font-weight='bold' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>Printed decode speed, official 32-token benchmark</text>
+<text x='24' y='54' font-size='12' fill='#59636e' text-anchor='start' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>tok/s, measured on the phone (Galaxy Z Flip 3). Rows are different days, each against Vollie in its own session.</text>
+<line x1='250.0' y1='70' x2='250.0' y2='244' stroke='#d1d9e0'/>
+<text x='250.0' y='258' font-size='12' fill='#59636e' text-anchor='middle' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>0</text>
+<line x1='347.91666666666663' y1='70' x2='347.91666666666663' y2='244' stroke='#d1d9e0'/>
+<text x='347.91666666666663' y='258' font-size='12' fill='#59636e' text-anchor='middle' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>5</text>
+<line x1='445.8333333333333' y1='70' x2='445.8333333333333' y2='244' stroke='#d1d9e0'/>
+<text x='445.8333333333333' y='258' font-size='12' fill='#59636e' text-anchor='middle' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>10</text>
+<line x1='543.75' y1='70' x2='543.75' y2='244' stroke='#d1d9e0'/>
+<text x='543.75' y='258' font-size='12' fill='#59636e' text-anchor='middle' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>15</text>
+<line x1='641.6666666666666' y1='70' x2='641.6666666666666' y2='244' stroke='#d1d9e0'/>
+<text x='641.6666666666666' y='258' font-size='12' fill='#59636e' text-anchor='middle' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>20</text>
+<text x='238' y='96' font-size='13' fill='#1f2328' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>Stock llama.cpp settings</text>
+<rect x='250' y='78' width='184.1' height='26' fill='#8c959f' rx='2'/>
+<text x='442.08333333333337' y='96' font-size='14' fill='#1f2328' text-anchor='start' font-weight='bold' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>9.4</text>
+<text x='238' y='114' font-size='11' fill='#59636e' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>R25, 2026-11-04 (8.50 in R31)</text>
+<text x='238' y='156' font-size='13' fill='#1f2328' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>Vollie, bit-identical runtime only</text>
+<rect x='250' y='138' width='235.0' height='26' fill='#8c959f' rx='2'/>
+<text x='493.0' y='156' font-size='14' fill='#1f2328' text-anchor='start' font-weight='bold' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>12.0</text>
+<text x='238' y='174' font-size='11' fill='#59636e' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>R25, 2026-11-04</text>
+<text x='238' y='216' font-size='13' fill='#1f2328' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>Vollie, served config (round 16)</text>
+<rect x='250' y='198' width='401.7' height='26' fill='#2f6feb' rx='2'/>
+<text x='659.6541666666667' y='216' font-size='14' fill='#1f2328' text-anchor='start' font-weight='bold' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>20.51</text>
+<text x='238' y='234' font-size='11' fill='#59636e' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>median of 10 runs, R49, 2026-11-08</text>
+</svg>

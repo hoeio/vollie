@@ -1,0 +1,40 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 820 430' width='820' height='430' role='img' aria-labelledby='t d'>
+<title id='t'>Milliseconds per token saved by each lever</title><desc id='d'>Horizontal bar chart: bit-identical runtime stack 27.1 ms, expert skip 7.90, Q3_K kernel 2.67 estimated, two-stage head 1.70, fused expert op 0.80, sampler fast path 0.77.</desc>
+<rect width='100%' height='100%' fill='#ffffff'/>
+<text x='24' y='32' font-size='17' fill='#1f2328' text-anchor='start' font-weight='bold' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>What each lever saved, ms per token</text>
+<text x='24' y='54' font-size='12' fill='#59636e' text-anchor='start' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>Device in-run A/B results (lower is faster). Different clocks and days, so the bars do not add up to the total.</text>
+<text x='24' y='72' font-size='12' fill='#59636e' text-anchor='start' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>Hatched bar = estimated by arithmetic, not a direct measurement. Skip 117 and the head together spend +1.91 % perplexity.</text>
+<defs><pattern id='h' width='6' height='6' patternUnits='userSpaceOnUse' patternTransform='rotate(45)'><rect width='6' height='6' fill='#2f6feb'/><rect width='3' height='6' fill='#ffffff' opacity='0.55'/></pattern></defs>
+<line x1='330.0' y1='84' x2='330.0' y2='392' stroke='#d1d9e0'/>
+<text x='330.0' y='410' font-size='12' fill='#59636e' text-anchor='middle' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>0</text>
+<line x1='480.0' y1='84' x2='480.0' y2='392' stroke='#d1d9e0'/>
+<text x='480.0' y='410' font-size='12' fill='#59636e' text-anchor='middle' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>10</text>
+<line x1='630.0' y1='84' x2='630.0' y2='392' stroke='#d1d9e0'/>
+<text x='630.0' y='410' font-size='12' fill='#59636e' text-anchor='middle' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>20</text>
+<line x1='780.0' y1='84' x2='780.0' y2='392' stroke='#d1d9e0'/>
+<text x='780.0' y='410' font-size='12' fill='#59636e' text-anchor='middle' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>30</text>
+<text x='318' y='108' font-size='13' fill='#1f2328' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>Bit-identical runtime stack</text>
+<rect x='330' y='92' width='406.5' height='22' fill='#2f6feb' rx='2'/>
+<text x='744.5' y='108' font-size='13' fill='#1f2328' text-anchor='start' font-weight='bold' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>27.1</text>
+<text x='318' y='126' font-size='10.5' fill='#59636e' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>steady token 91.0 to 63.9 ms, R25</text>
+<text x='318' y='160' font-size='13' fill='#1f2328' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>Expert skip, threshold 118</text>
+<rect x='330' y='144' width='118.5' height='22' fill='#2f6feb' rx='2'/>
+<text x='456.5' y='160' font-size='13' fill='#1f2328' text-anchor='start' font-weight='bold' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>7.90</text>
+<text x='318' y='178' font-size='10.5' fill='#59636e' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>in-run A/B at 2,112 MHz, R25 / R31</text>
+<text x='318' y='212' font-size='13' fill='#1f2328' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>In-register Q3_K expert kernel</text>
+<rect x='330' y='196' width='40.0' height='22' fill='url(#h)' rx='2'/>
+<text x='378.05' y='212' font-size='13' fill='#1f2328' text-anchor='start' font-weight='bold' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>2.67</text>
+<text x='318' y='230' font-size='10.5' fill='#59636e' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>estimated: scaled from 3.53 at lower clocks, R47</text>
+<text x='318' y='264' font-size='13' fill='#1f2328' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>Two-stage output head</text>
+<rect x='330' y='248' width='25.5' height='22' fill='#2f6feb' rx='2'/>
+<text x='363.5' y='264' font-size='13' fill='#1f2328' text-anchor='start' font-weight='bold' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>1.70</text>
+<text x='318' y='282' font-size='10.5' fill='#59636e' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>head op, in-run A/B, R31</text>
+<text x='318' y='316' font-size='13' fill='#1f2328' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>Fused expert op</text>
+<rect x='330' y='300' width='12.0' height='22' fill='#2f6feb' rx='2'/>
+<text x='350.03' y='316' font-size='13' fill='#1f2328' text-anchor='start' font-weight='bold' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>0.80</text>
+<text x='318' y='334' font-size='10.5' fill='#59636e' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>MUL_MAT_ID + GLU, R47</text>
+<text x='318' y='368' font-size='13' fill='#1f2328' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>Sampler fast path</text>
+<rect x='330' y='352' width='11.6' height='22' fill='#2f6feb' rx='2'/>
+<text x='349.55' y='368' font-size='13' fill='#1f2328' text-anchor='start' font-weight='bold' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>0.77</text>
+<text x='318' y='386' font-size='10.5' fill='#59636e' text-anchor='end' font-weight='normal' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>outside-graph, 1.90 to 1.13 ms at 1,555 MHz, R33</text>
+</svg>
