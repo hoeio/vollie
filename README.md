@@ -1,8 +1,11 @@
 # Vollie: a mixture-of-experts LLM at 20 tok/s on a 2021 phone CPU
 
-Vollie is an on-device assistant app for Android. This repository is its **serving research**: runtime
-patches for llama.cpp, the tools that check them, and the full log of every measurement. The app itself
-is not here.
+This repository is the **experiment**: runtime patches for llama.cpp, the tools that check them, and the full
+log of every measurement behind a 7B mixture-of-experts model running at 20 tok/s on a phone CPU.
+
+**[Vollie](https://play.google.com/store/apps/details?id=com.insaneutils.vollie) is the Android app that runs
+this work, so you can reproduce the result on your own phone.** See [Run it on your phone](#run-it-on-your-phone).
+The app's source code is not in this repository.
 
 - **Device:** Samsung Galaxy Z Flip 3 (Snapdragon 888: 1x Cortex-X1 + 3x A78 + 4x A55, 8 GB).
 - **Model:** Granite-4.0-H-Tiny abliterated (7B mixture-of-experts, 64 experts, Mamba-2 hybrid), one frozen
@@ -32,6 +35,29 @@ The three bars are three different days, each measured against Vollie in the sam
 phone, same model file). Where each number is logged: R25 (9.4 and 12.0, 2026-11-04), R31 (8.50 for stock
 settings, 2026-11-06), R49 (20.51, 2026-11-08). The "stock" bar is llama.cpp with every Vollie knob off; the
 exact definition is in the footnote of [the round-5 comparison](docs/round5-comparison.md).
+
+## Run it on your phone
+
+The results here are not only logs: the app contains the patched runtime, and its own benchmark is the one the
+headline number comes from.
+
+1. Install [Vollie from Google Play](https://play.google.com/store/apps/details?id=com.insaneutils.vollie). The
+   store build carries the round-16 configuration (R49).
+2. In Settings, run **Optimize for this phone** for a quick speed test, or **Run research kit** for the full
+   measurement behind R49 (about 9-35 minutes, no settings to change).
+3. The kit ends with **Copy research results**, one JSON report on the clipboard. Read it with
+   `python3 -I tools/research_parse.py <report.json> --official` and compare it with the raw reports of the
+   Z Flip 3 in [reports/device/](reports/device/).
+
+Steps, what to expect and how to read the numbers: [docs/run-on-your-phone.md](docs/run-on-your-phone.md).
+
+### Share a result from your phone
+
+**If you run the research kit on a different phone and email us the report, we would be very grateful.** Every
+result here comes from one phone and one model; reports from other devices are the evidence we cannot produce
+ourselves. Send the JSON file, with your phone's model name and Android version, to the support email on the app's
+[Google Play page](https://play.google.com/store/apps/details?id=com.insaneutils.vollie). What a report contains
+and what to include: [docs/run-on-your-phone.md](docs/run-on-your-phone.md#share-your-result).
 
 ## The rules it was done under
 
@@ -97,7 +123,7 @@ GGML_TINY_OP=262144 GGML_EXPERT_IO=5 llama-cli -m model.gguf -t 3 ...
 
 | path | what |
 |---|---|
-| [docs/](docs/README.md) | start here: overview, findings, levers, negative results, knobs, glossary |
+| [docs/](docs/README.md) | overview, findings, levers, negative results, knobs, glossary, and [how to run it on your phone](docs/run-on-your-phone.md) |
 | [reports/](reports/README.md) | readable index of the research log, with a one-line verdict per R-number |
 | [RULES.md](RULES.md) | the conditions every change must meet |
 | [reports/03_final.md](reports/03_final.md) | the original R-log, R1 to R49, with pre-registrations and verdicts |
@@ -122,8 +148,9 @@ cites as `lab/...` are not in this repository.
   the benchmark's definition did not change.
 - **Not scored.** Round 16's second line, which was to split the gap between ramp and faults, was
   unscorable (R49): its reference story ran throttled.
-- **The app in the store lags.** The 20.51 is the research build 2.2.21+44. The production app has not
-  been updated with it; that is the owner's call.
+- **Build versions.** The 20.51 was measured on research build 2.2.21+44. The Google Play build carries the
+  same configuration: the production build 2.3.0+45 has the same native code (see the paragraph after R49 in
+  [reports/03_final.md](reports/03_final.md)).
 
 ## License
 

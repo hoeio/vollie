@@ -5,6 +5,7 @@ moved or derived from the original files, and each page says which.
 
 | page | what | origin |
 |---|---|---|
+| [run-on-your-phone.md](run-on-your-phone.md) | run the benchmark or the research kit in the app, read the result, and share it | derived from the kit card and tuning page |
 | [overview.md](overview.md) | how the project got to 20 tok/s, in plain language | derived from findings, README, R-log |
 | [findings.md](findings.md) | what limits decode on an 8 GB phone, in the order things were found | original |
 | [levers.md](levers.md) | the levers that survived, with outputs and device effects | moved from the README, unchanged |

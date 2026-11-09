@@ -51,7 +51,7 @@ for anything that changes the numbers.
 - **Cold start:** the first run after memory pressure misses 20; the cause is page residency at the start of
   the run.
 - **Generalisation:** one device and one model so far; showing that the method carries over is the stated next
-  step.
+  step. Reports from other phones are welcome: see [run-on-your-phone.md](run-on-your-phone.md#share-your-result).
 
 ## Where to go next
 
