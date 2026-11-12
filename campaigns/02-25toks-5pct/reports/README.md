@@ -6,3 +6,5 @@ and says whether it passed, was falsified or stayed unresolved, misses included.
 *estimated*.
 
 No entries yet.
+
+Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md).
