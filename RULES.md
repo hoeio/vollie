@@ -1,5 +1,9 @@
 # Rules
 
+> **These are campaign 1's rules** (20 tok/s, +2 %), kept as written. Principles shared by every campaign are in
+> [campaigns/COMMON_RULES.md](campaigns/COMMON_RULES.md); each later campaign states its own goal and budget in
+> its `CAMPAIGN.md` ([campaigns/](campaigns/README.md)).
+
 The conditions every change to Vollie's serving has to meet, and why. They come from the
 project's brief and from what measurements on the phone taught along the way; the experiment
 behind each lesson is in `reports/03_final.md` (R-numbers).

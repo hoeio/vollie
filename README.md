@@ -7,6 +7,10 @@ log of every measurement behind a 7B mixture-of-experts model running at 20 tok/
 this work, so you can reproduce the result on your own phone.** See [Run it on your phone](#run-it-on-your-phone).
 The app's source code is not in this repository.
 
+> **Campaigns.** This page and everything below it describe **campaign 1** (20 tok/s, +2 % perplexity), which is
+> finished and frozen at commit `686f17d`. Campaign 2 (25 tok/s, +5 %, a 7B-class model still to be chosen)
+> is in planning; nothing in it has been measured. Index and shared principles: [campaigns/](campaigns/README.md).
+
 - **Device:** Samsung Galaxy Z Flip 3 (Snapdragon 888: 1x Cortex-X1 + 3x A78 + 4x A55, 8 GB).
 - **Model:** Granite-4.0-H-Tiny abliterated (7B mixture-of-experts, 64 experts, Mamba-2 hybrid), one frozen
   GGUF ([recipe and sha256](models/granite-4.0-h-tiny-d6-e6.md); weights on Hugging Face in
