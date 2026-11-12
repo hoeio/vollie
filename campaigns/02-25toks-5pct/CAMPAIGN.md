@@ -16,7 +16,7 @@ Campaign 1 answered the same question for 20 tok/s and +2 % with *yes*
 | item | value | note |
 |---|---|---|
 | device | Samsung Galaxy Z Flip 3, Snapdragon 888, 8 GB | same phone as campaign 1 |
-| model | **undecided**, see [candidates.md](candidates.md) | one frozen GGUF per model |
+| model | Granite-4.0-H-Tiny, OLMoE-1B-7B, LFM2.5-8B-A1B, **stock** weights (owner, 2026-11-12); files not yet chosen | one frozen GGUF per model |
 | quality gate | wikitext-2 test, ctx 512, batch 512, all chunks | as campaign 1 |
 | budget | PPL ≤ stock served PPL × 1.05, one budget for everything that changes numerics (expert skip, two-stage head, dense numerics) | absolute value per model, see below |
 | hard ceiling | PPL ≤ F16 PPL × 1.20 | unchanged |
@@ -48,7 +48,40 @@ Printed 20.51 tok/s corresponds to a steady token of about 46.5 ms (graph 45.5 +
 25 tok/s needs about 38 ms steady, so **about −8.5 ms (−18 %)**. The known levers inside the budget add up to
 roughly −4 to −5 ms for Granite. Details and the model comparison are in [feasibility.md](feasibility.md).
 
-## Open decisions (owner)
+## Owner decisions, 2026-11-12 (session 3)
+
+The four open decisions below were answered, plus the file variant. The original list is kept as written.
+
+1. **Model set: (a)** Granite-4.0-H-Tiny, OLMoE-1B-7B, LFM2.5-8B-A1B. The lead had recommended leaving LFM2.5 out
+   because of its campaign-1 rejection (reason not in the repository); the owner chose to include it, so its card
+   starts with a re-check of that rejection.
+2. **"7B-class"** means total parameters of about 7 to 9 B.
+3. **Metric:** the benchmark's definition is kept unchanged (llamadart `decodeTokensPerSec`, unused final decode
+   included). No second metric is reported.
+4. **Budget scope:** one total budget, PPL ≤ stock served PPL × 1.05, for everything that changes numerics.
+5. **File variant: stock weights, not abliterated.** Consequence for Granite: campaign 1's served file (d6-e6,
+   abliterated) is not a campaign-2 file. The Granite row in the budget table above (9.0438 / 9.6051 / 10.0854 /
+   10.853) belongs to that campaign-1 file and is **not** the campaign-2 budget; F16 and served-file perplexity
+   of a stock-weights Granite file have to be measured on the host first. Campaign 1's millisecond costing is
+   expected to carry over (same architecture and tensor types if the same quantization recipe is used,
+   *estimated*), its perplexity table is not.
+
+6. **Served file per model: fixed after a host screen** (second round of questions, same day). For each model the
+   publisher's Q4_0 and a campaign-1-style mix built by the owner from the publisher's F16 (dense Q4_0, experts
+   Q3_K, head Q6_K) are measured on the host; one is frozen with its sha256 before any speed work. The selection
+   rule is written before the screen in
+   [reports/memo-01-candidates-and-host-screen.md](reports/memo-01-candidates-and-host-screen.md).
+7. **Variant (base or instruct):** the owner had no preference; the lead chose **Instruct**
+   (`ibm-granite/granite-4.0-h-tiny`, `allenai/OLMoE-1B-7B-0125-Instruct`, `LiquidAI/LFM2.5-8B-A1B`), the kind
+   of model the app serves and the same kind as campaign 1's.
+8. **LFM2.5-8B-A1B stays, research use only.** Its licence ("lfm1.0") is not open source (commercial use only
+   below US$10M annual revenue); the card records this. Priority: OLMoE, Granite, then LFM2.5 (host perplexity
+   and costing first).
+
+Naming, to avoid a collision: "stock weights" means the publisher's unmodified model; "stock served PPL" in the
+budget means the served GGUF run by the unmodified runtime (no skip, no two-stage head).
+
+## Open decisions (owner), as written on 2026-11-12 session 1 (answered above)
 
 1. **Model set.** Options: (a) Granite, OLMoE-1B-7B, LFM2.5-8B-A1B; (b) the same plus a famous-brand dense
    control (Gemma 4 E2B) as a documented "ceiling" row; (c) add Ling-mini-2.0 / Ring-mini-2.0 as a memory-limit
