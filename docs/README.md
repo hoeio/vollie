@@ -17,5 +17,9 @@ moved or derived from the original files, and each page says which.
 | [glossary.md](glossary.md) | terms used in the logs | derived |
 | [img/](img/make_charts.py) | the two README charts and the script that draws them | new |
 
+These pages describe **campaign 1** (20 tok/s). Campaign 2's documents are in
+[../campaigns/](../campaigns/README.md).
+
 Related, outside this folder: the research log is indexed in [../reports/README.md](../reports/README.md), the
-rules in [../RULES.md](../RULES.md), the scripts in [../tools/README.md](../tools/README.md).
+rules in [../RULES.md](../RULES.md) (campaign 1) and [../campaigns/COMMON_RULES.md](../campaigns/COMMON_RULES.md)
+(every campaign), the scripts in [../tools/README.md](../tools/README.md).

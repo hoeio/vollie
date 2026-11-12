@@ -9,6 +9,9 @@
 >
 > Labels follow [../RULES.md](../RULES.md): *device* = measured on the phone, *host* = laptop, *estimated* =
 > arithmetic. Terms are in the [glossary](../docs/glossary.md).
+>
+> This folder is **campaign 1's** log (R1 to R49) and is closed. Campaign 2's log starts at R50 in
+> [../campaigns/02-25toks-5pct/reports/](../campaigns/02-25toks-5pct/reports/README.md).
 
 ## What is in this folder
 

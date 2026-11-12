@@ -1,15 +1,31 @@
-# Vollie: a mixture-of-experts LLM at 20 tok/s on a 2021 phone CPU
+# Vollie: fast sparse LLMs on a 2021 phone CPU
+
+Vollie is a research project with one question: **how fast can a 7B-class mixture-of-experts LLM run on an old
+phone CPU if only the runtime changes** (the model file is frozen, quality is held inside a stated perplexity
+budget, and every speed number is measured on the phone)?
 
 This repository is the **experiment**: runtime patches for llama.cpp, the tools that check them, and the full
-log of every measurement behind a 7B mixture-of-experts model running at 20 tok/s on a phone CPU.
+log of every measurement. The work is organised as **campaigns**, each with its own goal, budget and log:
+
+| # | goal | status |
+|---|---|---|
+| 1 | 20 tok/s on a Snapdragon 888 phone, one frozen Granite-4.0-H-Tiny file, perplexity budget +2 % | **done**: median **20.51 tok/s** (*device*, R49). Frozen at commit `686f17d`. Described on this page |
+| 2 | 25 tok/s on the same phone, a 7B-class model (to be chosen), budget +5 % | **planning**; nothing measured yet. [campaigns/02-25toks-5pct/](campaigns/02-25toks-5pct/CAMPAIGN.md) |
 
 **[Vollie](https://play.google.com/store/apps/details?id=com.insaneutils.vollie) is the Android app that runs
-this work, so you can reproduce the result on your own phone.** See [Run it on your phone](#run-it-on-your-phone).
-The app's source code is not in this repository.
+this work, so you can reproduce the result on your own phone.** The app's source code is not in this repository.
 
-> **Campaigns.** This page and everything below it describe **campaign 1** (20 tok/s, +2 % perplexity), which is
-> finished and frozen at commit `686f17d`. Campaign 2 (25 tok/s, +5 %, a 7B-class model still to be chosen)
-> is in planning; nothing in it has been measured. Index and shared principles: [campaigns/](campaigns/README.md).
+### Start here
+
+| you want to | go to |
+|---|---|
+| see the result and how it was reached | [The result](#the-result), then [docs/overview.md](docs/overview.md) |
+| run it on your phone, or send us a report from another phone | [Run it on your phone](#run-it-on-your-phone) |
+| check the claims on a laptop | [Reproduce](#reproduce) |
+| see what campaign 2 is and where it stands | [campaigns/](campaigns/README.md), [STATUS.md](campaigns/02-25toks-5pct/STATUS.md) |
+| continue the research (a person or an AI session) | [CLAUDE.md](CLAUDE.md), then [STATUS.md](campaigns/02-25toks-5pct/STATUS.md) |
+
+**Everything below, down to "Honest limits", describes campaign 1.**
 
 - **Device:** Samsung Galaxy Z Flip 3 (Snapdragon 888: 1x Cortex-X1 + 3x A78 + 4x A55, 8 GB).
 - **Model:** Granite-4.0-H-Tiny abliterated (7B mixture-of-experts, 64 experts, Mamba-2 hybrid), one frozen
@@ -128,13 +144,15 @@ GGML_TINY_OP=262144 GGML_EXPERT_IO=5 llama-cli -m model.gguf -t 3 ...
 |---|---|
 | [docs/](docs/README.md) | overview, findings, levers, negative results, knobs, glossary, and [how to run it on your phone](docs/run-on-your-phone.md) |
 | [reports/](reports/README.md) | readable index of the research log, with a one-line verdict per R-number |
-| [RULES.md](RULES.md) | the conditions every change must meet |
+| [campaigns/](campaigns/README.md) | the campaign index, rules shared by every campaign, and campaign 2's goal, status, feasibility, candidates, pre-registrations and digest of campaign 1 |
+| [CLAUDE.md](CLAUDE.md) | hand-off for a new session: reading order, rules, who does what |
+| [RULES.md](RULES.md) | campaign 1's rules: the conditions every change must meet |
 | [reports/03_final.md](reports/03_final.md) | the original R-log, R1 to R49, with pre-registrations and verdicts |
 | [reports/results.csv](reports/results.csv), [reports/device/](reports/device/) | one row per result; raw device JSON of every research-kit round (r1 to r16) |
 | [patches/](patches/README.md) | llama.cpp CPU-module patch, Granite rollback patch, sampler patch, llamadart patch, pinned `BASE` files |
 | [tools/](tools/README.md) | `reproduce.sh`, `ppl.sh` (quality gate), `research_parse.py` (device JSON parser), the research-kit card, host benchmarks, `checks/`, and the one-off analysis scripts, each described in its README |
 | [android/](android/), [runtime/dart/](runtime/dart/) | build the module for Android; app-side helpers |
-| [models/](models/) | how the served GGUF was made |
+| [models/](models/) | how the served GGUF was made; [`_TEMPLATE.md`](models/_TEMPLATE.md) is the card for every model of a campaign |
 
 The original raw log files under `reports/` were not changed. The app's APKs and the host logs that the R-log
 cites as `lab/...` are not in this repository.
@@ -144,8 +162,9 @@ cites as `lab/...` are not in this repository.
 - **Cold start.** The first run after memory pressure printed 12.3-18.5, not 20 (R49). The loss is page
   residency at the start of a run. Fixing it in the runtime is open.
 - **One device, one model.** Everything here is one Snapdragon 888 phone and one Granite file. The goal
-  includes that the method generalizes to other models and devices; that is the next step and is not
-  shown yet.
+  includes that the method generalizes to other models and devices; that is not shown yet. Campaign 2
+  ([campaigns/02-25toks-5pct/](campaigns/02-25toks-5pct/CAMPAIGN.md)) is the next step toward it and is still in
+  planning, with no measurements.
 - **The metric.** The printed number is llamadart's `decodeTokensPerSec`. Its time includes one final
   decode whose logits are never used, ≈ 3 % of the official number (*estimated*, R48). It was left in, so
   the benchmark's definition did not change.
