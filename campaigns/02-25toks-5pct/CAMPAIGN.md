@@ -25,7 +25,7 @@ Campaign 1 answered the same question for 20 tok/s and +2 % with *yes*
 
 Budget values known so far:
 
-| model | F16 | stock served | budget (× 1.05) | hard (× 1.20) |
+| model | F16 PPL (host) | stock served PPL (host) | budget (× 1.05, estimated) | hard (× 1.20, estimated) |
 |---|---|---|---|---|
 | Granite-4.0-H-Tiny (served file d6-e6) | 9.0438 | 9.6051 | **10.0854** | 10.853 |
 | other candidates | to be measured on the host | | | |
