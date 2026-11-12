@@ -29,6 +29,8 @@ OLMoE-1B-7B is the most plausible model for 25, LFM2.5-8B-A1B the least. See
 1. **Model set.** (a) Granite, OLMoE-1B-7B, LFM2.5-8B-A1B; (b) the same plus Gemma 4 E2B as a documented
    "famous dense" ceiling row; (c) add Ling-mini-2.0 / Ring-mini-2.0 as a memory-limit experiment.
    *Recommendation given:* OLMoE as the main model, Granite as the baseline, LFM2.5 as the generalisation check.
+   *Caveat found later:* campaign 1 rejected LFM2.5-8B-A1B in an earlier session (reason not in the repository) and
+   Ling-3.0-tiny on Q4_0 quality; see `candidates.md`, "Campaign 1 history". Re-check before relying on LFM2.5.
 2. Whether "7B-class" means total parameters of about 7 to 9 B.
 3. Metric: keep the benchmark's definition (includes one unused final decode, about 3 %, *estimated*, R48), or
    report both, clearly labelled.
@@ -71,3 +73,4 @@ OLMoE-1B-7B is the most plausible model for 25, LFM2.5-8B-A1B the least. See
 | date | session | what was done |
 |---|---|---|
 | 2026-11-12 | 1 | Read the repository; analysed feasibility; researched candidate models; created the campaign structure (PR #2, merged); wrote this hand-off (`CLAUDE.md`, `STATUS.md`, `knowledge.md`). No measurements. |
+| 2026-11-12 | 2 | Pinned the four-agent team in `.claude/agents/` (full model IDs) and described it in `CLAUDE.md`; added the "Agent models" field to the prereg template; added the campaign 1 Phase 0 model history to `candidates.md`. Pushed to `main` at the owner's instruction. No measurements. |

@@ -5,6 +5,7 @@ has to change, add `R<n>-amendment-1.md` and a new tag.
 
 - **Date / author:**
 - **Campaign / model / file sha256:**
+- **Agent models** (full IDs used this round):
 - **Build under test** (app build, kit, llama.cpp `BASE`, patch series):
 - **Labels:** every number in this file is *estimated* until a result block says *device* or *host*.
 

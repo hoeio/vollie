@@ -37,6 +37,20 @@ available in that class.
 There is no Qwen model in the 7 to 9 B sparse class. Not verified here: ZAYA1-8B (named in a comparison page
 title only) and MobileMoE (a 2026 paper, 0.3 to 0.9B active; no public weights were checked).
 
+## Campaign 1 history (Phase 0, from [../../reports/00_model_choice.md](../../reports/00_model_choice.md))
+
+Read this before proposing a model: part of the field was already tested.
+
+- **Ling-3.0-tiny** (7.9B / 1.3B active, MIT, KDA+MLA hybrid; i1-Q4_0, abliterated variant): measured on the host and
+  **rejected on quality**: bpb 0.906 on wikitext-2 against 0.750 for Granite (*host*). Its Q4_0 quality is the
+  problem, so it needs a better quantization before it is a candidate.
+- Rejected without download: dense 3B Granite 4.1/4.2 (about 2 GB per token), Gemma 4 E2B (about 1.2 to 1.3 GB per
+  token, 262k vocabulary head), a 1.3B-A0.6B MoE. Rejected in earlier sessions (reasons are in private notes, not in
+  the repository): LFM2.5-8B-A1B, SmallThinker, Qwen3.5-2B/0.8B, Trinity Nano. Re-test LFM2.5 only with new evidence.
+- Every served file in campaign 1 was an **abliterated** variant. Whether campaign 2 uses a stock or an abliterated
+  file is an owner decision, and it interacts with "a model people know".
+- The campaign 1 comparison used bits per byte (comparable across tokenizers); use it again when models differ.
+
 ## Sources
 
 - OLMoE: <https://arxiv.org/html/2409.02060v2>; GGUF pruned variant card <https://huggingface.co/Local-Axiom-AI/llama-1B-5B>
