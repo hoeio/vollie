@@ -8,6 +8,8 @@
 #      REPRO_TEXT=path   use an existing wiki.test.raw
 #      REPRO_REPO=url    llama.cpp git source (default github; any clone containing BASE works)
 #      THREADS=n         default: online CPUs, at most 8 (PPL does not depend on it)
+#      REPRO_URL / REPRO_SHA / REPRO_STOCK_REF / REPRO_SKIP_REF / REPRO_BUDGET / REPRO_HARD
+#                        another model's file, hash and reference values (defaults: campaign 1, Granite)
 # needs: git, cmake, a C/C++ compiler, curl, unzip, shasum or sha256sum
 set -e
 QUICK=0
@@ -20,10 +22,12 @@ NPROC=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 T=${THREADS:-$(( NPROC < 8 ? NPROC : 8 ))}
 # NB: the Hugging Face repo name "vollie-qwen3.5-4b" predates the switch to Granite; the repo holds a Qwen3.5-4B file
 # and Granite files. The file below is the Granite-4.0-H-Tiny GGUF, pinned by commit and checked by SHA below.
-URL=https://huggingface.co/HoeioUser/vollie-qwen3.5-4b/resolve/8ab9bf2d710eb7f1bcb80ef2817b06643ce2e6c1/vollie-granite-4.0-h-tiny-d6-e6.gguf
-SHA=5dc1daa0cd3e5099bdaa79beeb9e744bf7c65e0993ea62e4671ddd63b2b5cb25
+# Defaults are campaign 1's Granite file and values. For another model or budget (campaign 2) set the REPRO_* variables
+# below from that model's card in models/; nothing else changes, and unset variables behave exactly as before.
+URL=${REPRO_URL:-https://huggingface.co/HoeioUser/vollie-qwen3.5-4b/resolve/8ab9bf2d710eb7f1bcb80ef2817b06643ce2e6c1/vollie-granite-4.0-h-tiny-d6-e6.gguf}
+SHA=${REPRO_SHA:-5dc1daa0cd3e5099bdaa79beeb9e744bf7c65e0993ea62e4671ddd63b2b5cb25}
 WIKI_ZIP=https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip
-STOCK_REF=9.6051 SKIP_REF=9.7952 BUDGET=9.797 HARD=10.853
+STOCK_REF=${REPRO_STOCK_REF:-9.6051} SKIP_REF=${REPRO_SKIP_REF:-9.7952} BUDGET=${REPRO_BUDGET:-9.797} HARD=${REPRO_HARD:-10.853}
 
 if [ $QUICK = 1 ]; then
   echo "== Vollie reproduce --quick: ~10-20 min on a recent laptop (M4: build ~3 min, identity ~3 x 1-2 min, 2 x 60-chunk screen ~3 min each) + 3.16 GB download"
