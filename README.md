@@ -8,7 +8,7 @@ this work, so you can reproduce the result on your own phone.** See [Run it on y
 The app's source code is not in this repository.
 
 > **Campaigns.** This page and everything below it describe **campaign 1** (20 tok/s, +2 % perplexity), which is
-> finished and frozen at the tag `goal1-final`. Campaign 2 (25 tok/s, +5 %, a 7B-class model still to be chosen)
+> finished and frozen at commit `686f17d`. Campaign 2 (25 tok/s, +5 %, a 7B-class model still to be chosen)
 > is in planning; nothing in it has been measured. Index and shared principles: [campaigns/](campaigns/README.md).
 
 - **Device:** Samsung Galaxy Z Flip 3 (Snapdragon 888: 1x Cortex-X1 + 3x A78 + 4x A55, 8 GB).

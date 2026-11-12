@@ -61,7 +61,7 @@ roughly −4 to −5 ms for Granite. Details and the model comparison are in [fe
 
 ## Plan
 
-1. Freeze campaign 1 (`goal1-final` tag) and add this structure. *(this change)*
+1. Freeze campaign 1 at commit `686f17d` (a `goal1-final` tag there is recommended; pushing tags was refused from the session that wrote this) and add this structure. *(this change)*
 2. Decide the model set; write one card per model under [../../models/](../../models/) (`_TEMPLATE.md`).
 3. Host work only, no phone: check llama.cpp support and the pinned `BASE` for each model; F16 and stock PPL;
    a PPL-versus-milliseconds frontier for expert skip, two-stage head and any dense requantisation.

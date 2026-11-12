@@ -6,7 +6,7 @@ added beside it.
 
 | # | goal | status | where |
 |---|---|---|---|
-| 1 | 20 tok/s on a Snapdragon 888 phone, one frozen 7B MoE file (Granite-4.0-H-Tiny), runtime only, quality budget +2 % | **done**: median 20.51 tok/s (*device*, R49). Frozen at tag `goal1-final` | the repository root as it is: [README](../README.md), [RULES.md](../RULES.md), [reports/](../reports/README.md), [patches/](../patches/README.md), [models/](../models/) |
+| 1 | 20 tok/s on a Snapdragon 888 phone, one frozen 7B MoE file (Granite-4.0-H-Tiny), runtime only, quality budget +2 % | **done**: median 20.51 tok/s (*device*, R49). Frozen at commit `686f17d` | the repository root as it is: [README](../README.md), [RULES.md](../RULES.md), [reports/](../reports/README.md), [patches/](../patches/README.md), [models/](../models/) |
 | 2 | 25 tok/s on the same phone, a 7B-class model, runtime only, quality budget +5 % | **planning**, nothing measured yet | [02-25toks-5pct/](02-25toks-5pct/CAMPAIGN.md) |
 
 ## Principles shared by every campaign
