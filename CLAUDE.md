@@ -14,7 +14,7 @@ Vollie runs a sparse (mixture-of-experts) LLM on a 2021 phone CPU (Samsung Galax
   Result: median 20.51 tok/s (*device*, R49). Do not edit its files; the R-log links to them by path.
 - **Campaign 2 (current, planning):** 25 tok/s on a 7B-class model, file not changed, quality budget +5 % over the
   served file's stock perplexity. Goal, terms and open decisions: [campaigns/02-25toks-5pct/CAMPAIGN.md](campaigns/02-25toks-5pct/CAMPAIGN.md).
-  Nothing in campaign 2 has been measured yet.
+  Nothing in campaign 2 has been measured on the phone yet; the first host results are R50 (2026-11-13).
 
 ## Reading order (about 30 minutes)
 
@@ -82,6 +82,11 @@ The work is done by four subagents defined in `.claude/agents/`. The main sessio
 - Do not put the owner's e-mail address or private paths into tracked files.
 
 ## Environment notes (observed 2026-11-12; they may differ in your session)
+
+- **Added 2026-11-13:** a session can also run directly on the owner's laptop (Apple M4 Pro, Remote Control). Then
+  the cloud limits below do not apply: Hugging Face is reachable, repository tools run, and with the owner's
+  permission the lead runs host perplexity itself (label *host*). Check which case you are in first
+  (`sysctl -n machdep.cpu.brand_string`); do not assume. Phone runs are always the owner's.
 
 - Reading a public repository needs no attachment; pushing needs the repository attached with push access.
 - Pushing **tags** was refused (HTTP 403) from the cloud session, and the GitHub GraphQL API is blocked (use the REST

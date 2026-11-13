@@ -1,0 +1,195 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index ab82e3d6c..52362d5e8 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1551,6 +1551,119 @@ static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
+     return ptr;
+ }
+ 
++// Vollie c2 (patches/llama.cpp-c2/0001): expert skip by router weight, scale-free for unnormalised top-k weights.
++// Only active when libllama has put the mixture weights [1, n_ids, n_tokens] into src[3] of an expert MUL_MAT_ID
++// (it does so only when one of VOLLIE_SKIP_SUM / _MAX / _MASS is set > 0); a stock graph never has src[3] here.
++// Per token, slots ranked by weight v (descending, S = sum of the selected weights, r = rank, r >= MINK only):
++//   SUM  t: skip if v < t/1000 * S          (on top-k-renormalised weights, S = 1: campaign 1's rule)
++//   MAX  t: skip if v < t/1000 * v_max
++//   MASS p: skip once the higher-ranked slots already hold p/1000 of S
++// A skipped (slot, token) pair leaves the row map, so an expert left with no rows is not read at all; its dst row
++// is set to zero, so the mixture adds 0 * w. Kept weights are not renormalised (the model's semantics).
++static float ggml_c2_skip_sum, ggml_c2_skip_max, ggml_c2_skip_mass;
++static int   ggml_c2_skip_mink = 1;
++static unsigned long long ggml_c2_st_tok, ggml_c2_st_pairs, ggml_c2_st_pairs_skip;
++static double ggml_c2_st_bytes, ggml_c2_st_bytes_skip, ggml_c2_st_bytes_read, ggml_c2_st_bytes_unread;
++static const void * ggml_c2_st_first;
++
++static float ggml_c2_env(const char * k) {
++    const char * v = getenv(k);
++    return v ? (float) atof(v) : 0.0f;
++}
++
++static void ggml_c2_skip_report(void) {
++    const double tok = ggml_c2_st_tok ? (double) ggml_c2_st_tok : 1.0;
++    fprintf(stderr, "c2-skip: sum=%g max=%g mass=%g mink=%d tokens=%llu pairs=%llu pairs_skipped=%.4f%% "
++            "expert_bytes_skipped=%.4f%% MB_per_token_selected=%.3f MB_per_token_skipped=%.3f batch_bytes_unread=%.4f%%\n",
++            ggml_c2_skip_sum, ggml_c2_skip_max, ggml_c2_skip_mass, ggml_c2_skip_mink, ggml_c2_st_tok, ggml_c2_st_pairs,
++            100.0*ggml_c2_st_pairs_skip/(ggml_c2_st_pairs ? ggml_c2_st_pairs : 1),
++            100.0*ggml_c2_st_bytes_skip/(ggml_c2_st_bytes > 0 ? ggml_c2_st_bytes : 1),
++            ggml_c2_st_bytes/tok/1e6, ggml_c2_st_bytes_skip/tok/1e6,
++            100.0*ggml_c2_st_bytes_unread/(ggml_c2_st_bytes_read > 0 ? ggml_c2_st_bytes_read : 1));
++}
++
++// thread 0 only, after the stock row map is built; rebuilds it without the skipped pairs
++// ponytail: env read once per process on first use, unsynchronised; fine for one context at a time
++static void ggml_c2_skip_map(struct ggml_tensor * dst, const struct ggml_tensor * ids, int64_t n_as,
++                             int64_t * matrix_row_counts, struct mmid_row_mapping * matrix_rows) {
++    const struct ggml_tensor * src0 = dst->src[0];
++    const struct ggml_tensor * w    = dst->src[3];
++    const int     n_ids = ids->ne[0];
++    const int64_t n_tok = ids->ne[1];
++    if (w->type != GGML_TYPE_F32 || w->ne[0] != 1 || w->ne[1] != n_ids || w->ne[2] != n_tok || n_ids > 64 || n_as > 512) {
++        return; // unexpected layout: keep the stock map
++    }
++    static bool init = false;
++    if (!init) {
++        init = true;
++        ggml_c2_skip_sum  = ggml_c2_env("VOLLIE_SKIP_SUM");
++        ggml_c2_skip_max  = ggml_c2_env("VOLLIE_SKIP_MAX");
++        ggml_c2_skip_mass = ggml_c2_env("VOLLIE_SKIP_MASS");
++        const char * mk = getenv("VOLLIE_SKIP_MINK");
++        ggml_c2_skip_mink = mk && atoi(mk) > 1 ? atoi(mk) : 1; // the top slot is always kept
++        if (ggml_c2_env("VOLLIE_SKIP_STATS") > 0) {
++            atexit(ggml_c2_skip_report);
++        }
++    }
++    const float t_sum = ggml_c2_skip_sum/1000.0f, t_max = ggml_c2_skip_max/1000.0f, p_mass = ggml_c2_skip_mass/1000.0f;
++
++    int64_t before[512];
++    memcpy(before, matrix_row_counts, n_as*sizeof(int64_t));
++    memset(matrix_row_counts, 0, n_as*sizeof(int64_t));
++    unsigned long long n_skip = 0;
++    for (int64_t iid1 = 0; iid1 < n_tok; ++iid1) {
++        float v[64], S = 0.0f;
++        int   ord[64];
++        bool  skip[64];
++        for (int s = 0; s < n_ids; s++) { // insertion sort, descending, stable
++            v[s] = *(const float *) ((const char *) w->data + s*w->nb[1] + iid1*w->nb[2]);
++            S += v[s];
++            int j = s;
++            for (; j > 0 && v[ord[j - 1]] < v[s]; j--) {
++                ord[j] = ord[j - 1];
++            }
++            ord[j] = s;
++        }
++        float cum = 0.0f; // weight of the higher-ranked slots
++        for (int r = 0; r < n_ids; r++) {
++            const int s = ord[r];
++            skip[s] = r >= ggml_c2_skip_mink &&
++                ((t_sum > 0.0f && v[s] < t_sum*S) || (t_max > 0.0f && v[s] < t_max*v[ord[0]]) || (p_mass > 0.0f && cum >= p_mass*S));
++            cum += v[s];
++        }
++        for (int id = 0; id < n_ids; ++id) { // same order as the stock loop
++            if (skip[id]) {
++                memset((char *) dst->data + id*dst->nb[1] + iid1*dst->nb[2], 0, dst->ne[0]*sizeof(float));
++                n_skip++;
++                continue;
++            }
++            const int32_t i02 = *(const int32_t *) ((const char *) ids->data + iid1*ids->nb[1] + id*ids->nb[0]);
++            MMID_MATRIX_ROW(i02, matrix_row_counts[i02]) = (struct mmid_row_mapping) {id, iid1};
++            matrix_row_counts[i02] += 1;
++        }
++    }
++
++    if (!ggml_c2_st_first) {
++        ggml_c2_st_first = src0;
++    }
++    if (src0 == ggml_c2_st_first) {
++        ggml_c2_st_tok += n_tok; // one expert op per layer and token: count tokens on the first one seen
++    }
++    const double eb = (double) src0->nb[2]; // bytes of one expert matrix
++    ggml_c2_st_pairs      += n_ids*n_tok;
++    ggml_c2_st_pairs_skip += n_skip;
++    ggml_c2_st_bytes      += eb*n_ids*n_tok;
++    ggml_c2_st_bytes_skip += eb*n_skip;
++    for (int64_t a = 0; a < n_as; a++) {
++        if (before[a] > 0) {
++            ggml_c2_st_bytes_read += eb;
++            if (matrix_row_counts[a] == 0) {
++                ggml_c2_st_bytes_unread += eb;
++            }
++        }
++    }
++}
++
+ static void ggml_compute_forward_mul_mat_id(
+         const struct ggml_compute_params * params,
+               struct ggml_tensor * dst) {
+@@ -1658,6 +1771,10 @@ static void ggml_compute_forward_mul_mat_id(
+                 matrix_row_counts[i02] += 1;
+             }
+         }
++
++        if (dst->src[3]) {
++            ggml_c2_skip_map(dst, ids, n_as, matrix_row_counts, matrix_rows);
++        }
+     }
+ 
+     // reset current_chunk
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 6cadda971..4bc7b5944 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2282,6 +2282,23 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+     //call early so that topk-moe can be used
+     ggml_build_forward_expand(gf, weights);
+ 
++    // Vollie c2 (patches/llama.cpp-c2/0001): expert skip. With VOLLIE_SKIP_SUM / _MAX / _MASS > 0 the expert
++    // MUL_MAT_IDs get the mixture weights as src[3] and the CPU module leaves low-weight pairs out; unset: stock graph
++    static const bool vollie_skip = [] {
++        for (const char * k : { "VOLLIE_SKIP_SUM", "VOLLIE_SKIP_MAX", "VOLLIE_SKIP_MASS" }) {
++            const char * v = getenv(k);
++            if (v && atof(v) > 0) {
++                return true;
++            }
++        }
++        return false;
++    }();
++    auto vollie_skip_wire = [&](ggml_tensor * t) {
++        if (vollie_skip && !weight_before_ffn && t->op == GGML_OP_MUL_MAT_ID && t->src[3] == nullptr) {
++            t->src[3] = weights;
++        }
++    };
++
+     // the experts of host-resident layers may be read from the MoE cache
+     ggml_tensor * slots = build_moe_cache_slots(selected_experts, up_exps, gate_exps, down_exps, gate_up_exps, il);
+ 
+@@ -2300,6 +2317,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+     if (gate_up_exps) {
+         // merged gate_up path: one mul_mat_id, then split into gate and up views
+         ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, selected_experts, up_exps_s, slots); // [n_ff*2, n_expert_used, n_tokens]
++        vollie_skip_wire(gate_up);
+         cb(gate_up, "ffn_moe_gate_up", il);
+ 
+         if (up_exps_s) {
+@@ -2319,6 +2337,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+     } else {
+         // separate gate and up path
+         up = build_lora_mm_id(up_exps, cur, selected_experts, up_exps_s, slots); // [n_ff, n_expert_used, n_tokens]
++        vollie_skip_wire(up);
+         cb(up, "ffn_moe_up", il);
+ 
+         if (up_exps_s) {
+@@ -2332,6 +2351,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+ 
+         if (gate_exps) {
+             cur = build_lora_mm_id(gate_exps, cur, selected_experts, gate_exps_s, slots); // [n_ff, n_expert_used, n_tokens]
++            vollie_skip_wire(cur);
+             cb(cur, "ffn_moe_gate", il);
+         } else {
+             cur = up;
+@@ -2433,6 +2453,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+     }
+ 
+     experts = build_lora_mm_id(down_exps, cur, selected_experts, down_exps_s, slots); // [n_embd, n_expert_used, n_tokens]
++    vollie_skip_wire(experts);
+     if (arch == LLM_ARCH_MISTRAL4) {
+         // src1 can exceed F16 range
+         ggml_prec_set_src(experts, GGML_PREC_F32, 1);

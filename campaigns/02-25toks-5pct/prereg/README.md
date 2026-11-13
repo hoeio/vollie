@@ -4,4 +4,5 @@ One file per round, named `R<n>-<short-title>.md`, copied from [TEMPLATE.md](TEM
 **R50** (campaign 1 ended at R49). A file here is committed and tagged `prereg-R<n>` before the run it governs;
 see [../../README.md](../../README.md).
 
-None exists yet.
+- [R51-olmoe-expert-skip-frontier-host.md](R51-olmoe-expert-skip-frontier-host.md): OLMoE expert-skip frontier, host.
+  R50 was a host screen governed by memo-01 part C, so the first prereg file is R51.
