@@ -1,0 +1,711 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+index 02d7f7c..665985c 100644
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -56,6 +56,8 @@ android {
+ 
+     defaultConfig {
+         applicationId "com.insaneutils.vollie"
++        // Campaign 2 kit (patches/app-c2): its own package, installed beside the owner's Vollie, never over it.
++        applicationIdSuffix ".c2"
+         minSdkVersion flutter.minSdkVersion
+         targetSdkVersion flutter.targetSdkVersion
+         versionCode flutterVersionCode.toInteger()
+@@ -93,7 +95,8 @@ android {
+         }
+         release {
+             // Without key.properties the release build is left unsigned rather than failing.
+-            signingConfig keystorePropertiesFile.exists() ? signingConfigs.release : null
++            // Campaign 2 kit: release mode (AOT) signed with the Android debug key; no release key in this copy.
++            signingConfig signingConfigs.debug
+             minifyEnabled true
+             shrinkResources true
+             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index a01199c..36115f9 100644
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -11,7 +11,7 @@
+     <!-- hasFragileUserData: uninstalling asks "keep app data?", so a
+          reinstall finds the 2.5 GB model instead of downloading it again. -->
+     <application
+-        android:label="Vollie"
++        android:label="Vollie C2"
+         android:name="${applicationName}"
+         android:icon="@mipmap/ic_launcher"
+         android:enableOnBackInvokedCallback="true"
+diff --git a/android/app/src/main/kotlin/com/example/vollie/ModelDownloadService.kt b/android/app/src/main/kotlin/com/example/vollie/ModelDownloadService.kt
+index a822b35..a0efff9 100644
+--- a/android/app/src/main/kotlin/com/example/vollie/ModelDownloadService.kt
++++ b/android/app/src/main/kotlin/com/example/vollie/ModelDownloadService.kt
+@@ -32,21 +32,13 @@ import java.security.MessageDigest
+ class ModelDownloadService : Service() {
+ 
+     companion object {
+-        // Huihui-granite-4.0-h-tiny-abliterated (IBM Granite 4.0 H Tiny: 7B
+-        // mixture-of-experts, ~1B used per token, Mamba-2 hybrid), requantized from
+-        // mradermacher's F16 + imatrix: Q4_0 dense, Q3_K experts, Q6_K head, 6 of 64
+-        // experts per token, the model's own count (reports/: wikitext-2 PPL +6.2%,
+-        // en +7.0% vs F16). 3-bit experts because on an 8 GB SD888 the 3.1 GB of
+-        // IQ4_XS experts didn't stay in the page cache and were re-read from flash
+-        // every token (reports/03_final.md R9); this file's are 2.5 GB.
+-        // Pinned to a commit, not main: re-uploading the file under the same name
+-        // must not change the bytes under an existing SHA256 (or a paused .part).
++        // Campaign 2 kit r17: OLMoE-1B-7B-0125-Instruct, the campaign-1-style mix with an imatrix (olmoe-Mi,
++        // models/olmoe-1b-7b-0125-instruct-mi.md in the vollie2 repository), pinned to a commit of HoeioUser/vollie2.
+         const val URL_STRING =
+-            "https://huggingface.co/HoeioUser/vollie-qwen3.5-4b/resolve/8ab9bf2d710eb7f1bcb80ef2817b06643ce2e6c1/vollie-granite-4.0-h-tiny-d6-e6.gguf"
+-        const val FILE_NAME = "vollie-granite-4.0-h-tiny-d6-e6.gguf"
+-        const val TOTAL = 3161269888L
+-        // Hugging Face's X-Linked-ETag for this file is its SHA-256.
+-        const val SHA256 = "5dc1daa0cd3e5099bdaa79beeb9e744bf7c65e0993ea62e4671ddd63b2b5cb25"
++            "https://huggingface.co/HoeioUser/vollie2/resolve/e893e8a65cff2f09f3de45e4840537c625806e0b/olmoe-Mi.gguf"
++        const val FILE_NAME = "olmoe-Mi.gguf"
++        const val TOTAL = 3072399552L
++        const val SHA256 = "5abf710b775cd64fd89d74a783c8a7056a409ba795cd401b9dd448ef8e444abb"
+ 
+         private const val CHANNEL = "model_download"
+         private const val NOTIFY_ID = 1
+@@ -257,7 +249,7 @@ class ModelDownloadService : Service() {
+             }
+             val free = StatFs(dir(this).absolutePath).availableBytes
+             if (free < TOTAL - part(this).length() + 100_000_000L) {
+-                fail("Not enough free storage. The model needs about 4.1 GB.")
++                fail("Not enough free storage. The model needs about 3.2 GB.")
+                 return false
+             }
+             val before = part(this).length()
+diff --git a/lib/assistant.dart b/lib/assistant.dart
+index 10aa138..b71234f 100644
+--- a/lib/assistant.dart
++++ b/lib/assistant.dart
+@@ -179,8 +179,7 @@ class Assistant extends ChangeNotifier {
+   String? _loadedPath;
+ 
+   Assistant(this._prefs, this.device, {LlamaEngine? engine}) : _engine = engine ?? LlamaEngine(LlamaBackend()) {
+-    setTinyOps(savedTinyOps);
+-    setExpertIo(savedExpertIo);
++    // Campaign 2 kit: no compiled-in or saved lever defaults; every knob stays unset unless a kit run sets it.
+     final crashed = _prefs.getString(_attemptKey);
+     if (crashed != null) {
+       // A GPU load/self-test never finished: its driver crashed the app.
+@@ -418,7 +417,7 @@ class Assistant extends ChangeNotifier {
+     await LlamaLogging.configure(level: LlamaLogLevel.none, nativeLevel: LlamaLogLevel.info);
+     try {
+       _contextSize = device.contextSizeFor(await DeviceProfile.availableRam());
+-      Research.applyServed();
++      Research.clearKnobs();
+       await _loadFallingBack(accel, threads, readThreads);
+       // One-token warm-up: the CPU module makes its anonymous copies (GGML_HEAD2's
+       // screen, ~0.3 s on an SD888) on the first graph, so here, not in the first reply.
+@@ -450,7 +449,12 @@ class Assistant extends ChangeNotifier {
+     }
+   }
+ 
+-  ModelParams _params(Accel a) => ModelParams(
++  ModelParams _params(Accel a) {
++    // Campaign 2 kit: weight repack (llama.cpp extra buffers) is set per kit run ([_repack]); otherwise the app's rule.
++    _loadedRepack = _repack ??
++        device.canCopyWeights(
++            File(_loadedPath!).lengthSync() == ModelStore.expectedBytes ? ModelStore.copyBytes : File(_loadedPath!).lengthSync());
++    return ModelParams(
+     contextSize: contextSize,
+     device: a == Accel.cpu ? ComputeDevice.cpu : ComputeDevice.gpu,
+     preferredBackend: a == Accel.cpu ? GpuBackend.auto : GpuBackend.opencl,
+@@ -458,10 +462,7 @@ class Assistant extends ChangeNotifier {
+     numberOfThreadsBatch: _loadedRead,
+     // Previous files (still in use until the upgrade verifies) copy about
+     // their whole size.
+-    useExtraBuffers: device.canCopyWeights(
+-        File(_loadedPath!).lengthSync() == ModelStore.expectedBytes
+-            ? ModelStore.copyBytes
+-            : File(_loadedPath!).lengthSync()),
++    useExtraBuffers: _loadedRepack,
+     // q8_0 halves the KV cache with no visible quality loss; llamadart
+     // turns on flash attention for it. CPU only: a GPU backend without
+     // flash attention would fail to load and get blocklisted.
+@@ -472,6 +473,11 @@ class Assistant extends ChangeNotifier {
+     speculativeRollbackTokenMax: _rollback,
+     chatTemplate: _template,
+   );
++  }
++
++  /// Campaign 2 kit: repack forced on/off for the next loads (null = the app's rule), and what the last load used.
++  bool? _repack;
++  bool _loadedRepack = false;
+ 
+   /// [Research]: rollback slots for loads (0 since kit r3 dropped the
+   /// speculation phase), and the run's state.
+diff --git a/lib/device.dart b/lib/device.dart
+index 3da2d70..0080a25 100644
+--- a/lib/device.dart
++++ b/lib/device.dart
+@@ -473,6 +473,11 @@ final _malloc =
+ final _setenv = _libc?.lookupFunction<Int32 Function(Pointer<Uint8>, Pointer<Uint8>, Int32),
+     int Function(Pointer<Uint8>, Pointer<Uint8>, int)>('setenv');
+ 
++final _unsetenv = _libc?.lookupFunction<Int32 Function(Pointer<Uint8>), int Function(Pointer<Uint8>)>('unsetenv');
++
++/// Removes an environment variable for native code (campaign 2 kit: "off" means unset, not "").
++void unsetNativeEnv(String name) => _unsetenv?.call(_cString(name));
++
+ Pointer<Uint8> _cString(String s) {
+   final b = s.codeUnits, p = _malloc!(b.length + 1);
+   for (var i = 0; i < b.length; i++) {
+diff --git a/lib/model_store.dart b/lib/model_store.dart
+index b98c8a6..b4fb7fa 100644
+--- a/lib/model_store.dart
++++ b/lib/model_store.dart
+@@ -9,14 +9,14 @@ enum DownloadState { idle, paused, running, waitingWifi, waitingNetwork, verifyi
+ /// Dart side of ModelDownloadService (Android foreground service): resumable,
+ /// pausable, Wi-Fi-only unless allowed, SHA-256 verified.
+ class ModelStore extends ChangeNotifier {
+-  static const displayName = 'Granite 4.0 H Tiny · Q4_0/Q3_K';
+-  static const expectedBytes = 3161269888;
++  static const displayName = 'OLMoE 1B-7B 0125 Instruct · olmoe-Mi (kit r17)';
++  static const expectedBytes = 3072399552;
+ 
+   /// What llama.cpp copies into its faster CPU layouts for this file: only
+   /// the Q4_0 dense tensors and Q6_K head (Q3_K experts have no repack path).
+   /// lab/: 659 MB non-reclaimable with the copy on, vs 3.9 GB for the old
+   /// all-Q4_0 file.
+-  static const copyBytes = 700000000;
++  static const copyBytes = 235505664; // olmoe-Mi: Q4_0 attention + Q6_K head (memo-05); the kit sets repack per run
+ 
+   static const _channel = MethodChannel('vollie/downloads');
+ 
+diff --git a/lib/research.dart b/lib/research.dart
+index 552d327..f8ca571 100644
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -1,95 +1,91 @@
+ part of 'assistant.dart';
+ 
+-/// Research kit, round 16 of the 20 tok/s campaign (R48: the official 32 under the shipping build, decomposed; plain
+-/// and profiled official 32 runs in four groups, two of them after the kit's own idle pause; no A/B, no bench).
+-/// One tap, one JSON report on the clipboard. Every timed
+-/// run records heat, core clocks, page faults, storage reads and memory next
+-/// to the speed, in Vollie's own conditions (warm phone, other apps as they
+-/// are). Nothing here changes the chat: the knobs are reset afterwards and the
+-/// model is reloaded as before. Schema: tools/research_kit.md.
+-extension Research on Assistant {
+-  static int? _mhz(int cpu) {
+-    try {
+-      return int.parse(File('/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_cur_freq').readAsStringSync().trim()) ~/ 1000;
+-    } catch (_) {
+-      return null;
+-    }
+-  }
++/// One kit run spec (campaign 2, kit r17; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md).
++/// kind: 'official32' = the benchmark (_benchPrompt, 32 tokens, greedy, the app's streaming);
++///       'profiled32' = the same with one stream chunk per token, every chunk's arrival time kept;
++///       'abba'       = story 200 with the spec's env, chunk times kept (for an in-run A/B once the runtime has one).
++/// env: set before the run, every other known knob unset. repack: weight repack at load (a change reloads the model).
++/// threads: 0 = the app's pick. reps: repetitions in a row. pause: the kit's idle seconds after the cool-down gate.
++typedef RunSpec = ({String id, String group, String kind, Map<String, String> env, bool repack, int threads, int reps, int pause});
+ 
+-  static const kit = 'r16';
+-  static const app = '2.3.0+45';
++/// Research kit r17: campaign 2's first kit, OLMoE (olmoe-Mi), stock runtime only (llama.cpp 620d2225c +
++/// patches/llama.cpp-c2/0001, every knob unset). One tap, one JSON report on the clipboard and in a file.
++extension Research on Assistant {
++  static const kit = 'r17';
++  static const app = '1.17.0+17';
+ 
+-  // R48: true = every official 32 in the groups and the last two waits for the r15 cool-down gate first (headroom < 0.65,
+-  // at most 90 s; "back-to-back" = no added pause); false = those runs start without the gate (heat only read), so groups
+-  // 1 and 3 are literally back-to-back. Clyde decides before the freeze; every run logs idle_ms and cool_ms either way.
++  /// Every official run waits for the cool-down gate (headroom < 0.65, at most 90 s), as r15/r16.
+   static const coolOfficial = true;
+-  static const _story = 'Write a short story about a lighthouse.';
+ 
+-  // R28/r8: the expert skip plus the two-stage lm_head (GGML_HEAD2 = M exact rows,
+-  // GGML_HEAD2_Q = the screen's type; q4_0 = the repacked Q4_0 screen, r8), the
+-  // pair pre-registered in §7.10 (117 + q4_0/2048, est. 9.788; gate in
+-  // lab/logs/r29/head2q4/). One line to change.
+-  static const _head2Combo = (skip: 117, q: 'q4_0', m: 2048);
++  /// false: every run re-reads the whole prompt (llamadart would otherwise reuse the previous identical prompt's
++  /// KV cache on OLMoE, an attention-only model; campaign 1's Granite always re-read it, cached_prompt_tokens 0).
++  static const reusePrefix = false;
+ 
+-  // r9: the served default of this build (R31: 117 + head2 q4_0/2048, full-set PPL
+-  // 9.7886). Compiled in, not a saved setting: every load and every kit run starts
+-  // from it (a run's own env overrides it; GGML_HEAD2=0 is the r8 off path). The
+-  // store build decides separately. r10: + the sampler fast path at temp 0
+-  // (VOLLIE_SAMPLER_BYPASS, exact, measured in r9).
+-  static final served = {
+-    'GGML_EXPERT_SKIP': '${_head2Combo.skip}',
+-    'GGML_HEAD2': '${_head2Combo.m}',
+-    'GGML_HEAD2_Q': _head2Combo.q,
+-    'VOLLIE_SAMPLER_BYPASS': '1',
+-  };
+-  static void applyServed() => served.forEach(setNativeEnv);
++  static const _story = 'Write a short story about a lighthouse.';
+ 
+-  // Every native knob the kit touches; all reset to the served default ('' = off
+-  // for the rest) between runs.
+-  static const _knobs = [
+-    'GGML_CPU_PROF',
+-    'GGML_CPU_AB',
+-    'GGML_MMID',
+-    'GGML_Q3K_X4',
+-    'GGML_Q3K_VEC',
+-    'GGML_Q3K_ILP',
+-    'GGML_Q3K_PF',
+-    'GGML_EXPERT_ANON',
+-    'GGML_EXPERT_SKIP',
+-    'GGML_EXPERT_SKIP_RENORM',
+-    'GGML_SSM_INPLACE',
+-    'GGML_CONV_RING',
+-    'GGML_CPU_AB_WARM',
+-    'GGML_CPU_AB_BLOCK',
+-    'GGML_HEAD2',
+-    'GGML_HEAD2_Q',
+-    'GGML_HELPER_CPUS',
+-    'GGML_BARRIER_BENCH',
+-    'GGML_MM_CHUNK',
+-    'GGML_EXPERT_Q4_LAYERS',
+-    'GGML_DENSE_WILLNEED',
+-    'VOLLIE_SAMPLER_BYPASS',
+-    'GGML_Q3K_KERN',
+-    'GGML_CPU_BENCH',
+-    'GGML_MMID_TOUCH',
+-    'GGML_CPU_AB_BAAB',
+-    'GGML_MMID_FUSE',
+-    'GGML_MMID_CHUNK2',
+-    'GGML_CPU_AB_TOKEN',
+-    'GGML_ROUTER_CAST',
++  /// THE RUN LIST, in order. The lead edits only this (from the pre-registration); one line per spec.
++  static const List<RunSpec> runs = [
++    (id: 'cold', group: 'baseline', kind: 'official32', env: {}, repack: true, threads: 0, reps: 1, pause: 0),
++    (id: 'stock', group: 'stock', kind: 'official32', env: {}, repack: true, threads: 0, reps: 5, pause: 0),
++    (id: 'stock-prof', group: 'profiled', kind: 'profiled32', env: {}, repack: true, threads: 0, reps: 2, pause: 0),
++    (id: 'stock-nr', group: 'norepack', kind: 'official32', env: {}, repack: false, threads: 0, reps: 2, pause: 0),
+   ];
+ 
+-  // The CPU module's anonymous copies an env makes (GGML_HEAD2's screen, the
+-  // GGML_EXPERT_Q4_LAYERS experts); '' = none. A run whose copies differ from the
+-  // last run's gets a one-token warm-up first, as a load does (r9: never in TTFT).
+-  static String _copies(Map<String, String> env) {
+-    final ab = env['GGML_CPU_AB'] ?? '';
+-    final h2 = (int.tryParse(env['GGML_HEAD2'] ?? '') ?? 0) > 0 || ab.contains('HEAD2:');
+-    final q4 = RegExp(r'EXPERT_Q4_LAYERS:(\d+):(\d+)').firstMatch(ab);
+-    final n = q4 != null
+-        ? math.max(int.parse(q4[1]!), int.parse(q4[2]!))
+-        : int.tryParse(env['GGML_EXPERT_Q4_LAYERS'] ?? '') ?? 0;
+-    return [if (h2) 'head2 ${env['GGML_HEAD2_Q']}', if (n > 0) 'expq4 $n'].join(' ');
++  /// Knob names cleared before every run (unset): campaign 1's, campaign 2's, and every name a spec uses.
++  static const _knownKnobs = [
++    'GGML_CPU_PROF', 'GGML_CPU_AB', 'GGML_CPU_AB_WARM', 'GGML_CPU_AB_BLOCK', 'GGML_CPU_AB_BAAB', 'GGML_CPU_AB_TOKEN',
++    'GGML_TINY_OP', 'GGML_EXPERT_IO', 'GGML_MMID', 'GGML_Q3K_X4', 'GGML_Q3K_VEC', 'GGML_Q3K_ILP', 'GGML_Q3K_PF',
++    'GGML_Q3K_KERN', 'GGML_EXPERT_ANON', 'GGML_EXPERT_SKIP', 'GGML_EXPERT_SKIP_RENORM', 'GGML_SSM_INPLACE',
++    'GGML_CONV_RING', 'GGML_HEAD2', 'GGML_HEAD2_Q', 'GGML_HELPER_CPUS', 'GGML_BARRIER_BENCH', 'GGML_MM_CHUNK',
++    'GGML_EXPERT_Q4_LAYERS', 'GGML_DENSE_WILLNEED', 'VOLLIE_SAMPLER_BYPASS', 'GGML_CPU_BENCH', 'GGML_MMID_TOUCH',
++    'GGML_MMID_FUSE', 'GGML_MMID_CHUNK2', 'GGML_ROUTER_CAST', 'GGML_REPACK_RELEASE',
++    'VOLLIE_SKIP_SUM', 'VOLLIE_SKIP_MAX', 'VOLLIE_SKIP_MASS', 'VOLLIE_SKIP_MINK', 'VOLLIE_SKIP_STATS',
++  ];
++  static Set<String> get _knobs => {..._knownKnobs, for (final r in runs) ...r.env.keys};
++
++  /// Every knob unset: the stock runtime. Called at every load and before every kit run.
++  static void clearKnobs() => _knobs.forEach(unsetNativeEnv);
++
++  static Map<String, Object?> _specJson(RunSpec s) => {
++        'id': s.id, 'group': s.group, 'kind': s.kind, 'env': s.env, 'repack': s.repack,
++        'threads': s.threads, 'reps': s.reps, 'pause_s': s.pause,
++      };
++
++  /// The native libraries this process has mapped (llama.cpp's), from /proc/self/maps.
++  static List<String> _nativeLibs() {
++    try {
++      return File('/proc/self/maps')
++          .readAsLinesSync()
++          .map((l) => l.split(RegExp(r'\s+')).last)
++          .where((p) => p.endsWith('.so') && (p.contains('ggml') || p.contains('llama')))
++          .toSet()
++          .toList()
++        ..sort();
++    } catch (_) {
++      return const [];
++    }
++  }
++
++  /// [_complete] with the kit's stream settings: perToken = one chunk per token; prefix reuse per [reusePrefix].
++  Future<LlamaCompletion> _kitComplete(String prompt, int maxTokens, bool perToken, void Function(LlamaCompletionChunk) onChunk) {
++    _pin();
++    return _engine
++        .create(
++          [LlamaChatMessage.fromText(role: LlamaChatRole.user, text: prompt)],
++          enableThinking: false,
++          params: GenerationParams(
++            maxTokens: maxTokens,
++            temp: 0,
++            reusePromptPrefix: reusePrefix,
++            streamBatchTokenThreshold: perToken ? 1 : GenerationParams.defaultStreamBatchTokenThreshold,
++            streamBatchByteThreshold: perToken ? 1 : GenerationParams.defaultStreamBatchByteThreshold,
++          ),
++        )
++        .map((c) {
++          onChunk(c);
++          return c;
++        })
++        .collect();
+   }
+ 
+   Future<void> researchRun() async {
+@@ -99,39 +95,29 @@ extension Research on Assistant {
+     _stopTest = false;
+     await DeviceProfile.keepScreenOn(true);
+     final started = DateTime.now();
+-    final savedTiny = savedTinyOps;
+-    final savedIo = savedExpertIo;
+     final w = autoThreads;
+-    final r = _prefs.getInt(Assistant._benchReadKey) ?? w;
+-    final runs = <Map<String, Object?>>[];
++    final rows = <Map<String, Object?>>[];
+     final notes = <String>[];
+-    var liveCopies = Research._copies(Research.served); // made by the load's warm-up
+     DateTime? lastEnd;
++    final path = _loadedPath!;
+     final report = <String, Object?>{
+       'kit': Research.kit,
+       'app': Research.app,
+       'started': started.toIso8601String(),
+       'header': await _testHeader('research ${Research.kit}', started),
+-      'saved': {'tiny': savedTiny, 'expert_io': savedIo, 'write_threads': w, 'read_threads': r, 'context': contextSize},
++      'saved': {'write_threads': w, 'context': contextSize, 'reuse_prefix': Research.reusePrefix},
+       'kernel': DeviceProfile.sysRead('/proc/version'),
+       'thp': DeviceProfile.sysRead('/sys/kernel/mm/transparent_hugepage/enabled'),
+       'mem_start': DeviceProfile.memInfo(),
+-      'runs': runs,
++      'specs': Research.runs.map(Research._specJson).toList(),
++      'prompt': Assistant._benchPrompt,
++      'runs': rows,
+       'notes': notes,
+     };
+     Future<void> save() => _prefs.setString(Assistant._researchKey, jsonEncode(report));
+     void show(String s) {
+       final t = DateTime.now().difference(started).inSeconds;
+-      _researchStatus('Research · ${t ~/ 60}:${(t % 60).toString().padLeft(2, '0')} · $s');
+-    }
+-
+-    // Every run starts from the served default (r9), then its own env.
+-    void setEnv(Map<String, String> env) {
+-      for (final k in Research._knobs) {
+-        setNativeEnv(k, env[k] ?? Research.served[k] ?? '');
+-      }
+-      setTinyOps(int.tryParse(env['GGML_TINY_OP'] ?? '') ?? savedTiny);
+-      setExpertIo(int.tryParse(env['GGML_EXPERT_IO'] ?? '') ?? savedIo);
++      _researchStatus('Research ${Research.kit} · ${t ~/ 60}:${(t % 60).toString().padLeft(2, '0')} · $s');
+     }
+ 
+     List<String> logLines() {
+@@ -142,70 +128,75 @@ extension Research on Assistant {
+       }
+     }
+ 
+-    // One timed run: settings, cool-down, counters before and after, the
+-    // module's profile/bench lines it produced, and the reply's first words
+-    // (a cheap check that every knob gives the same output).
+-    Future<Map<String, Object?>> measure(
+-      String phase,
+-      String name,
+-      Map<String, String> env,
+-      int threads,
+-      Future<LlamaCompletion> Function() go, {
+-      bool cool = true,
+-      bool hotOnly = false,
+-      int pause = 0,
+-      bool fullText = false,
+-    }) async {
+-      final row = <String, Object?>{'phase': phase, 'name': name, 'env': env, 'threads': threads};
+-      show('$phase · $name');
+-      try {
++    // Loads with repack [on] (and [threads]) if the loaded model differs; returns the reload's ms, or null.
++    Future<int?> ensureLoad(bool on, int threads) async {
++      if (_loadedAccel == Accel.cpu && _loadedRepack == on) {
+         await _benchOn(Accel.cpu, threads, threads);
+-        setEnv(env);
+-        final copies = Research._copies({...Research.served, ...env});
+-        if (copies.isNotEmpty && copies != liveCopies) {
+-          final before = logLines().length, w0 = DateTime.now();
+-          await _complete('Hi', 1);
+-          row['warmup_ms'] = DateTime.now().difference(w0).inMilliseconds;
+-          row['warmup'] = logLines().skip(before).where((l) => l.startsWith('cpu-prof') && l.contains('requant')).toList();
+-        }
+-        liveCopies = copies;
+-        // r15: a run right after another A/B story waits only while the phone is near throttling (both sides of an
+-        // A/B share the heat, and the clock gate drops throttled tokens/blocks); every other run cools to 0.65 as before.
++        return null;
++      }
++      final t0 = DateTime.now();
++      _repack = on;
++      await _engine.unloadModel();
++      await _loadOn(Accel.cpu, threads, threads);
++      await _complete('Hi', 1); // the load's own warm-up
++      return DateTime.now().difference(t0).inMilliseconds;
++    }
++
++    Future<void> measure(RunSpec s, int rep) async {
++      final threads = s.threads > 0 ? s.threads : w;
++      final row = <String, Object?>{
++        'id': s.id, 'group': s.group, 'kind': s.kind, 'rep': rep, 'env': s.env, 'repack': s.repack, 'threads': threads,
++      };
++      show('${s.group} · ${s.id} ${rep + 1}/${s.reps}');
++      try {
++        final reload = await ensureLoad(s.repack, threads);
++        if (reload != null) row['reload_ms'] = reload;
++        row['repack_loaded'] = _loadedRepack;
++        Research.clearKnobs();
++        s.env.forEach(setNativeEnv);
++        final official = s.kind != 'abba';
+         final c0 = DateTime.now();
+-        final heat = !cool
+-            ? (await DeviceProfile.thermal()).headroom
+-            : hotOnly
+-                ? await _coolDown(Assistant.hotHeadroom)
+-                : await _coolDown();
++        final heat = official && !Research.coolOfficial ? (await DeviceProfile.thermal()).headroom : await _coolDown();
+         row['cool_ms'] = DateTime.now().difference(c0).inMilliseconds;
+-        // r16 (R48): the kit's own idle pause, after the cool-down gate, right before the run (no phone-state change).
+-        if (pause > 0) {
+-          show('$phase · $name · idle ${pause}s');
+-          await Future<void>.delayed(Duration(seconds: pause));
+-        }
+-        row['pause_s'] = pause;
+-        show('$phase · $name');
+         row['heat'] = heat;
++        row['gate_timeout'] = (row['cool_ms'] as int) >= Assistant._coolWait.inMilliseconds && heat != null && heat >= Assistant.coolHeadroom;
++        if (s.pause > 0) {
++          show('${s.group} · ${s.id} · idle ${s.pause}s');
++          await Future<void>.delayed(Duration(seconds: s.pause));
++        }
++        row['pause_s'] = s.pause;
++        show('${s.group} · ${s.id} ${rep + 1}/${s.reps}');
++        final b0 = await DeviceProfile.battery();
++        row['batt_c_before'] = b0.tempC;
++        row['plugged'] = b0.plugged;
+         row['mhz_before'] = DeviceProfile.cpuMhz();
+         row['mem_before'] = DeviceProfile.memInfo();
+         final f0 = DeviceProfile.pageFaults();
+         final io0 = DeviceProfile.ioReadBytes();
+         final logBefore = logLines().length;
++        final chunks = <double>[];
++        final sw = Stopwatch();
+         final t0 = DateTime.now();
+-        if (lastEnd != null) row['idle_ms'] = t0.difference(lastEnd!).inMilliseconds; // r16: since the last run's reply ended
+-        final c = await go();
++        if (lastEnd != null) row['idle_ms'] = t0.difference(lastEnd!).inMilliseconds;
++        sw.start();
++        final c = await _kitComplete(official ? Assistant._benchPrompt : Research._story, official ? Assistant._benchTokens : 200,
++            s.kind != 'official32', (ch) {
++          if (ch.text.isNotEmpty) chunks.add(sw.elapsedMicroseconds / 1000);
++        });
+         lastEnd = DateTime.now();
+         row['wall_ms'] = lastEnd!.difference(t0).inMilliseconds;
+         final f1 = DeviceProfile.pageFaults();
+         final io1 = DeviceProfile.ioReadBytes();
+         row['mhz_after'] = DeviceProfile.cpuMhz();
+         row['mem_after'] = DeviceProfile.memInfo();
++        row['heat_after'] = (await DeviceProfile.thermal()).headroom;
++        row['batt_c_after'] = (await DeviceProfile.battery()).tempC;
+         final u = c.usage;
+         row['tokens'] = u?.completionTokens;
+         row['prompt_tokens'] = u?.promptTokens;
+         row['cached_prompt_tokens'] = u?.cachedPromptTokens;
+-        row['ttft_ms'] = u?.timeToFirstToken?.inMicroseconds == null ? null : u!.timeToFirstToken!.inMicroseconds / 1000;
+-        row['duration_ms'] = u?.duration?.inMicroseconds == null ? null : u!.duration!.inMicroseconds / 1000;
++        row['ttft_ms'] = u?.timeToFirstToken == null ? null : u!.timeToFirstToken!.inMicroseconds / 1000;
++        row['duration_ms'] = u?.duration == null ? null : u!.duration!.inMicroseconds / 1000;
+         row['decode_tps'] = Assistant.decodeTokensPerSec(u);
+         row['prefill_tps'] = Assistant.prefillTokensPerSec(u);
+         if (f0 != null && f1 != null) {
+@@ -213,96 +204,74 @@ extension Research on Assistant {
+           row['minflt'] = f1.minor - f0.minor;
+         }
+         if (io0 != null && io1 != null) row['io_read_bytes'] = io1 - io0;
++        // per-token arrival times (ms from the request; profiled32/abba: one chunk per token)
++        if (s.kind != 'official32') row['chunk_ms'] = chunks;
+         row['prof'] = logLines()
+             .skip(logBefore)
+-            .where((l) => l.startsWith('cpu-prof') || l.startsWith('cpu-bench') || l.startsWith('repack-release'))
++            .where((l) => l.startsWith('cpu-prof') || l.startsWith('cpu-bench') || l.startsWith('c2-'))
+             .toList();
+-        row['text'] = fullText || c.text.length <= 80 ? c.text : c.text.substring(0, 80); // r16: official runs keep it all
++        row['text'] = c.text;
+         final pc = await _engine.getPerformanceContext();
+-        // r9: llamadart's own clocks for the reply (sampling + token-to-piece; llama_decode
+-        // during generation), so the sampler bypass is scored on its own line.
+         row['sample_ms'] = pc?.sampleMs;
+         row['decode_ms'] = pc?.decodeMs;
+-        if (pc != null && (pc.speculativeDraftTokens ?? 0) > 0) {
+-          row['spec'] = {
+-            'draft_tokens': pc.speculativeDraftTokens,
+-            'accepted': pc.speculativeAcceptedDraftTokens,
+-            'attempts': pc.speculativeDraftAttempts,
+-            'verify_tokens': pc.speculativeVerifyTokens,
+-            'replay_tokens': pc.speculativeReplayTokens,
+-            'draft_ms': pc.speculativeDraftMs,
+-            'verify_ms': pc.speculativeVerifyMs,
+-            'eval_tokens': pc.evalTokens,
+-            'eval_ms': pc.evalMs,
+-          };
+-        }
+       } catch (e) {
+         row['error'] = '$e';
+       }
+-      runs.add(row);
+-      await save();
+-      return row;
+-    }
+-
+-    Future<LlamaCompletion> official() => _complete(Assistant._benchPrompt, Assistant._benchTokens);
+-
+-    // A 200-token story; cpu4 and cpu7 clocks every 8 received chunks (about one
+-    // token each) go into the run's mhz_blocks as [cpu4, cpu7] MHz.
+-    // ponytail: counts text chunks, not tokens; a chunk holding a partial UTF-8 character shifts a sample by one token
+-    Future<Map<String, Object?>> story(String phase, String name, Map<String, String> env, {bool hotOnly = false}) async {
+-      final mhz = <List<int?>>[];
+-      var n = 0;
+-      final row = await measure(phase, name, env, w, hotOnly: hotOnly, () => _complete(Research._story, 200, (c) {
+-        if (c.text.isNotEmpty && ++n % 8 == 0) mhz.add([Research._mhz(4), Research._mhz(7)]);
+-      }));
+-      row['mhz_blocks'] = mhz;
++      rows.add(row);
+       await save();
+-      return row;
+     }
+ 
+     try {
+-      // 0. Baseline at the saved settings and the served default (module defaults:
+-      //    MMID=3, Q3K_X4, tiny-op 262,144, Q3K_ILP, SSM_INPLACE, CONV_RING, Q3K_KERN, MMID_FUSE+CHUNK2 (R47); served:
+-      //    skip 117 + head2 q4_0/2048 + sampler bypass, the head copy made at load). Cold, as always.
+-      if (!_stopTest) await measure('baseline', 'official 32 · ${w}t', {}, w, official, fullText: true);
+-
+-      // r16 (R48): "profiled" = GGML_CPU_AB_TOKEN=1 under an A/A label (the compiled default, fuse+chunk2 on, under both
+-      // labels): one cpu-prof line per decode token (side, tok, us/token, head, router, majflt, minflt, mhz, the
+-      // MUL_MAT_ID / MUL_MAT / GLU / SSM_SCAN table), no change to the arithmetic.
+-      const prof = {'GGML_CPU_PROF': '1', 'GGML_CPU_AB_TOKEN': '1', 'GGML_CPU_AB': 'knob:MMID_FUSE+CHUNK2:1:1'};
+-
+-      // 1. Warm-up story 200, profiled, dropped; 2. the steady reference story 200, profiled (S(f) per logged clock).
+-      if (!_stopTest) await story('warmup', 'story 200 · profiled', prof);
+-      if (!_stopTest) await story('ref', 'story 200 · profiled', prof);
+-
+-      // 3. Four groups of official 32: plain -> profiled -> profiled -> plain; groups 2 and 4 start after the kit's own
+-      //    20 s idle pause. Plain = the r15 'official 32 · default' path.
+-      for (var g = 1; g <= 4 && !_stopTest; g++) {
+-        for (var i = 0; i < 4 && !_stopTest; i++) {
+-          final p = i == 1 || i == 2;
+-          final row = await measure(p ? 'prof' : 'on', p ? 'official 32 · profiled' : 'official 32 · default', p ? prof : {}, w,
+-              official, cool: Research.coolOfficial, pause: i == 0 && g.isEven ? 20 : 0, fullText: true);
+-          row['group'] = g;
++      // What is loaded and how the benchmark prompt is rendered (the model's own template unless _template is set).
++      final libs = Research._nativeLibs();
++      report['libs'] = {for (final l in libs) l.split('/').last: await DeviceProfile.sha256(l)};
++      report['lib_paths'] = libs;
++      final md = await _engine.getMetadata();
++      final tpl = await _engine.chatTemplate(
++        [LlamaChatMessage.fromText(role: LlamaChatRole.user, text: Assistant._benchPrompt)],
++        addAssistant: true,
++        enableThinking: false,
++        customTemplate: _template,
++        includeTokenCount: true,
++      );
++      report['template'] = {
++        'architecture': md['general.architecture'],
++        'model_name': md['general.name'],
++        'custom_template': _template != null,
++        'model_template': md['tokenizer.chat_template'],
++        'rendered': tpl.prompt,
++        'rendered_tokens': tpl.tokenCount,
++        'format': tpl.format,
++      };
++      final f = File(path);
++      final marker = File('$path.verified');
++      report['model'] = {
++        'file': path.split('/').last,
++        'bytes': f.lengthSync(),
++        'expected_bytes': ModelStore.expectedBytes,
++        'verified_marker': marker.existsSync() ? marker.readAsStringSync().trim() : null,
++      };
++      await save();
++      for (final s in Research.runs) {
++        for (var i = 0; i < s.reps && !_stopTest; i++) {
++          await measure(s, i);
+         }
++        if (_stopTest) break;
+       }
+-
+-      // 4. Official 32 plain x2 last.
+-      for (var i = 0; i < 2 && !_stopTest; i++) {
+-        await measure('on', 'official 32 · default', {}, w, official, cool: Research.coolOfficial, fullText: true);
+-      }
+-      await save();
++      // Full hash of the model file last, so it does not touch the page cache before the timed runs.
++      show('hashing the model');
++      (report['model'] as Map<String, Object?>)['sha256_end'] = await DeviceProfile.sha256(path);
+     } catch (e) {
+       notes.add('aborted: $e');
+     } finally {
+-      setEnv({});
+-      setNativeEnv('GGML_REPACK_RELEASE', '');
++      Research.clearKnobs();
++      _repack = null;
+       report['finished'] = DateTime.now().toIso8601String();
+       report['stopped_early'] = _stopTest;
+       report['mem_end'] = DeviceProfile.memInfo();
+       await save();
+       try {
+-        final dir = File(_loadedPath!).parent.path;
+-        File('$dir/research-${Research.kit}-${started.toIso8601String().replaceAll(':', '').substring(0, 15)}.json')
++        File('${File(path).parent.path}/research-${Research.kit}-${started.toIso8601String().replaceAll(':', '').substring(0, 15)}.json')
+             .writeAsStringSync(jsonEncode(report));
+       } catch (_) {
+         // the clipboard copy is the primary channel
+@@ -312,7 +281,7 @@ extension Research on Assistant {
+       optimizing = null;
+       await _engine.unloadModel();
+       status = EngineStatus.idle;
+-      await load(_loadedPath!);
++      await load(path);
+     }
+   }
+ }
+diff --git a/lib/settings_screen.dart b/lib/settings_screen.dart
+index 01bb69f..bdfc731 100644
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -361,7 +361,7 @@ class _PerformanceCard extends StatelessWidget {
+           : OutlinedButton.icon(
+               onPressed: busy || optimizing ? null : assistant.researchRun,
+               icon: const Icon(Icons.science_rounded),
+-              label: const Text('Run research kit (~15 min)'),
++              label: const Text('Run research kit r17 (~5-20 min)'),
+             ),
+       if (assistant.researchReport != null && !assistant.researching)
+         TextButton.icon(
+diff --git a/lib/setup_screen.dart b/lib/setup_screen.dart
+index 0126ab3..9eb13cc 100644
+--- a/lib/setup_screen.dart
++++ b/lib/setup_screen.dart
+@@ -56,7 +56,7 @@ class SetupScreen extends StatelessWidget {
+                     'Vollie works best with 6 GB or more and may be slow or close unexpectedly.',
+                   ),
+                 if (!enoughSpace && store.state == DownloadState.idle)
+-                  _Warning('Only $gbFree GB free. Free up about 4.5 GB of storage to download the model.'),
++                  _Warning('Only $gbFree GB free. Free up about 3.4 GB of storage to download the model.'),
+                 if (store.error != null && !store.active)
+                   Padding(
+                     padding: const EdgeInsets.only(bottom: 12),
+diff --git a/pubspec.yaml b/pubspec.yaml
+index d7c48d4..74fd0c4 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@ name: vollie
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 2.3.0+45
++version: 1.17.0+17
+ 
+ environment:
+   sdk: ^3.10.7
