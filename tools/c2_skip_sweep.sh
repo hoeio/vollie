@@ -5,7 +5,7 @@
 #   llama dir: a source tree with the c2 series applied and built (build/bin/llama-perplexity), or its bin directory
 #   setting:   "stock" (no knob) or comma-separated KEY=VALUE for VOLLIE_SKIP_<KEY>, e.g. SUM=65  MASS=900  SUM=80,MINK=2
 #   default settings: stock SUM=55 SUM=65 SUM=80 SUM=100 MASS=925 MASS=900 MASS=850 MASS=800
-# env: THREADS (default 8), STOCK_PPL (reference for "% over stock" if no stock row is in the table; default 11.7146,
+# env: PPL_ARGS (extra llama-perplexity arguments, e.g. -nr for the phone's no-repack path), THREADS (default 8), STOCK_PPL (reference for "% over stock" if no stock row is in the table; default 11.7146,
 #      the OLMoE served file's stock PPL, R50 host)
 set -e
 [ $# -ge 4 ] || { sed -n 4,7p "$0" | cut -c3- >&2; exit 2; }
@@ -23,7 +23,7 @@ for s in $SETTINGS; do
   [ "$s" = stock ] || for kv in $(echo "$s" | tr ',' ' '); do envs="$envs VOLLIE_SKIP_$kv"; done
   echo "run    $s ($envs)"
   # shellcheck disable=SC2086
-  env $envs "$BIN" -m "$MODEL" -f "$TEXT" -c 512 -b 512 -t "${THREADS:-8}" -ngl 0 > "$log" 2>&1 \
+  env $envs "$BIN" -m "$MODEL" -f "$TEXT" -c 512 -b 512 -t "${THREADS:-8}" -ngl 0 ${PPL_ARGS:-} > "$log" 2>&1 \
     || { echo "failed $s: see $log" >&2; exit 1; }
 done
 

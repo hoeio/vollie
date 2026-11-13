@@ -8,3 +8,4 @@ see [../../README.md](../../README.md).
   R50 was a host screen governed by memo-01 part C, so the first prereg file is R51.
 
 - [R51 amendment 1](R51-amendment-1.md): the same frontier on the second OLMoE file (publisher Q4_0).
+- [R51 amendment 2](R51-amendment-2.md): the frontier re-measured on the phone's no-repack kernel path.
