@@ -52,4 +52,6 @@ Tool note: `tools/cost.py` on the chosen files gives weight bytes per token of 5
 (Granite Mi, identical to campaign 1's d6-e6).
 
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
-[memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md).
+[memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
+[memo-03, lever pricing](memo-03-lever-pricing.md);
+[memo-04, OLMoE expert-skip](memo-04-olmoe-expert-skip.md).
