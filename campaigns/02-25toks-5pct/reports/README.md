@@ -78,6 +78,58 @@ file already on the laptop (sha256 equal to memo-01 B2); the imatrix for Mi is u
   written, flag the reference, leave a re-run with the publisher's F16 file (16.95 GB, about 8.5 h, *estimated*)
   as optional. BF16 and Mi were deleted for disk space; M is kept in `lab/`.
 
+### R51 OLMoE expert-skip frontier on the host
+
+- **Date:** 2026-11-13 to 2026-11-14. **Label:** every number is *host* unless marked *estimated*.
+- **Pre-registration:** [R51](../prereg/R51-olmoe-expert-skip-frontier-host.md) (commit `ab7875e`) and
+  [amendment 1](../prereg/R51-amendment-1.md) (commit `e16630b`), both pushed before the first sweep log existed
+  (the sweep started 2026-11-13 20:43 local). No tags, at the owner's wish.
+- **Build and run:** as pre-registered (llama.cpp `620d2225c` + `patches/llama.cpp-c2/0001`, 8 threads, 560 chunks,
+  `n_seq=1` in every log). File `olmoe-Mi.gguf` (`5abf710b…`), stock 11.7146, budget 12.3003.
+- **Identity:** the `stock` row printed PPL = 11.7146 ± 0.09601, R50's digits. **Hygiene deviation:** the rule
+  asked for a counter line with 0 pairs skipped in the stock row; the patch prints its counter only when a skip
+  knob is set, so the stock log has none. The identical PPL covers the purpose; the rule as written was not met.
+- **Added settings:** `SUM=70` and `SUM=75`, between `SUM=65` (inside) and `SUM=80` (over), which were 13 points of
+  bytes apart; this is the addition §1 allows.
+
+| setting | PPL | % over stock | expert bytes skipped | MB per token skipped | budget |
+|---|---|---|---|---|---|
+| stock | 11.7146 ± 0.0960 | 0 | 0 | 0 | |
+| SUM=45 | 11.7390 ± 0.0963 | +0.21 | 1.52 % | 5.1 | inside |
+| MASS=950 | 11.7480 ± 0.0964 | +0.29 | 1.60 % | 5.4 | inside |
+| SUM=55 | 11.8002 ± 0.0969 | +0.73 | 4.03 % | 13.5 | inside |
+| MASS=925 | 11.9213 ± 0.0984 | +1.76 | 8.64 % | 29.0 | inside |
+| SUM=65 | 11.9615 ± 0.0986 | +2.11 | 9.27 % | 31.1 | inside |
+| SUM=70 (added) | 12.1250 ± 0.1004 | +3.50 | 13.07 % | 43.8 | inside |
+| **MASS=900** | **12.1031 ± 0.1005** | **+3.32** | **13.39 %** | 44.9 | inside, **f\*** |
+| SUM=75 (added) | 12.3170 ± 0.1025 | +5.14 | 17.48 % | 58.6 | over by 0.0167 |
+| MASS=850 | 12.4142 ± 0.1038 | +5.97 | 19.96 % | 66.9 | over |
+| SUM=80 | 12.5456 ± 0.1049 | +7.09 | 22.26 % | 74.6 | over |
+
+- **f\* = 13.39 %** (`MASS=900`, +3.32 %). The budget crossing lies between 13.39 % and 17.48 %, 4.1 points
+  apart, so the round is resolved by the 5-point rule.
+- **Prediction 1 (central 10 %, band 6 to 15 %): hit**, in the upper part of the band.
+- **Prediction 2 (SUM lower than MASS at equal bytes, by 0.5 to 3 % of stock PPL): miss.** The two rules lie on
+  one curve within noise, and where they can be compared MASS is the slightly better one (`MASS=900`: 13.39 % at
+  +3.32 %; `SUM=70`: 13.07 % at +3.50 %).
+- **Lever status by §4:** not "sufficient at the central estimate" (f\* < 16 %) and not "closed" (f\* ≥ 5 %).
+  By §7 the next round is the device baseline of `olmoe-Mi`.
+- **In milliseconds (*estimated*, memo-03, not part of the scoring):** 13.39 % of expert bytes is about 3.9 ms at
+  0.29 ms per 1 %; memo-03's central need is 16 %, so the central estimate ends about 0.8 ms short of 38.0 ms,
+  far inside that model's own uncertainty (it needs 0 to 41 %). The host cannot decide this; the phone can.
+- **The 4-chunk smoke values were pessimistic** (`SUM=65`: +4.4 % on 4 chunks, +2.11 % on the full set).
+- **Not done:** `en.txt` for `MASS=900`; no setting is served on this round alone.
+
+#### R51 amendment 1 (publisher Q4_0 file): void
+
+All nine rows of the sweep on `OLMoE-1B-7B-0125-Instruct-Q4_0.gguf` printed the stock value, 11.3784 ± 0.09306,
+and no row has a counter line: **the skip knobs had no effect on this file.** The identity check passes
+trivially and there is no frontier, so the amendment's prediction is neither hit nor missed; the part is void.
+Cause not yet established. The likely one: on ARM, Q4_0 expert tensors take llama.cpp's repacked path, which the
+c2 patch does not touch. If so it also revives a campaign-1 finding for this file: repacking all-Q4_0 weights
+(3.6 GB then) got the app killed on the 8 GB phone (`models/granite-4.0-h-tiny-d6-e6.md`), which is why campaign 1
+put its experts in a type without a repack path. Tom is asked to establish the cause.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
 [memo-03, lever pricing](memo-03-lever-pricing.md);

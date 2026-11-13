@@ -51,11 +51,14 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
-0. **Running on the owner's laptop, detached** (check `lab/logs/`): the R51 sweep on olmoe-Mi (`c2skip/`,
-   `c2skip.out`, `c2skip.done`), then the amendment-1 sweep on the Q4_0 file (`c2skip-q4/`, `c2skip-q4.done`).
-   Score R51 and its amendment as written; `tools/c2_skip_sweep.sh` with the same arguments prints the table.
-   Memo-03 (*estimated*): Granite about 22.3 tok/s at best (5.2 ms short, no lever left), OLMoE needs about
-   16 % of expert bytes skipped (0 to 41 %), LFM2.5 fails the stop rule (about 60 % needed).
+0. **R51 is scored** (R-log): on `olmoe-Mi` the largest skip inside the budget is **13.39 % of expert bytes**
+   (`MASS=900`, PPL 12.1031, +3.32 %, *host*); `SUM=75` (17.48 %) is over by 0.0167. Prediction hit (band 6 to
+   15 %). In ms (*estimated*, memo-03): about 3.9 ms, about 0.8 ms short of 38.0 ms at the central estimate,
+   inside the model's uncertainty. **Next round: device baseline of `olmoe-Mi`** (write `prereg/R52-…`; the app
+   needs a build that loads this file; prediction on the exact stack 43.5 ms, band 39.1 to 50.4, memo-03).
+   **Amendment 1 is void:** the skip knobs did nothing on the Q4_0 file (probably the repacked Q4_0 path, which
+   would also mean the campaign-1 memory problem for an all-Q4_0 file on the phone); cause to be established
+   before that file is used for anything.
 1. **LFM2.5:** done as far as planned (R50 addendum). Optional: re-run its reference with the publisher's F16
    file to learn whether the BF16 path is at fault (about 8.5 h, *estimated*); only worth it if LFM2.5 comes back.
 2. `en.txt` sanity perplexity for the chosen files (the text is in campaign 1's private `lab/text/`).
@@ -118,3 +121,4 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 | 2026-11-13 | 3 (continued) | Memo-03 (lever pricing, *estimated*), memo-04 and `patches/llama.cpp-c2/0001` (OLMoE expert skip, off by default, identical on 4 chunks with the knob unset). Pre-registered R51 (`ab7875e`) and amendment 1. Owner: push to `main` without PR; second OLMoE file (publisher Q4_0); e-mail and private path removed from campaign-1 files. Sweeps queued behind the LFM2.5 reference run. |
 | 2026-11-13 | 3 (continued) | Served files hosted at `HoeioUser/vollie2` (`e893e8a6`); owner: no tags. LFM2.5 screen finished and appended to R50: reference row suspect (BF16 worse than its quantizations), no card frozen, no phone round planned. R51 sweep started on the laptop. |
+| 2026-11-14 | 3 (continued) | R51 scored: f* = 13.39 % of expert bytes inside the budget on `olmoe-Mi` (hit); SUM-against-MASS prediction missed; amendment 1 void (no effect on the Q4_0 file). Next: device baseline pre-registration R52. |
