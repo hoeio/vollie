@@ -78,6 +78,15 @@ The four open decisions below were answered, plus the file variant. The original
    below US$10M annual revenue); the card records this. Priority: OLMoE, Granite, then LFM2.5 (host perplexity
    and costing first).
 
+9. **2026-11-13: a second OLMoE served file, the publisher's Q4_0** (`OLMoE-1B-7B-0125-Instruct-Q4_0.gguf`,
+   sha256 `df43bd73…`). The screen rule chose the mix with imatrix (R50) and that stays the first file. After the
+   screen, memo-03 estimated that Q4_0 experts could be faster on the phone than Q3_K experts (compute-bound
+   kernel), and the owner approved adding the publisher's file as a second, separate served file. It is an owner
+   decision taken **after** the R50 results, recorded as such; it does not replace the rule's choice. Each file
+   has its own budget from its own stock PPL (11.3784 × 1.05 = 11.9473); a claim names its file.
+10. **2026-11-13: workflow.** Push to `main` directly, no PR. The published contact e-mail and a private path
+    were removed from campaign-1 files at the owner's instruction (they remain in git history).
+
 Naming, to avoid a collision: "stock weights" means the publisher's unmodified model; "stock served PPL" in the
 budget means the served GGUF run by the unmodified runtime (no skip, no two-stage head).
 

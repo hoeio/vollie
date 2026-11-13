@@ -73,10 +73,10 @@ Steps, what to expect and how to read the numbers: [docs/run-on-your-phone.md](d
 
 ### Share a result from your phone
 
-**If you run the research kit on a different phone and email us the report, we would be very grateful.** Every
+**If you run the research kit on a different phone and send us the report, we would be very grateful.** Every
 result here comes from one phone and one model; reports from other devices are the evidence we cannot produce
-ourselves. Send the JSON file, with your phone's model name and Android version, to
-**woobin3069@gmail.com**. What a report contains and what to include: [docs/run-on-your-phone.md](docs/run-on-your-phone.md#share-your-result).
+ourselves. Send the JSON file, with your phone's model name and Android version, in a new issue at
+**<https://github.com/hoeio/vollie/issues>** (attach the file). What a report contains and what to include: [docs/run-on-your-phone.md](docs/run-on-your-phone.md#share-your-result).
 
 ## The rules it was done under
 

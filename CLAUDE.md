@@ -72,7 +72,8 @@ The work is done by four subagents defined in `.claude/agents/`. The main sessio
 
 ## Working in the repository
 
-- Work on a branch, push it, open a PR; the owner merges. Do not push to `main`.
+- Commit and push directly to `main`; no PR is needed (owner, 2026-11-13; before that: branch and PR). Do not
+  rewrite pushed history and do not push tags.
 - Commit messages end with the attribution lines the session's system reminder gives you.
 - **End every session by updating [STATUS.md](campaigns/02-25toks-5pct/STATUS.md)**: what was done, what was decided,
   what is open, the next actions, and the session log line. That is how the next session continues.

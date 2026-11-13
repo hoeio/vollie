@@ -7,7 +7,8 @@ KV is copied byte-identical. The PPL of this file is the PPL a runtime anon Q4_0
 Never served; the output is a host artefact.  usage: exps_requant.py <in.gguf> <out.gguf> [Q4_0]
 """
 import sys, time
-sys.path.insert(0, '/Users/woobeenbaek/Documents/project/vollie/lab/llama.cpp-tiny/gguf-py')
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../lab/llama.cpp-tiny/gguf-py'))
 import gguf
 from gguf.quants import quantize, dequantize
 

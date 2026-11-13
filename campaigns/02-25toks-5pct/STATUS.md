@@ -39,14 +39,21 @@ there ([reports/memo-02-lever-applicability.md](reports/memo-02-lever-applicabil
 
 ## Open decisions (need the owner)
 
-1. Where the two chosen files are hosted for the phone (they exist only on the owner's laptop, under the
-   gitignored `lab/`; campaign 1 used a Hugging Face repository pinned by commit).
-2. Tags: `goal1-final` at `686f17d`; a tag for the screen rule commit `67d2ce2` if wanted.
-3. Tracked campaign-1 files contain the owner's e-mail (`README.md:79`, `docs/run-on-your-phone.md:62`) and a
-   private path (`tools/exps_requant.py:10`); remove or leave?
+1. Where the chosen files are hosted for the phone (Hugging Face repository name; the two mixes exist only on
+   the owner's laptop under the gitignored `lab/`). Not needed until the first device round.
+2. Tags (the owner creates them): `goal1-final` at `686f17d`; `prereg-R51` at `ab7875e`.
+
+Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a second OLMoE served file
+(CAMPAIGN.md, decisions 9 and 10); the contact e-mail and the private path were removed from campaign-1 files.
 
 ## Next actions, in order
 
+0. **Running on the owner's laptop, detached** (check `lab/logs/`): the LFM2.5 BF16 reference
+   (`ppl-lfm25-R.log`, `screen-lfm25.done`), then automatically the R51 sweep on olmoe-Mi (`c2skip/`,
+   `c2skip.out`, `c2skip.done`), then the amendment-1 sweep on the Q4_0 file (`c2skip-q4/`, `c2skip-q4.done`).
+   Score R51 and its amendment as written; `tools/c2_skip_sweep.sh` with the same arguments prints the table.
+   Memo-03 (*estimated*): Granite about 22.3 tok/s at best (5.2 ms short, no lever left), OLMoE needs about
+   16 % of expert bytes skipped (0 to 41 %), LFM2.5 fails the stop rule (about 60 % needed).
 1. **LFM2.5:** when `lab/logs/ppl-lfm25-R.log` has its `Final estimate`, apply memo-01 part C as written and
    append the result to R50 as a dated addendum (rows so far are in the state paragraph; sha256: M
    `046da7eb…`, Mi `37ec82bf…`). The unsloth imatrix made the mix **worse** (Mi above M); the rule already
@@ -108,3 +115,5 @@ there ([reports/memo-02-lever-applicability.md](reports/memo-02-lever-applicabil
 | 2026-11-12 | 2 | Pinned the four-agent team in `.claude/agents/` (full model IDs) and described it in `CLAUDE.md`; added the "Agent models" field to the prereg template; added the campaign 1 Phase 0 model history to `candidates.md`. Pushed to `main` at the owner's instruction. No measurements. |
 | 2026-11-12 | 3 | Team check: all four agents state their pinned model IDs (`CLAUDE_CODE_SUBAGENT_MODEL` unset). Owner answered the four open decisions plus file variant, served-file procedure and LFM2.5 licence (see above). Web re-check of the three candidates: all supported at `BASE` `620d2225c`. Wrote memo-01 (candidate re-check, host screen plan with commands, selection rule). No measurements. |
 | 2026-11-13 | 3 (continued) | The session turned out to run on the owner's M4 Pro; with permission, freed disk (20 non-Granite campaign-1 experiment files in the private `lab/`), built clean `620d2225c`, ran the host screen: **R50**, served files chosen for OLMoE and stock Granite, cards written; LFM2.5 reference still running. `tools/cost.py` on the chosen files. Tom: memo-02 (lever applicability). First measurements of the campaign, all *host*. |
+
+| 2026-11-13 | 3 (continued) | Memo-03 (lever pricing, *estimated*), memo-04 and `patches/llama.cpp-c2/0001` (OLMoE expert skip, off by default, identical on 4 chunks with the knob unset). Pre-registered R51 (`ab7875e`) and amendment 1. Owner: push to `main` without PR; second OLMoE file (publisher Q4_0); e-mail and private path removed from campaign-1 files. Sweeps queued behind the LFM2.5 reference run. |

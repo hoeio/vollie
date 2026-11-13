@@ -55,14 +55,14 @@ What to expect:
 
 ## Share your result
 
-**If you run the research kit on a different phone and email us the report, we would be very grateful.** All
+**If you run the research kit on a different phone and send us the report, we would be very grateful.** All
 the results here come from one phone and one model, and reports from other devices are the evidence we cannot
 produce ourselves.
 
-- **Where:** woobin3069@gmail.com.
+- **Where:** a new issue at <https://github.com/hoeio/vollie/issues>.
 - **Attach** the report as a file. It is plain JSON of roughly 170-180 KB (*estimated*), too long to paste into
   a message.
-- **Write in the email:** the phone's model name and Android version, because the report does not contain
+- **Write in the issue:** the phone's model name and Android version, because the report does not contain
   them; the app version; and, if you know it, whether the phone had just been restarted or had been busy
   before the run.
 

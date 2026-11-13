@@ -6,3 +6,5 @@ see [../../README.md](../../README.md).
 
 - [R51-olmoe-expert-skip-frontier-host.md](R51-olmoe-expert-skip-frontier-host.md): OLMoE expert-skip frontier, host.
   R50 was a host screen governed by memo-01 part C, so the first prereg file is R51.
+
+- [R51 amendment 1](R51-amendment-1.md): the same frontier on the second OLMoE file (publisher Q4_0).
