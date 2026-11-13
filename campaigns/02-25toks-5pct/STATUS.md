@@ -8,9 +8,9 @@ sections above it. Last updated: 2026-11-13 (session 3, continued).
 Campaign 2 asks whether 25 tok/s is reachable on the Snapdragon 888 phone with a frozen 7B-class model and a
 +5 % perplexity budget. **The first measurements exist (R50, *host*): one served file is frozen for OLMoE and
 one for stock Granite**, both the campaign-1-style mix with an imatrix (cards in `models/`). Budgets: OLMoE
-12.3003 (served 11.7146, F16 10.9420), Granite 9.6879 (served 9.2266, BF16 8.7816). LFM2.5's screen is three
-quarters done (P 28.4864, M 28.9005, Mi 30.5696, *host*; its BF16 reference was still running when this was
-written, so no file is chosen). **No device run and no device pre-registration exist.** The chosen Granite file
+12.3003 (served 11.7146, F16 10.9420), Granite 9.6879 (served 9.2266, BF16 8.7816). LFM2.5's screen is finished (R50 addendum): the rule names the mix without imatrix (28.9005), but its BF16
+reference (32.9649) is worse than every quantized file and is not credible, so no ceiling is established, no card
+is frozen, and by memo-03's stop-rule reading no phone round is planned for it. **No device run and no device pre-registration exist.** The chosen Granite file
 has the same types and bytes per token as campaign 1's (806 MB), so campaign 1's costing carries over
 (*estimated*); OLMoE reads 590 MB per token with 16 layers and no recurrent state, but two campaign-1 levers do
 not transfer as they stand: the two-stage head does nothing on OLMoE and expert skip has a different meaning
@@ -51,16 +51,13 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
-0. **Running on the owner's laptop, detached** (check `lab/logs/`): the LFM2.5 BF16 reference
-   (`ppl-lfm25-R.log`, `screen-lfm25.done`), then automatically the R51 sweep on olmoe-Mi (`c2skip/`,
+0. **Running on the owner's laptop, detached** (check `lab/logs/`): the R51 sweep on olmoe-Mi (`c2skip/`,
    `c2skip.out`, `c2skip.done`), then the amendment-1 sweep on the Q4_0 file (`c2skip-q4/`, `c2skip-q4.done`).
    Score R51 and its amendment as written; `tools/c2_skip_sweep.sh` with the same arguments prints the table.
    Memo-03 (*estimated*): Granite about 22.3 tok/s at best (5.2 ms short, no lever left), OLMoE needs about
    16 % of expert bytes skipped (0 to 41 %), LFM2.5 fails the stop rule (about 60 % needed).
-1. **LFM2.5:** when `lab/logs/ppl-lfm25-R.log` has its `Final estimate`, apply memo-01 part C as written and
-   append the result to R50 as a dated addendum (rows so far are in the state paragraph; sha256: M
-   `046da7eb…`, Mi `37ec82bf…`). The unsloth imatrix made the mix **worse** (Mi above M); the rule already
-   covers that (the lower of the passing ones). Then write its card or return the model to the owner.
+1. **LFM2.5:** done as far as planned (R50 addendum). Optional: re-run its reference with the publisher's F16
+   file to learn whether the BF16 path is at fault (about 8.5 h, *estimated*); only worth it if LFM2.5 comes back.
 2. `en.txt` sanity perplexity for the chosen files (the text is in campaign 1's private `lab/text/`).
 3. **Expert-skip frontier on the host, OLMoE first** (the largest lever there: experts are 346 of 590 MB per
    token): PPL against skipped expert bytes. The skip rule has to be defined for unnormalised top-8 softmax
@@ -120,3 +117,4 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 | 2026-11-13 | 3 (continued) | The session turned out to run on the owner's M4 Pro; with permission, freed disk (20 non-Granite campaign-1 experiment files in the private `lab/`), built clean `620d2225c`, ran the host screen: **R50**, served files chosen for OLMoE and stock Granite, cards written; LFM2.5 reference still running. `tools/cost.py` on the chosen files. Tom: memo-02 (lever applicability). First measurements of the campaign, all *host*. |
 
 | 2026-11-13 | 3 (continued) | Memo-03 (lever pricing, *estimated*), memo-04 and `patches/llama.cpp-c2/0001` (OLMoE expert skip, off by default, identical on 4 chunks with the knob unset). Pre-registered R51 (`ab7875e`) and amendment 1. Owner: push to `main` without PR; second OLMoE file (publisher Q4_0); e-mail and private path removed from campaign-1 files. Sweeps queued behind the LFM2.5 reference run. |
+| 2026-11-13 | 3 (continued) | Served files hosted at `HoeioUser/vollie2` (`e893e8a6`); owner: no tags. LFM2.5 screen finished and appended to R50: reference row suspect (BF16 worse than its quantizations), no card frozen, no phone round planned. R51 sweep started on the laptop. |

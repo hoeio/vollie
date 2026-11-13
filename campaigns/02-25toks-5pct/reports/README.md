@@ -51,6 +51,33 @@ and says whether it passed, was falsified or stayed unresolved, misses included.
 Tool note: `tools/cost.py` on the chosen files gives weight bytes per token of 590 MB (OLMoE Mi) and 806 MB
 (Granite Mi, identical to campaign 1's d6-e6).
 
+#### R50 addendum, 2026-11-13: LFM2.5-8B-A1B
+
+Same build, flags and text as R50; 575 chunks, `n_seq=1` in every log; all numbers *host*. P is the publisher's
+file already on the laptop (sha256 equal to memo-01 B2); the imatrix for Mi is unsloth's.
+
+| row | bytes | sha256 | PPL | % over R | rule (≤ R × 1.08 = 35.6021) |
+|---|---|---|---|---|---|
+| R (BF16) | 16,947,260,640 | `2b471037…` | 32.9649 ± 0.3211 | 0 | **suspect, see below** |
+| P | 4,844,678,368 | `48ed1465…` | 28.4864 ± 0.2672 | -13.59 | pass |
+| M | 3,815,238,880 | `046da7eb…` | 28.9005 ± 0.2684 | -12.33 | pass, **chosen by the rule as written** (lower of M, Mi) |
+| Mi | 3,817,074,144 | `37ec82bf…` | 30.5696 ± 0.2895 | -7.27 | pass |
+
+- **The reference row is not credible.** A 16-bit model that is 14 to 16 % worse than its own 4-bit quantizations
+  is not a quantization effect. M was built from this same BF16 file and scores 28.9005, so the weights are
+  sound; the likely cause is the BF16 inference path for `lfm2moe` on this CPU build (not investigated, not
+  confirmed). Granite's reference was BF16 too and behaved normally (8.7816 against 9.1045 for its Q4_0).
+- **Verdict as written:** M and Mi are both below the limit, M is lower, so the rule names `lfm25-M.gguf`. The
+  choice between M and Mi does not depend on R. What does depend on R, and is therefore **not established**:
+  "% over 16-bit" and the hard ceiling (R × 1.20 = 39.5579). The +5 % budget would be 30.3455
+  (28.9005 × 1.05).
+- **The stock imatrix made this model worse** (Mi +5.78 % against M), the opposite of OLMoE and Granite.
+- **Absolute level:** about 28 on wikitext-2 for a chain-of-thought chat model; only ratios are used here.
+- **No card is frozen and nothing is hosted for LFM2.5.** Memo-03 puts it outside the stop rule (*estimated*:
+  about 47 ms even with 30 % of expert bytes skipped), so no phone round is planned. Owner, 2026-11-13: record as
+  written, flag the reference, leave a re-run with the publisher's F16 file (16.95 GB, about 8.5 h, *estimated*)
+  as optional. BF16 and Mi were deleted for disk space; M is kept in `lab/`.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
 [memo-03, lever pricing](memo-03-lever-pricing.md);
