@@ -2,12 +2,12 @@
 
 Chosen by the host screen R50 (rule: memo-01 part C). Stock weights; campaign 1's file
 ([granite-4.0-h-tiny-d6-e6.md](granite-4.0-h-tiny-d6-e6.md)) was built from an abliterated variant and is a
-different file. Not yet uploaded anywhere: it exists on the owner's laptop and can be rebuilt from the recipe.
+different file. It can also be rebuilt from the recipe below; the sha256 decides.
 
 | | |
 |---|---|
 | campaign | 2 (25 tok/s, +5 %) |
-| download | not uploaded yet (owner); sources: `ibm-granite/granite-4.0-h-tiny-GGUF` @ `08d5a8a9741dd5c1a95d2d39e25253226aa1464e` (bf16), `mradermacher/granite-4.0-h-tiny-i1-GGUF` @ `4a7953840f6dfb0d0f6ff3a2fe6528c414328e3f` (`granite-4.0-h-tiny.imatrix.gguf`) |
+| download | [HoeioUser/vollie2 @ e893e8a6](https://huggingface.co/HoeioUser/vollie2/blob/e893e8a65cff2f09f3de45e4840537c625806e0b/granite-Mi.gguf) (uploaded 2026-11-13; the server-side sha256 equals the value below); sources: `ibm-granite/granite-4.0-h-tiny-GGUF` @ `08d5a8a9741dd5c1a95d2d39e25253226aa1464e` (bf16), `mradermacher/granite-4.0-h-tiny-i1-GGUF` @ `4a7953840f6dfb0d0f6ff3a2fe6528c414328e3f` (`granite-4.0-h-tiny.imatrix.gguf`) |
 | size | 3,161,269,344 bytes |
 | sha256 | `8df94de731a08a377150e4fcc5dcbd16212a6d102bc0b628cdc905cba0bc0f45` |
 | model | IBM Granite 4.0 H Tiny, stock weights, Apache-2.0: 6.94 B total, 1.47 B active per token (header count), 36 Mamba-2 + 4 attention layers, 64 experts, 6 used per token, shared expert, vocabulary 100,352, tied head |

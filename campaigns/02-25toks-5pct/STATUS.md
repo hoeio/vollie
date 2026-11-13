@@ -39,9 +39,12 @@ there ([reports/memo-02-lever-applicability.md](reports/memo-02-lever-applicabil
 
 ## Open decisions (need the owner)
 
-1. Where the chosen files are hosted for the phone (Hugging Face repository name; the two mixes exist only on
-   the owner's laptop under the gitignored `lab/`). Not needed until the first device round.
-2. Tags (the owner creates them): `goal1-final` at `686f17d`; `prereg-R51` at `ab7875e`.
+None at the moment.
+
+Hosting (2026-11-13): the two mixes are in the public repository `HoeioUser/vollie2` at commit `e893e8a6`
+(server-side sha256 checked); the publisher's Q4_0 is taken from AI2's repository at its pinned commit. Tags: the
+owner does not want them; the order of pre-registration and run is shown by commit hashes and push times
+(R51: `ab7875e`, amendment 1: `e16630b`).
 
 Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a second OLMoE served file
 (CAMPAIGN.md, decisions 9 and 10); the contact e-mail and the private path were removed from campaign-1 files.

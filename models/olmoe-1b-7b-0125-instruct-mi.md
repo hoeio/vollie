@@ -1,13 +1,11 @@
 # Served file: `olmoe-Mi.gguf` (frozen for campaign 2)
 
-Chosen by the host screen R50 (rule: memo-01 part C). Not yet uploaded anywhere: the file exists on the owner's
-laptop and can be rebuilt bit for bit from the recipe below (same sources, same `llama-quantize` build); the
-sha256 decides.
+Chosen by the host screen R50 (rule: memo-01 part C). It can also be rebuilt from the recipe below; the sha256 decides.
 
 | | |
 |---|---|
 | campaign | 2 (25 tok/s, +5 %) |
-| download | not uploaded yet (owner); sources: `allenai/OLMoE-1B-7B-0125-Instruct-GGUF` @ `2ac1d27317927518c9ef7bd99f91f3f1e4ee288d` (F16), `mradermacher/OLMoE-1B-7B-0125-Instruct-i1-GGUF` @ `8eec686da67fd0d16b6f8f37cce694f45fb9f906` (`imatrix.dat`) |
+| download | [HoeioUser/vollie2 @ e893e8a6](https://huggingface.co/HoeioUser/vollie2/blob/e893e8a65cff2f09f3de45e4840537c625806e0b/olmoe-Mi.gguf) (uploaded 2026-11-13; the server-side sha256 equals the value below); sources: `allenai/OLMoE-1B-7B-0125-Instruct-GGUF` @ `2ac1d27317927518c9ef7bd99f91f3f1e4ee288d` (F16), `mradermacher/OLMoE-1B-7B-0125-Instruct-i1-GGUF` @ `8eec686da67fd0d16b6f8f37cce694f45fb9f906` (`imatrix.dat`) |
 | size | 3,072,399,552 bytes |
 | sha256 | `5abf710b775cd64fd89d74a783c8a7056a409ba795cd401b9dd448ef8e444abb` |
 | model | AI2 OLMoE-1B-7B-0125-Instruct, stock weights, Apache-2.0: 6.92 B total, 1.18 B active per token (header count), 16 layers, 64 experts, 8 used per token, expert FFN 1024, no shared expert, vocabulary 50,304, untied head |
