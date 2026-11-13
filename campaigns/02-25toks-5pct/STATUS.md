@@ -1,19 +1,20 @@
 # Campaign 2 status and hand-off
 
 **Read this first, update it last.** Every session appends a line to the session log below and refreshes the
-sections above it. Last updated: 2026-11-12 (session 3).
+sections above it. Last updated: 2026-11-13 (session 3, continued).
 
 ## State in one paragraph
 
 Campaign 2 asks whether 25 tok/s is reachable on the Snapdragon 888 phone with a frozen 7B-class model and a
-+5 % perplexity budget. The owner's decisions are in (session 3): three models with stock weights, one +5 %
-budget, metric unchanged. **Nothing has been measured, no served file is frozen, no pre-registration exists.**
-All three models are supported at the pinned `BASE` (web check 2026-11-12), so no new llama.cpp base is needed
-for support. The next step is the owner's host screen that fixes one served file per model
-([reports/memo-01-candidates-and-host-screen.md](reports/memo-01-candidates-and-host-screen.md)). The honest
-current view (*estimated*): Granite about 23 tok/s at best; OLMoE the most plausible for 25, but its byte
-advantage over Granite is only about 11 to 25 % (the layer count, 16 against 40, is the larger advantage) and
-its small experts may quantise badly; LFM2.5 reads about 1.3 times Granite's bytes and is the least likely.
++5 % perplexity budget. **The first measurements exist (R50, *host*): one served file is frozen for OLMoE and
+one for stock Granite**, both the campaign-1-style mix with an imatrix (cards in `models/`). Budgets: OLMoE
+12.3003 (served 11.7146, F16 10.9420), Granite 9.6879 (served 9.2266, BF16 8.7816). LFM2.5's screen is three
+quarters done (P 28.4864, M 28.9005, Mi 30.5696, *host*; its BF16 reference was still running when this was
+written, so no file is chosen). **No device run and no device pre-registration exist.** The chosen Granite file
+has the same types and bytes per token as campaign 1's (806 MB), so campaign 1's costing carries over
+(*estimated*); OLMoE reads 590 MB per token with 16 layers and no recurrent state, but two campaign-1 levers do
+not transfer as they stand: the two-stage head does nothing on OLMoE and expert skip has a different meaning
+there ([reports/memo-02-lever-applicability.md](reports/memo-02-lever-applicability.md)).
 
 ## Decisions already made by the owner
 
@@ -38,28 +39,35 @@ its small experts may quantise badly; LFM2.5 reads about 1.3 times Granite's byt
 
 ## Open decisions (need the owner)
 
-None at the moment. The next one comes from the host screen: if no file of a model passes the selection rule,
-that model goes back to the owner.
+1. Where the two chosen files are hosted for the phone (they exist only on the owner's laptop, under the
+   gitignored `lab/`; campaign 1 used a Hugging Face repository pinned by commit).
+2. Tags: `goal1-final` at `686f17d`; a tag for the screen rule commit `67d2ce2` if wanted.
+3. Tracked campaign-1 files contain the owner's e-mail (`README.md:79`, `docs/run-on-your-phone.md:62`) and a
+   private path (`tools/exps_requant.py:10`); remove or leave?
 
 ## Next actions, in order
 
-1. **Owner (host, Apple M4):** run the host screen in memo-01 part B, in the order OLMoE, Granite, LFM2.5: F16,
-   publisher Q4_0 and the mix, full wikitext-2, ctx 512, batch 512; send back the `Final estimate` lines, file
-   sizes and sha256 values. Also still to do by the owner: tag `goal1-final` at `686f17d`.
-2. Apply the selection rule (memo-01 part C) as written; write `models/<name>.md` for each chosen file from
-   [../../models/_TEMPLATE.md](../../models/_TEMPLATE.md) with hash, F16, served PPL, budget and hard ceiling.
-3. Bonnie and Tom: per-token cost structure of each chosen file (`tools/cost.py` logic; the owner runs repository
-   tools, or read the GGUF header with own short code) and a price per lever in bytes and ms (*estimated*).
-   Which campaign-1 levers exist for `olmoe` and `lfm2moe` at all (expert skip, fused expert op, Q3_K x4 kernel,
-   two-stage head) has to be read from the patch, not assumed: `0001` was written for `granitehybrid`.
-4. Host frontier (owner runs, the team writes the plan and the parser): PPL against estimated milliseconds for
-   expert skip, the two-stage head and a dense requantisation at load ([knowledge.md](knowledge.md) §5).
-5. **Stop rule:** if the best package inside the budget is worth less than about −6 ms (*estimated*) of what the
-   model needs, write the "no" with numbers into the R-log and do not spend phone rounds on that model.
-6. Otherwise write `prereg/R50-<title>.md` from the template (agent models: clyde `claude-fable-5-2`, bonnie and
-   tom `claude-opus-5-5`, annie `claude-sonnet-5-5`), commit it, ask the owner to tag `prereg-R50`, and only then
-   ask for the phone run.
-7. New patch work goes into a new series beside `0001`, split by lever; `0001` is not edited.
+1. **LFM2.5:** when `lab/logs/ppl-lfm25-R.log` has its `Final estimate`, apply memo-01 part C as written and
+   append the result to R50 as a dated addendum (rows so far are in the state paragraph; sha256: M
+   `046da7eb…`, Mi `37ec82bf…`). The unsloth imatrix made the mix **worse** (Mi above M); the rule already
+   covers that (the lower of the passing ones). Then write its card or return the model to the owner.
+2. `en.txt` sanity perplexity for the chosen files (the text is in campaign 1's private `lab/text/`).
+3. **Expert-skip frontier on the host, OLMoE first** (the largest lever there: experts are 346 of 590 MB per
+   token): PPL against skipped expert bytes. The skip rule has to be defined for unnormalised top-8 softmax
+   weights first (memo-02); Tom writes it into a new patch series, off by default, and the identity checks
+   (`-ub 1`, `-ub 32`, `-b 512`) are run with the knob off. For Granite repeat campaign 1's thresholds on the new
+   file (115 to 140), because the old PPL table belongs to other weights.
+4. New patch series beside `0001`, split by lever. Memo-02 found six levers in `0001` that are **on by default**;
+   in the new series every lever is off unless switched on, and each is checked bit-identical on `olmoe` and
+   `lfm2moe` before it is used (none ever ran on those architectures).
+5. Bonnie: price the levers per model in bytes and ms (*estimated*) from the cards, memo-02 and campaign 1's
+   byte rate (0.0411 ms/MB) and per-node costs; give a prediction band for the stock-runtime and full-stack
+   steady token of each file.
+6. **Stop rule:** if a model's best package inside its budget is worth less than about −6 ms of what it needs
+   (*estimated*), write the "no" with numbers into the R-log and do not spend phone rounds on that model.
+7. Otherwise write `prereg/R51-<title>.md` (R50 is the host screen; agent models: clyde `claude-fable-5-2`,
+   bonnie and tom `claude-opus-5-5`, annie `claude-sonnet-5-5`), commit it, ask the owner to tag it, then ask for
+   the phone run. A baseline device run of each chosen file on the stock runtime is the natural first round.
 
 ## Things to be careful about
 
@@ -78,6 +86,16 @@ that model goes back to the owner.
   rule (served ≤ F16 × 1.08) and the hard ceiling (F16 × 1.20); do not pick a file because its budget is roomy.
 - llama.cpp issue #29002 (co-batched sequences corrupt the LFM2 short-conv state on CPU) bears on LFM2.5's
   perplexity and identity checks; see memo-01.
+- **Where the session runs matters.** Session 3 ran on the owner's Apple M4 Pro (Remote Control), not in a cloud
+  container, although the session text described a cloud environment. Check with `sysctl -n
+  machdep.cpu.brand_string` and `df -h` before telling the owner to run host work. With the owner's permission the
+  lead ran the host screen itself; phone runs remain the owner's.
+- Long host runs: start them detached (`nohup caffeinate -i ...`, in a command of their own) and wait in a
+  separate command; a background command is killed after two hours together with everything it started. A 16-bit
+  pass takes about 2 h (OLMoE) to 7 h (Granite) and about 8.5 h (LFM2.5, *estimated*). The disk had 18 GB free at the
+  start; 16-bit references are deleted after use. Memory pressure from other apps slows runs.
+- The screen used an **unpatched** build, on purpose: `0001` switches six levers on by default (memo-02), so a
+  patched build is not a stock-PPL reference unless those knobs are set to 0.
 - Subagents defined in `.claude/agents/` are only listed if the files exist when the session starts. In session 3
   they appeared late; the first research task ran on a general-purpose stand-in given `bonnie.md`
   (`claude-opus-5-5`). After they loaded, all four stated their pinned IDs.
@@ -89,3 +107,4 @@ that model goes back to the owner.
 | 2026-11-12 | 1 | Read the repository; analysed feasibility; researched candidate models; created the campaign structure (PR #2, merged); wrote this hand-off (`CLAUDE.md`, `STATUS.md`, `knowledge.md`). No measurements. |
 | 2026-11-12 | 2 | Pinned the four-agent team in `.claude/agents/` (full model IDs) and described it in `CLAUDE.md`; added the "Agent models" field to the prereg template; added the campaign 1 Phase 0 model history to `candidates.md`. Pushed to `main` at the owner's instruction. No measurements. |
 | 2026-11-12 | 3 | Team check: all four agents state their pinned model IDs (`CLAUDE_CODE_SUBAGENT_MODEL` unset). Owner answered the four open decisions plus file variant, served-file procedure and LFM2.5 licence (see above). Web re-check of the three candidates: all supported at `BASE` `620d2225c`. Wrote memo-01 (candidate re-check, host screen plan with commands, selection rule). No measurements. |
+| 2026-11-13 | 3 (continued) | The session turned out to run on the owner's M4 Pro; with permission, freed disk (20 non-Granite campaign-1 experiment files in the private `lab/`), built clean `620d2225c`, ran the host screen: **R50**, served files chosen for OLMoE and stock Granite, cards written; LFM2.5 reference still running. `tools/cost.py` on the chosen files. Tom: memo-02 (lever applicability). First measurements of the campaign, all *host*. |
