@@ -1,0 +1,263 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -5144,6 +5144,217 @@ static void ggml_cpu_faults(int64_t f[2]) {
+     f[0] = f[1] = 0;
+ }
+ 
++// Vollie c2 (patches/llama.cpp-c1-olmoe/0002-prefill-cold.patch): env GGML_PREFILL_COLD=<tau> (unset / 0 = off; advice
++// only, results unchanged). In a batch graph (n_tokens > 1: a prompt, a perplexity chunk), thread 0 counts at each
++// layer's first MUL_MAT_ID how many rows (token, slot) the routing sends to each expert. Once that layer has run (at the
++// next layer's first MUL_MAT_ID, past the barrier before it, and at the graph's end) the slices e of every MUL_MAT_ID
++// weight sharing those ids that the prompt routed 1 to tau-1 times are advised, page-aligned inward (never a page of a
++// neighbouring slice), and only for weights in a "CPU_Mapped" buffer (the model file's mapping; never anon memory such as
++// a repacked copy, where the advice would mean swap). Slices routed 0 times are not touched: the prompt did not read them.
++// Advice, probed once on the first slice, in this order: MADV_COLD (20, Linux 5.4+: deactivate, the page stays cached
++// until reclaim wants it), then MADV_PAGEOUT (21, same kernel: reclaim now), then none (counted, not issued; macOS and
++// kernels before 5.4). One "c2-pcold-advice" line at the probe, one "c2-pcold" line per batch graph on stderr;
++// GGML_PREFILL_COLD_LOG=1 adds one "c2-pcold-slice" line per marked (layer, expert) (host checks).
++// Env GGML_C2_IO=1 (unset = off; counters only): /proc/self/io read_bytes and rchar plus getrusage major/minor faults,
++// sampled at a prompt's start (its first batch graph), at the first one-token graph after it and after every graph;
++// one "c2-io" line per prompt, printed when the next prompt starts or the CPU backend is freed (a freed context).
++#if !defined(_WIN32)
++#ifndef MADV_COLD
++#define MADV_COLD 20
++#endif
++#ifndef MADV_PAGEOUT
++#define MADV_PAGEOUT 21
++#endif
++static int ggml_cpu_pcold_tau = 0;  // this graph's tau (0 on one-token graphs)
++static int ggml_cpu_pcold_adv = -1; // -1 = not probed yet; else MADV_COLD, MADV_PAGEOUT or 0 = none
++static bool ggml_cpu_pcold_log = false; // GGML_PREFILL_COLD_LOG=1: one "c2-pcold-slice" line per marked (layer, expert)
++static struct {
++    const struct ggml_tensor * ids;  // the pending layer's routing; NULL = none
++    const struct ggml_tensor * w[8]; // the MUL_MAT_ID weights that read it
++    int nw;
++    int64_t n_as;
++    int32_t cnt[512];
++} ggml_cpu_pcold_l;
++static struct { int layers, routed, marked, fails; int64_t bytes, us; } ggml_cpu_pcold_g; // this graph
++
++static const char * ggml_cpu_pcold_name(int a) {
++    return a == MADV_COLD ? "cold" : a == MADV_PAGEOUT ? "pageout" : "none";
++}
++
++static void ggml_cpu_pcold_mark(const char * p, size_t n) {
++    const uintptr_t page = (uintptr_t) sysconf(_SC_PAGESIZE);
++    const uintptr_t b = ((uintptr_t) p + page - 1) & ~(page - 1), e = ((uintptr_t) p + n) & ~(page - 1);
++    if (e <= b) {
++        return;
++    }
++    ggml_cpu_pcold_g.marked++;
++    ggml_cpu_pcold_g.bytes += (int64_t) (e - b);
++    if (ggml_cpu_pcold_adv < 0) {
++        int err[2] = {0, 0};
++        ggml_cpu_pcold_adv = 0;
++#if defined(__linux__)
++        const int order[2] = {MADV_COLD, MADV_PAGEOUT};
++        for (int i = 0; i < 2; i++) {
++            if (madvise((void *) b, e - b, order[i]) == 0) {
++                ggml_cpu_pcold_adv = order[i];
++                break;
++            }
++            err[i] = errno;
++        }
++#endif
++        fprintf(stderr, "c2-pcold-advice advice=%s errno_cold=%d errno_pageout=%d page=%d\n",
++                ggml_cpu_pcold_name(ggml_cpu_pcold_adv), err[0], err[1], (int) page);
++        return;
++    }
++    if (ggml_cpu_pcold_adv && madvise((void *) b, e - b, ggml_cpu_pcold_adv) != 0) {
++        ggml_cpu_pcold_g.fails++;
++    }
++}
++
++// Thread 0: the pending layer has run; advise its rarely routed slices.
++static void ggml_cpu_pcold_flush(void) {
++    if (!ggml_cpu_pcold_l.ids) {
++        return;
++    }
++    const int64_t t0 = ggml_time_us();
++    ggml_cpu_pcold_g.layers++;
++    for (int64_t e = 0; e < ggml_cpu_pcold_l.n_as; e++) {
++        const int32_t c = ggml_cpu_pcold_l.cnt[e];
++        ggml_cpu_pcold_g.routed += c > 0 ? ggml_cpu_pcold_l.nw : 0;
++        if (c <= 0 || c >= ggml_cpu_pcold_tau) {
++            continue;
++        }
++        if (ggml_cpu_pcold_log && ggml_cpu_pcold_l.nw > 0) { // host check: the marked slices against the page tracer's
++            fprintf(stderr, "c2-pcold-slice %s e=%lld n=%d w=%d\n", ggml_cpu_pcold_l.w[0]->name, (long long) e, c, ggml_cpu_pcold_l.nw);
++        }
++        for (int i = 0; i < ggml_cpu_pcold_l.nw; i++) {
++            const struct ggml_tensor * w = ggml_cpu_pcold_l.w[i];
++            ggml_cpu_pcold_mark((const char *) w->data + e*w->nb[2], w->nb[2]);
++        }
++    }
++    ggml_cpu_pcold_l.ids = NULL;
++    ggml_cpu_pcold_g.us += ggml_time_us() - t0;
++}
++
++// Thread 0, before node_n (a MUL_MAT_ID of a batch graph) runs; its ids are complete.
++static void ggml_cpu_pcold_node(const struct ggml_cgraph * cgraph, int node_n) {
++    const struct ggml_tensor * n = cgraph->nodes[node_n], * ids = n->src[2], * w = n->src[0];
++    if (ids != ggml_cpu_pcold_l.ids) {
++        ggml_cpu_pcold_flush(); // every thread passed the barrier before this node: the previous layer is done
++        if (w->ne[2] > 512) {
++            return;
++        }
++        ggml_cpu_pcold_l.ids = ids;
++        ggml_cpu_pcold_l.nw = 0;
++        ggml_cpu_pcold_l.n_as = w->ne[2];
++        memset(ggml_cpu_pcold_l.cnt, 0, sizeof ggml_cpu_pcold_l.cnt);
++        for (int64_t t = 0; t < ids->ne[1]; t++) {
++            for (int64_t k = 0; k < ids->ne[0]; k++) {
++                const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + k*ids->nb[0]);
++                if (e >= 0 && e < w->ne[2]) {
++                    ggml_cpu_pcold_l.cnt[e]++;
++                }
++            }
++        }
++    }
++    if (ggml_cpu_pcold_l.nw < 8 && w->data && w->buffer && strcmp(ggml_backend_buffer_name(w->buffer), "CPU_Mapped") == 0) {
++        ggml_cpu_pcold_l.w[ggml_cpu_pcold_l.nw++] = w;
++    }
++}
++
++// Graph end (calling thread, workers done).
++static void ggml_cpu_pcold_end(int64_t n_tok) {
++    if (!ggml_cpu_pcold_tau) {
++        return;
++    }
++    ggml_cpu_pcold_flush();
++    fprintf(stderr, "c2-pcold tau=%d advice=%s tokens=%lld layers=%d routed_slices=%d marked_slices=%d mb=%.1f fails=%d us=%lld\n",
++            ggml_cpu_pcold_tau, ggml_cpu_pcold_name(ggml_cpu_pcold_adv < 0 ? 0 : ggml_cpu_pcold_adv), (long long) n_tok,
++            ggml_cpu_pcold_g.layers, ggml_cpu_pcold_g.routed, ggml_cpu_pcold_g.marked, ggml_cpu_pcold_g.bytes/1e6,
++            ggml_cpu_pcold_g.fails, (long long) ggml_cpu_pcold_g.us);
++    memset(&ggml_cpu_pcold_g, 0, sizeof ggml_cpu_pcold_g);
++}
++
++static struct {
++    int state;       // 0 = no prompt open, 1 = prefill, 2 = decode
++    int pg, dg;      // batch and one-token graphs of this prompt
++    char run[64];    // VOLLIE_RUN at the prompt's start ("-" if unset)
++    int64_t s[3][5]; // start, first decode graph, after the last graph: us, read_bytes, rchar, majflt, minflt
++} ggml_cpu_c2io;
++
++static void ggml_cpu_c2io_sample(int64_t * s) {
++    s[0] = ggml_time_us();
++    s[1] = s[2] = -1;
++    FILE * f = fopen("/proc/self/io", "r");
++    if (f) {
++        char k[32];
++        long long v;
++        while (fscanf(f, " %31[^:]: %lld", k, &v) == 2) {
++            if (strcmp(k, "read_bytes") == 0) s[1] = v;
++            if (strcmp(k, "rchar") == 0) s[2] = v;
++        }
++        fclose(f);
++    }
++    ggml_cpu_faults(s + 3);
++}
++
++void ggml_cpu_c2io_flush(void); // also called by the CPU backend's free (ggml-cpu.cpp)
++void ggml_cpu_c2io_flush(void) {
++    int64_t (*s)[5] = ggml_cpu_c2io.s;
++    if (!ggml_cpu_c2io.state) {
++        return;
++    }
++    if (ggml_cpu_c2io.state == 1) {
++        memcpy(s[1], s[2], sizeof s[1]); // no decode graph: the decode share is empty
++    }
++    fprintf(stderr, "c2-io run=%s prompt_graphs=%d decode_graphs=%d us=%lld/%lld/%lld read_bytes=%lld/%lld/%lld "
++            "rchar=%lld/%lld/%lld majflt=%lld/%lld/%lld minflt=%lld/%lld/%lld\n", ggml_cpu_c2io.run, ggml_cpu_c2io.pg,
++            ggml_cpu_c2io.dg, (long long) s[0][0], (long long) s[1][0], (long long) s[2][0], (long long) s[0][1],
++            (long long) s[1][1], (long long) s[2][1], (long long) s[0][2], (long long) s[1][2], (long long) s[2][2],
++            (long long) s[0][3], (long long) s[1][3], (long long) s[2][3], (long long) s[0][4], (long long) s[1][4],
++            (long long) s[2][4]);
++    fflush(stderr);
++    ggml_cpu_c2io.state = 0;
++}
++
++// Graph start (calling thread): both knobs from the environment, then the prompt bookkeeping.
++static void ggml_cpu_c2_begin(int64_t n_tok) {
++    const char * pc = getenv("GGML_PREFILL_COLD");
++    ggml_cpu_pcold_tau = n_tok > 1 && pc ? MAX(0, atoi(pc)) : 0;
++    const char * pl = getenv("GGML_PREFILL_COLD_LOG");
++    ggml_cpu_pcold_log = pl && atoi(pl) == 1;
++    ggml_cpu_pcold_l.ids = NULL;
++    const char * io = getenv("GGML_C2_IO");
++    if (!(io && atoi(io) == 1)) {
++        ggml_cpu_c2io_flush(); // switched off: close an open prompt
++        return;
++    }
++    if (n_tok > 1 && ggml_cpu_c2io.state != 1) {
++        ggml_cpu_c2io_flush();
++        const char * run = getenv("VOLLIE_RUN");
++        snprintf(ggml_cpu_c2io.run, sizeof ggml_cpu_c2io.run, "%s", run && *run ? run : "-");
++        ggml_cpu_c2io.pg = ggml_cpu_c2io.dg = 0;
++        ggml_cpu_c2io_sample(ggml_cpu_c2io.s[0]);
++        ggml_cpu_c2io.state = 1;
++    } else if (n_tok == 1 && ggml_cpu_c2io.state == 1) {
++        ggml_cpu_c2io_sample(ggml_cpu_c2io.s[1]);
++        ggml_cpu_c2io.state = 2;
++    }
++    ggml_cpu_c2io.pg += ggml_cpu_c2io.state == 1;
++    ggml_cpu_c2io.dg += ggml_cpu_c2io.state == 2;
++}
++
++static void ggml_cpu_c2_end(int64_t n_tok) {
++    ggml_cpu_pcold_end(n_tok);
++    if (ggml_cpu_c2io.state) {
++        ggml_cpu_c2io_sample(ggml_cpu_c2io.s[2]);
++    }
++}
++#else
++void ggml_cpu_c2io_flush(void);
++void ggml_cpu_c2io_flush(void) {}
++#endif
++
+ // Vollie r15: cpu<n>'s current clock in MHz from sysfs (the kit's mhz_blocks source); -1 where there is none (host)
+ static int ggml_cpu_mhz(int cpu) {
+     char path[64];
+@@ -5397,6 +5608,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+         if (ggml_cpu_expert_io && state->ith == 0 && mmid) {
+             ggml_cpu_expert_prefetch(cgraph, node_n); // after the weights pointer: it applies the skip mask
+         }
++        if (ggml_cpu_pcold_tau && state->ith == 0 && mmid && node->src[2]->ne[1] > 1) { // not the pruned last layer
++            ggml_cpu_pcold_node(cgraph, node_n); // Vollie c2: GGML_PREFILL_COLD (batch graphs only)
++        }
+ #endif
+         if (tiny && state->ith != 0) {
+             // thread 0 does it alone
+@@ -5971,6 +6185,9 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+     if (n_tok > 8) {
+         ggml_cpu_ab_count = 0; // Vollie: ABBA blocks count from the run's first decode graph
+     }
++#if !defined(_WIN32)
++    ggml_cpu_c2_begin(cgraph->n_nodes > 0 ? cgraph->nodes[0]->ne[1] : 0); // Vollie c2: GGML_PREFILL_COLD, GGML_C2_IO
++#endif
+     const char * q3k = getenv("GGML_Q3K_VEC");
+     ggml_cpu_q3k_vec = q3k && *q3k ? atoi(q3k) != 0 : 1; // Vollie: "" = unset = on (r3/r4 kits ran it off: q3k=0)
+     const char * q3kx = getenv("GGML_Q3K_X4");
+@@ -6264,6 +6481,7 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+     }
+ 
+ #if !defined(_WIN32)
++    ggml_cpu_c2_end(cgraph->n_nodes > 0 ? cgraph->nodes[0]->ne[1] : 0);
+     ggml_cpu_kw_end();
+ #endif
+     enum ggml_status ret = threadpool->ec;
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
+--- a/ggml/src/ggml-cpu/ggml-cpu.cpp
++++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
+@@ -115,7 +115,10 @@ static const char * ggml_backend_cpu_get_name(ggml_backend_t backend) {
+     GGML_UNUSED(backend);
+ }
+ 
++extern "C" void ggml_cpu_c2io_flush(void); // Vollie c2 (0002): GGML_C2_IO's open prompt line, ggml-cpu.c
++
+ static void ggml_backend_cpu_free(ggml_backend_t backend) {
++    ggml_cpu_c2io_flush(); // a freed context ends its last prompt
+     struct ggml_backend_cpu_context * cpu_ctx = (struct ggml_backend_cpu_context *)backend->context;
+     delete[] cpu_ctx->work_data;
+     delete cpu_ctx;

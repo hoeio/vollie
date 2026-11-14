@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Campaign 2 research-kit report parser (kits r17 to r20; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
-memo-12-kit-r18.md, memo-14-kit-r19.md and memo-17-kit-r20.md). Standard library only.
+"""Campaign 2 research-kit report parser (kits r17 to r21; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
+memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md and memo-19-kit-r21.md). Standard library only.
 
 usage: python3 -I tools/c2_research_parse.py <report.json | clipboard text "c2gz:..."> [--min-mhz 1800]
            [--prompt tools/c2_official_prompt.txt] [--sigma 0.4] [--r16 reports/device/r16_2026-11-08.json]
@@ -26,7 +26,13 @@ headroom at the gate, gate wait, idle before, prompt time, A78 clock at run end,
 major faults. Then every wait of a gated run: page-cache MB of the model lost between the previous run's end and this
 run's start, with and without keep-warm active in that wait (GGML_KEEP_WARM on in the previous run), and the
 keep-warm passes seen (c2-keepwarm lines: count, CPU ms, aborted). The warm block (proto 'warm', no gate) is a
-different protocol and is printed apart; its warm-ups are their own groups and are not scored."""
+different protocol and is printed apart; its warm-ups are their own groups and are not scored.
+
+Kit r21 (N models, GGML_PREFILL_COLD in ABBA per block): identity per model (hash, libraries at each load, template,
+one text across both arms, repack on, no skip/head2, a c2-io line per row), the advice probe, then per model and arm
+the scored runs' medians (tok/s, decode and prefill read MB and major faults from the c2-io line, prefill ms, mincore
+experts+rest before/after, MB marked), the ABBA pairs on minus off per block and per model, and a side-by-side table
+with one column per model."""
 import argparse
 import base64
 import gzip
@@ -453,6 +459,179 @@ def warm(r):
     return out
 
 
+# kit r21 (memo-19): patches/llama.cpp-c1-olmoe/0002's lines
+IO_RE = re.compile(r'c2-io run=(\S+) prompt_graphs=(\d+) decode_graphs=(\d+) us=(-?\d+)/(-?\d+)/(-?\d+) '
+                   r'read_bytes=(-?\d+)/(-?\d+)/(-?\d+) rchar=(-?\d+)/(-?\d+)/(-?\d+) majflt=(-?\d+)/(-?\d+)/(-?\d+) '
+                   r'minflt=(-?\d+)/(-?\d+)/(-?\d+)')
+PCOLD_RE = re.compile(r'c2-pcold tau=(\d+) advice=(\w+) tokens=(\d+) layers=(\d+) routed_slices=(\d+) marked_slices=(\d+) '
+                      r'mb=([\d.]+) fails=(\d+) us=(\d+)')
+ADV_RE = re.compile(r'c2-pcold-advice advice=(\w+) errno_cold=(\d+) errno_pageout=(\d+) page=(\d+)')
+
+
+def io_of(x):
+    """The row's c2-io line as prefill / decode parts: read MB, rchar MB, major faults, ms; None when absent."""
+    for l in x.get('c2') or []:
+        m = IO_RE.search(l)
+        if m and m.group(1) == x.get('run_tag', m.group(1)):
+            v = [int(g) for g in m.groups()[1:]]
+            us, rb, rc, mj = v[2:5], v[5:8], v[8:11], v[11:14]
+            part = lambda a, i: None if a[i] < 0 or a[i + 1] < 0 else a[i + 1] - a[i]
+            mb = lambda a, i: None if part(a, i) is None else part(a, i) / 1e6
+            return {'prompt_graphs': v[0], 'decode_graphs': v[1],
+                    'pre_read_mb': mb(rb, 0), 'dec_read_mb': mb(rb, 1), 'pre_rchar_mb': mb(rc, 0), 'dec_rchar_mb': mb(rc, 1),
+                    'pre_majflt': part(mj, 0), 'dec_majflt': part(mj, 1),
+                    'pre_ms': None if part(us, 0) is None else part(us, 0) / 1000,
+                    'dec_ms': None if part(us, 1) is None else part(us, 1) / 1000}
+    return None
+
+
+def pcold_of(x):
+    m = [PCOLD_RE.search(l) for l in x.get('c2') or []]
+    m = [q for q in m if q and int(q.group(3)) > 1]
+    return {'advice': m[-1].group(2), 'mb': sum(float(q.group(7)) for q in m), 'slices': sum(int(q.group(6)) for q in m),
+            'fails': sum(int(q.group(8)) for q in m), 'us': sum(int(q.group(9)) for q in m)} if m else None
+
+
+def med(v):
+    v = [a for a in v if a is not None]
+    return st.median(v) if v else None
+
+
+def spread(v):
+    v = [a for a in v if a is not None]
+    return f"{fmt(st.median(v))} [{fmt(min(v))}..{fmt(max(v))}] n {len(v)}" if v else '-'
+
+
+def r21_models(r):
+    order = list((r.get('models') or {}).keys())
+    for x in r.get('runs', []):
+        if x.get('model') not in order:
+            order.append(x.get('model'))
+    return order
+
+
+def r21_checks(r):
+    out = []
+    built = (r.get('build') or {}).get('libs') or {}
+    for k, m in (r.get('models') or {}).items():
+        ok = m.get('bytes') == m.get('expected_bytes') and m.get('verified_marker') == m.get('expected_sha256') == m.get('sha256_end')
+        out.append(f"model {k}: {m.get('file')} {m.get('bytes')} B arch {m.get('arch')} template {m.get('template_source')} "
+                   f"repack rule {m.get('repack_rule')}; marker {str(m.get('verified_marker'))[:8]}, sha256 at end "
+                   f"{str(m.get('sha256_end'))[:8]} -> {'OK' if ok else 'CHECK'}")
+    libs = {}
+    for x in r.get('runs', []):
+        for k, v in (x.get('libs') or {}).items():
+            libs.setdefault(k, set()).add(v)
+    for k, v in sorted(libs.items()):
+        out.append(f"lib {k}: {len(v)} hash(es) at the loads" + ('' if k not in built else
+                   (' = build' if v == {built[k]} else ' != BUILD ' + built[k][:12])))
+    b = r.get('build') or {}
+    if b:
+        out.append(f"build llama.cpp {str(b.get('llama_cpp'))[:9]}; series " +
+                   ' '.join(f"{p['file'][:4]}:{p['sha256'][:8]}" for p in b.get('series', [])) + '; app ' +
+                   ' '.join(f"{p['file'][:4]}:{p['sha256'][:8]}" for p in b.get('app_patches', [])))
+    for k, t in (r.get('templates') or {}).items():
+        out.append(f"template {k}: arch {t.get('architecture')} custom {t.get('custom_template')} rendered_tokens "
+                   f"{t.get('rendered_tokens')}")
+    for k in r21_models(r):
+        rs = [x for x in r.get('runs', []) if x.get('model') == k]
+        texts = {x.get('text') for x in rs if x.get('text') is not None}
+        bad_env = [x.get('run_tag') for x in rs if {'GGML_EXPERT_SKIP', 'GGML_HEAD2'} & set(env_of(x))]
+        nr = [x.get('run_tag') for x in rs if x.get('repack_loaded') is not True]
+        noio = [x.get('run_tag') for x in rs if io_of(x) is None]
+        err = [x.get('run_tag') for x in rs if x.get('error')]
+        pt = sorted({x.get('prompt_tokens') for x in rs if x.get('prompt_tokens') is not None})
+        out.append(f"{k}: {len(rs)} runs, one text across both arms: {'yes' if len(texts) == 1 else f'NO ({len(texts)} texts)'}; "
+                   f"repack on in all: {'yes' if not nr else 'NO ' + ','.join(nr)}; skip/head2 set: {','.join(bad_env) or 'none'}; "
+                   f"prompt_tokens {pt}; rows without a c2-io line: {','.join(noio) or 'none'}; errors: {','.join(err) or 'none'}")
+    adv = {m.groups() for x in r.get('runs', []) for l in x.get('c2') or [] for m in [ADV_RE.search(l)] if m}
+    out.append('advice probe: ' + ('; '.join(f"advice={a} errno_cold={b} errno_pageout={c} page={d}" for a, b, c, d in sorted(adv))
+                                   if adv else 'no c2-pcold-advice line'))
+    if r.get('unmatched_lines'):
+        out.append(f"unmatched runtime lines: {len(r['unmatched_lines'])}")
+    return out
+
+
+def r21_stats(rs):
+    """One model and arm, scored runs: the medians the memo-19 tables use."""
+    io = [io_of(x) or {} for x in rs]
+    pc = [pcold_of(x) or {} for x in rs]
+    rb = lambda k, f: med(x[k][f] for x in rs if isinstance(x.get(k), dict))
+    return {
+        'n': len(rs), 'tps': med(x.get('decode_tps') for x in rs),
+        'tps_min': min((x['decode_tps'] for x in rs if x.get('decode_tps') is not None), default=None),
+        'tps_max': max((x['decode_tps'] for x in rs if x.get('decode_tps') is not None), default=None),
+        'dec_read_mb': med(i.get('dec_read_mb') for i in io), 'dec_majflt': med(i.get('dec_majflt') for i in io),
+        'pre_read_mb': med(i.get('pre_read_mb') for i in io), 'pre_ms': med(i.get('pre_ms') for i in io),
+        'ttft_ms': med(x.get('ttft_ms') for x in rs),
+        'res_before_exp': rb('res_before', 'experts_mb'), 'res_before_rest': rb('res_before', 'rest_mb'),
+        'res_after_exp': rb('res_after', 'experts_mb'), 'res_after_rest': rb('res_after', 'rest_mb'),
+        'marked_mb': med(p.get('mb') for p in pc), 'advice': ','.join(sorted({p['advice'] for p in pc if p.get('advice')})) or '-',
+        'cached_mb': med(memv(x.get('mem_before'), 'cached') for x in rs),
+        'gate_timeouts': sum(1 for x in rs if x.get('gate_timeout')),
+    }
+
+
+def r21_pairs(rs):
+    """ABBA pairs of one block's scored runs in list order (off on on off ...): (off, on) per pair."""
+    out = []
+    for i in range(0, len(rs) - 3, 4):
+        q = rs[i:i + 4]
+        if [x.get('arm') for x in q] == ['off', 'on', 'on', 'off']:
+            out += [(q[0], q[1]), (q[3], q[2])]
+    return out
+
+
+def r21_tables(r):
+    runs = [x for x in r.get('runs', []) if x.get('proto') == 'r21']
+    if not runs:
+        return []
+    models = r21_models(r)
+    scored = lambda m, a: [x for x in runs if x.get('model') == m and x.get('arm') == a and x.get('phase') == 'on']
+    S = {(m, a): r21_stats(scored(m, a)) for m in models for a in ('off', 'on')}
+    out = ['kit r21, scored runs (phase on), per model and arm (*device*):']
+    for m in models:
+        for a in ('off', 'on'):
+            s = S[(m, a)]
+            out.append(f"  {m} {a}: n {s['n']} tok/s median {fmt(s['tps'])} [{fmt(s['tps_min'])}..{fmt(s['tps_max'])}] | "
+                       f"decode read MB {fmt(s['dec_read_mb'], 0)} majflt {fmt(s['dec_majflt'], 0)} | prefill read MB "
+                       f"{fmt(s['pre_read_mb'], 0)} ms {fmt(s['pre_ms'], 0)} ttft ms {fmt(s['ttft_ms'], 0)} | res before "
+                       f"{fmt(s['res_before_exp'], 0)}+{fmt(s['res_before_rest'], 0)} after {fmt(s['res_after_exp'], 0)}+"
+                       f"{fmt(s['res_after_rest'], 0)} MB | marked MB {fmt(s['marked_mb'], 0)} advice {s['advice']} | "
+                       f"Cached MB {fmt(s['cached_mb'], 0)} | gate timeouts {s['gate_timeouts']}")
+    out.append('ABBA pairs per block, on minus off: tok/s and decode read MB (median [min..max] n):')
+    allp = {m: [] for m in models}
+    for g in sorted({x.get('group') for x in runs}, key=lambda g: int(str(g).lstrip('b') or 0)):
+        rs = [x for x in runs if x.get('group') == g and x.get('phase') == 'on']
+        if not rs:
+            continue
+        p = r21_pairs(rs)
+        allp[rs[0].get('model')] += p
+        dt = [None if b.get('decode_tps') is None or a.get('decode_tps') is None else b['decode_tps'] - a['decode_tps'] for a, b in p]
+        dr = [None if (io_of(b) or {}).get('dec_read_mb') is None or (io_of(a) or {}).get('dec_read_mb') is None
+              else io_of(b)['dec_read_mb'] - io_of(a)['dec_read_mb'] for a, b in p]
+        out.append(f"  {g} {rs[0].get('model')}: tok/s {spread(dt)} | decode read MB {spread(dr)}")
+    out.append('per model, every pair: on minus off')
+    for m in models:
+        p = allp[m]
+        dt = [None if b.get('decode_tps') is None or a.get('decode_tps') is None else b['decode_tps'] - a['decode_tps'] for a, b in p]
+        rel = [None if not (io_of(a) or {}).get('dec_read_mb') or (io_of(b) or {}).get('dec_read_mb') is None
+               else 100 * (io_of(b)['dec_read_mb'] / io_of(a)['dec_read_mb'] - 1) for a, b in p]
+        out.append(f"  {m}: tok/s {spread(dt)} | decode read_bytes change % {spread(rel)}")
+    # side by side: one column per model, in the table's order (N models)
+    rows = [('tok/s off', 'tps', 'off', 2), ('tok/s on', 'tps', 'on', 2), ('decode read MB off', 'dec_read_mb', 'off', 0),
+            ('decode read MB on', 'dec_read_mb', 'on', 0), ('decode majflt off', 'dec_majflt', 'off', 0),
+            ('decode majflt on', 'dec_majflt', 'on', 0), ('prefill ms off', 'pre_ms', 'off', 0), ('prefill ms on', 'pre_ms', 'on', 0),
+            ('prefill read MB off', 'pre_read_mb', 'off', 0), ('prefill read MB on', 'pre_read_mb', 'on', 0),
+            ('res before experts off', 'res_before_exp', 'off', 0), ('res before experts on', 'res_before_exp', 'on', 0),
+            ('res after experts off', 'res_after_exp', 'off', 0), ('res after experts on', 'res_after_exp', 'on', 0),
+            ('marked MB on', 'marked_mb', 'on', 0)]
+    out.append('side by side (medians, *device*): | metric | ' + ' | '.join(models) + ' |')
+    for label, k, a, nd in rows:
+        out.append(f"| {label} | " + ' | '.join(fmt(S[(m, a)][k], nd) for m in models) + ' |')
+    return out
+
+
 def main(argv=None):
     a = argparse.ArgumentParser()
     a.add_argument('report', nargs='?')
@@ -470,8 +649,10 @@ def main(argv=None):
     r = load(o.report)
     print(f"kit {r.get('kit')} app {r.get('app')} started {r.get('started')} stopped_early {r.get('stopped_early')}")
     r16 = load(o.r16) if r.get('kit') == 'r20' and o.r16 and os.path.exists(o.r16) else None
-    for part in (checks(r, o.prompt), identity(r), groups(r, o.min_mhz, o.fault_run), ab(r, o.min_mhz, o.sigma),
-                 r16_compare(r, r16), waits(r), warm(r)):
+    parts = (r21_checks(r), r21_tables(r)) if r.get('kit') == 'r21' else (
+        checks(r, o.prompt), identity(r), groups(r, o.min_mhz, o.fault_run), ab(r, o.min_mhz, o.sigma),
+        r16_compare(r, r16), waits(r), warm(r))
+    for part in parts:
         if part:
             print('\n'.join(part))
     return 0
@@ -611,6 +792,44 @@ def selftest():
     assert any(l.startswith('warm_ship warm-up (unscored): n 1') for l in g) and any(l.startswith('warm_ship: n 2 printed tok/s median 13.00') for l in g), g
     idt = identity(r20)
     assert any('r20: every 32-token run' in l and 'one text: yes' in l for l in idt), idt
+    # r21: N models (three here), c2-io / c2-pcold lines, ABBA pairs, the side-by-side table.
+    def row21(m, g, arm, i, tps, dec_mb, phase='on'):
+        tag = f'{m}_{arm}.{i}'
+        rb0, rb1 = 1_000_000, 1_000_000 + 500_000_000
+        line = (f'c2-io run={tag} prompt_graphs=1 decode_graphs=31 us=0/6000000/9000000 read_bytes={rb0}/{rb1}/'
+                f'{rb1 + int(dec_mb * 1e6)} rchar=0/0/0 majflt=0/900/{900 + int(dec_mb * 4)} minflt=0/0/0')
+        c2 = [line] + ([f'c2-pcold tau=8 advice=cold tokens=156 layers=15 routed_slices=2754 marked_slices=729 mb=645.0 '
+                        f'fails=0 us=500'] if arm == 'on' else [])
+        return {'proto': 'r21', 'model': m, 'group': g, 'arm': arm, 'phase': phase, 'run_tag': tag, 'decode_tps': tps,
+                'env_set': {'GGML_C2_IO': '1', **({'GGML_PREFILL_COLD': '8'} if arm == 'on' else {})}, 'repack_loaded': True,
+                'text': 'T' + m, 'prompt_tokens': 155, 'c2': c2, 'res_before': rz(1500), 'res_after': rz(2000),
+                'mem_before': 'avail=1MB cached=3000MB', 'libs': {'libllama.so': 'aa' * 32}}
+    shaM = lambda k: {'file': k + '.gguf', 'bytes': 1, 'expected_bytes': 1, 'expected_sha256': 'h' + k,
+                      'verified_marker': 'h' + k, 'sha256_end': 'h' + k, 'arch': k, 'template_source': 'model', 'repack_rule': True}
+    r21 = {'kit': 'r21', 'models': {k: shaM(k) for k in ('granite', 'olmoe', 'lfm')},
+           'build': {'libs': {'libllama.so': 'aa' * 32}}, 'runs': []}
+    io_seq = {'granite': [(10, 900), (13, 500), (13, 520), (10, 880)] * 2, 'olmoe': [(11, 700), (12, 600), (12, 610), (11, 690)] * 2,
+              'lfm': [(9, 100), (9, 100), (9, 100), (9, 100)] * 2}
+    for b, m in enumerate(['granite', 'olmoe', 'lfm'], 1):
+        r21['runs'].append(row21(m, f'b{b}', 'off', 90, 5, 999, 'warmup'))
+        for i, (arm, (tps, mb)) in enumerate(zip(['off', 'on', 'on', 'off'] * 2, io_seq[m])):
+            r21['runs'].append(row21(m, f'b{b}', arm, i, tps, mb))
+    assert io_of(r21['runs'][1])['dec_read_mb'] == 900 and io_of(r21['runs'][1])['pre_read_mb'] == 500
+    assert io_of(r21['runs'][1])['pre_ms'] == 6000 and io_of(r21['runs'][1])['dec_majflt'] == 3600
+    assert pcold_of(r21['runs'][2])['mb'] == 645.0 and pcold_of(r21['runs'][1]) is None
+    c = r21_checks(r21)
+    assert all(l.endswith('OK') for l in c[:3]) and 'lib libllama.so: 1 hash(es) at the loads = build' in c[3], c
+    assert any(l.startswith('granite: 9 runs, one text across both arms: yes; repack on in all: yes; skip/head2 set: none')
+               for l in c), c
+    t = r21_tables(r21)
+    assert any(l.startswith('  granite off: n 4 tok/s median 10.00') and 'decode read MB 890' in l for l in t), t
+    assert any(l.startswith('  granite on: n 4 tok/s median 13.00') and 'marked MB 645 advice cold' in l for l in t), t
+    assert any(l.startswith('  b1 granite: tok/s 3.00 [3.00..3.00] n 4 | decode read MB -380.00 [-400.00..-360.00] n 4') for l in t), t
+    assert any(l.startswith('  olmoe: tok/s 1.00') for l in t), t
+    assert any(l.startswith('side by side') and l.endswith('| granite | olmoe | lfm |') for l in t), t
+    assert '| tok/s on | 13.00 | 12.00 | 9.00 |' in t, t
+    r21['runs'][3]['text'] = 'other'
+    assert any('one text across both arms: NO (2 texts)' in l for l in r21_checks(r21))
     print('selftest OK')
     return 0
 

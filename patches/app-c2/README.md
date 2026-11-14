@@ -97,3 +97,25 @@ app copy (`jniLibs` and llamadart's local bundle), wipes the hook caches, and ru
 the ones just built, and writes the APK and `BUILD-<kit>.txt` to `lab/dist-c2/`.
 
 Do not put a keystore, `key.properties` or `local.properties` into the app copy or into this repository.
+
+## 0005-kit-r21.patch (on top of 0004)
+
+Kit r21 (version 1.21.0+21), campaign 1's runtime + `patches/llama.cpp-c1-olmoe/0001-0002`. Same package and debug key:
+installs as an update over r20 and keeps `olmoe-Mi`. Design, run list, schema and owner steps:
+`campaigns/02-25toks-5pct/reports/memo-19-kit-r21.md`.
+
+- **Model table** (`Research.kitModels`): id, file, URL, bytes, sha256, architecture, template source, repack rule and
+  baseline settings per model. Downloads, the storage check, the blocks, the residency split (expert byte ranges per
+  file) and the report are generated from it. Entries: `granite` (`granite-Mi.gguf`, fetched by the kit) and `olmoe`
+  (the app's own download). A third model is one entry plus its host checks.
+- **Second file:** "Download kit r21 models" fetches every missing kit file: Wi-Fi only, one storage check first,
+  resumable (HTTP Range into a `.part`), sha256 checked before the rename; a `.verified` marker as the app's own
+  download writes. In the app with the screen on (no background service).
+- **Run list:** blocks in the table's order forward then backward (G O O G); each block loads its model (repack on,
+  set explicitly), runs two unscored warm-ups, 8 scored official runs with `GGML_PREFILL_COLD=8` in ABBA, one profiled
+  run per arm; r16's gate before every run but the warm-ups. Every run sets `GGML_C2_IO=1`. No skip, no head2.
+- **Per row:** model, arm, loaded file, `repack_loaded`, gate series, caps, mincore experts/rest before and after (and of
+  every file before a block's load), meminfo (MemAvailable, Cached, SwapFree, RssAnon, RssFile, VmSwap), faults,
+  `/proc/self/io` read bytes over the run and to the first streamed chunk, the `c2-io` and `c2-pcold` lines, reply text,
+  library hashes at each load. Report: every model's file, marker and end-of-kit sha256, each model's template render.
+- **"Save research results to Downloads"** next to the copy button (MediaStore, Android 10+).
