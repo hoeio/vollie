@@ -297,6 +297,69 @@ Profiled runs (one each): `c1_off` 5.59, `c1_ship` 7.44, `c1_ship_io` 10.64 tok/
   configuration printed a median of 7.5 tok/s; the model was never resident and the clock never left its
   thermal cap, and neither is something the runtime controls under the campaign's rules.
 
+### R56 OLMoE under campaign 1's kit protocol (kit r20)
+
+- **Date:** 2026-11-14, 16:28 to 16:57 local. **Label:** *device* unless marked.
+- **Pre-registration:** [R56](../prereg/R56-olmoe-r16-protocol-device.md), commit `a524ce9`, pushed before the APK
+  was handed over.
+- **Data:** [device/r20_2026-11-14_summary.json](device/r20_2026-11-14_summary.json), transcribed by the lead from
+  the pasted report (per-run fields; per-token arrays of two profiled runs). The raw report is not stored as a
+  file and the repository parser was not run on it.
+- **Checks:** model sha256 as pre-registered; one reply text in all 46 official-prompt runs; 156 prompt tokens;
+  all four runtime patch hashes and the library hashes are in the report.
+- **State: this time the phone was cool, as in campaign 1's fast runs.** Battery 23 to 26 °C; from run 2 the
+  gate reached 0.62 to 0.65 (as in r16) and the clock was 2,112 / 2,035 MHz for all of part A and B. Free swap 0
+  to 144 MB, `Cached` 2.1 to 2.8 GB before runs.
+
+**Part A, r16's protocol (21 runs).** The ten claim positions: 9.89, 11.94, 7.52, 13.33, 10.79, 15.02, 8.71,
+11.72, 13.24, 9.72: **median 11.25 tok/s** (campaign 1, Granite, same positions: 20.51). All 19 official runs:
+median 12.08. Prefill 5.6 to 7.9 s (r16: about 3.6 s). Model pages in the page cache before a run: 0.2 to 2.2 GB;
+after a run 2.0 to 2.39 GB, never the 2,725 MB the benchmark touches (*host*).
+
+**Part B, keep-warm on (r16's group 2 repeated).** 9.41, 11.13, 14.62, 11.61 (mean 11.69) against 7.52, 12.58,
+13.46, 13.33 (mean 11.72) without it. Pages before the run 445, 1,703, 1,935, 1,540 MB against 1,127, 1,136,
+1,352, 1,937 MB. The helper ran (18 passes, 0.26 to 0.65 s CPU each), but the system still took pages back
+between passes (1,915 MB to 1,540 MB in one wait).
+
+**Part C, warm block, no gate wait.**
+
+| configuration | runs | tok/s | median | state |
+|---|---|---|---|---|
+| `c1_ship` | 10 | 11.70, 16.11, 16.71, 11.01, 12.03, 12.98, 9.95, 11.08, 12.74, 11.87 | **11.95** | first four at 2,112 MHz (median 13.9), then the cap fell to 1,785, 1,670, 1,555 as headroom rose to 0.97 |
+| `EXPERT_IO=5` | 5 | 13.78, 10.44, 11.34, 12.98, 12.74 | 12.74 | cap 1,555 MHz |
+| `c1_off` | 5 | 4.96, 7.01, 7.51, 6.47, 6.10 | 6.47 | cap 1,555 MHz |
+
+In the warm block 2.06 to 2.36 GB of the model was in the page cache before each run and each `c1_ship` run still
+had 1,001 to 2,579 major faults.
+
+**Scoring.**
+
+1. State (hot for all of part A, probability 0.6): **miss**; the phone cooled from run 2.
+2. Part A hot: not applicable (no hot runs).
+3. Part A cool (claim-position median 16 to 21, central 19): **miss**, 11.25. The condition "at least 1.9 GB
+   resident before the run" held for 2 of the 19 runs only.
+4. Part B was written for the hot state; in the cool state it showed **no gain** (11.69 against 11.72). By §5
+   keep-warm is closed as a lever.
+5. Part C `c1_ship`: the hot band (11 to 15, central 13) contains the median 11.95, and the residency and
+   fault conditions held for all ten runs: **hit** as far as the hot cell goes. The four runs at full clock
+   (median 13.9) are below the cool band (17 to 21): **miss** for the cool cell.
+6. Ratios: `EXPERT_IO=5` within ± 10 % of `c1_ship` (+6.6 %): **hit**. `c1_off` at 55 to 80 % of `c1_ship`: 54 %,
+   **miss** by one point.
+
+- **The comparison with Vollie 1 at equal state (§3):** cool, 2,112 MHz, campaign 1's protocol and runtime:
+  OLMoE 11.25 tok/s at the claim positions, Granite 20.51. **OLMoE does not match Vollie 1.** It is also not
+  "slower although resident": it was never resident.
+- **Where the difference is (per-token profile, runs 13 and 14):** the tokens with at most 5 major faults have
+  a median of 43.4 ms (run 14) and 50.8 ms (run 13), fastest 42.3 ms, at 2,112 MHz; campaign 1's Granite token
+  was about 46 ms. So OLMoE's fault-free token is as fast as Granite's or faster (expert op about 28 to 30 ms,
+  dense matmuls about 9.6 ms, head about 3.5 ms). But the first ten tokens of every run fault: their mean is 84
+  ms (run 14, started 0.3 s after the previous run with 2.24 GB resident) and 117 ms (run 13). With only 32
+  tokens per run that sets the average.
+- **Reading:** in the same cool state, with the same runtime and protocol, the gap to Vollie 1 is residency
+  after the prompt, not arithmetic. The prompt's prefill touches 2.6 GB of experts; the phone gave the model at
+  most 2.39 GB; the tokens generated next find part of their experts evicted. Granite ran fault-free with
+  about 2.0 GB of file pages resident in r16. The shortfall for OLMoE is about 0.35 to 0.5 GB.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
 [memo-05, why skip was inert on Q4_0 experts: repack](memo-05-q4-experts-repack.md);

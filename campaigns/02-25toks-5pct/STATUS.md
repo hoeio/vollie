@@ -51,6 +51,17 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
+**Latest (R56, kit r20, 2026-11-14):** with campaign 1's protocol and runtime, on a cool phone at 2,112 MHz, OLMoE
+printed a median of 11.25 tok/s at the ten claim positions (campaign 1's Granite: 20.51). Fault-free OLMoE
+tokens take about 43 to 51 ms (Granite: about 46), but the first ten tokens of every run fault, because the
+phone holds at most 2.39 GB of the 2.73 GB the benchmark touches (Granite needed about 2.0 GB). Keep-warm gave
+nothing and is closed. **The open problem is a residency shortfall of about 0.35 to 0.5 GB for OLMoE; kernels
+are not the gap.** Candidates, all to be priced before any is built: order of page use after the prefill
+(re-read the experts the first generated tokens will need before the timed decode starts), a smaller resident
+set (which expert slices this benchmark's decode really needs: 2,138 MB by trace), no repack copy (about 225 MB
+of anonymous memory back to the cache), and, as an owner decision only, a smaller expert quantization. Also
+still useful: the campaign-1 app's own kit on the same day, as the control for Granite's residency.
+
 **Read first: the owner's standing instruction of 2026-11-14, "start from Vollie 1"** (CLAUDE.md, rules). Memo-16
 shows why: campaign 1's own first run in r19's thermal state was 12.27 tok/s; its 20.5 came after the phone had
 cooled and the cache had filled, with runs back to back. Kit r19 waited 90 s before every run on a phone that
@@ -156,3 +167,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-14 | 3 (continued) | R55 scored from kit r19: 4.43 / 7.20 / 7.51 tok/s, never resident, clock capped at 1,555 MHz; expected-state prediction hit, ratio prediction missed. Goal decision put to the owner. |
 | 2026-11-14 | 3 (continued) | Memo-16 (r16 against r19: campaign 1's first run in r19's state was 12.27 tok/s). Owner's standing rule "start from Vollie 1" recorded in CLAUDE.md. Kit r20 built from r16's protocol (memo-17), keep-warm patch on campaign 1's runtime, R56 pre-registered, APK handed to the owner. Open check: Tom saw a different `-ub 1` value on today's base build than memo-07 recorded (8.8302 against 8.9550, *host*, 4 chunks); find out which build flag differs before the next host identity claim. |
 | 2026-11-14 | 3 (continued) | R53 scored (host): untied head K=1024 passes (+0.016 % alone, +3.335 % with skip MASS=900); both identity rows reproduced R50 and R51 on the full nine-patch series. |
+| 2026-11-14 | 3 (continued) | R56 scored from kit r20 (cool phone): OLMoE 11.25 tok/s at campaign 1's claim positions against Granite's 20.51; fault-free tokens 43 to 51 ms; never resident (max 2.39 of 2.73 GB); keep-warm closed. The gap to Vollie 1 is residency after the prefill. |
