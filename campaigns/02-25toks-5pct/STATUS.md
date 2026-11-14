@@ -53,6 +53,8 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
+**Waiting on the owner (2026-11-15):** kit r22 handed over; R60 pre-registered ([prereg](prereg/R60-numerics-and-hold-two-models-device.md)). When the report comes back: `python3 -I tools/c2_research_parse.py <json>`, score as written, store the report under `reports/device/`.
+
 **Latest (R58, kit r21, 2026-11-14 evening, *device*):** cool phone, `Cached` 2.4 to 3.2 GB (the "high" state;
 the low state did not occur). No numerics change on either model. Knob-off medians: **OLMoE 19.70 tok/s**
 (resident-before runs 21.03, best 22.28, fault-free tokens about 42 ms), **Granite-Mi 17.19** (tokens 53 to
@@ -219,3 +221,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-14 | 3 (continued) | `GGML_PREFILL_COLD` patch (identical on both models, *host*) and kit r21 (model table, two models in one session, report saved as a file); R58 pre-registered; APK handed to the owner. Open: the two host builds give different `-ub 1` values for OLMoE (8.9550 and 8.8302, 4 chunks); a build-option difference Tom has not pinned down. |
 | 2026-11-14 | 3 (continued) | R58 scored (kit r21, two models, cool, high cache): OLMoE 19.70 and Granite-Mi 17.19 tok/s with no numerics change; `GGML_PREFILL_COLD` unresolved on both and closed by the kill rule; OLMoE level prediction missed on the fast side. Residency before the run decides speed; gate waits lose pages. Next: R59, skip and head on campaign 1's runtime for both models. |
 | 2026-11-15 | 3 (continued) | R59 (*host*): skip rule and untied head ported onto campaign 1's runtime, identity kept; two-setting gate passed by OLMoE `MASS=900` + head 1024 and Granite skip 130 + head2; Granite 145 fails at `-ub 1`. Kit r22 and R60 next. |
+| 2026-11-15 | 3 (continued) | Kit r22 built (num arm per model, fadvise page hold through the gate wait, `0005-kit-lines`, memo-20); R60 pre-registered; APK uploaded for the owner. Nothing of the hold code has run on a phone yet. |

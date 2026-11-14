@@ -1,0 +1,131 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1309,6 +1309,7 @@ static int     ggml_cpu_head2_lr_made = 0;  // the r the copy was made with (0 =
+ static int     ggml_cpu_head2_lr_tried = 0; // the r last tried for this copy (a failed file is not re-read every token)
+ static ggml_fp16_t * ggml_cpu_head2_vt = NULL; // W_r^T, r x ne00
+ static bool    ggml_cpu_head2_check = false;
++static int64_t ggml_c2_c1h2_n[3]; // Vollie c2 (c1-olmoe 0005, counters only): GGML_HEAD2 ops run, columns, copies made
+ 
+ // the low-rank screen from the file: U_r S_r into the repacked Q4_0 copy (4 rows at a time, the plain screen's path), W_r^T
+ // into F16. Thread 0 alone, between two barriers of ggml_cpu_head2. Returns false (nothing changed) on any mismatch.
+@@ -1455,6 +1456,7 @@ static bool ggml_cpu_head2(const struct ggml_compute_params * params, struct ggm
+         if (ith == 0) {
+             ggml_cpu_head2_key   = src0->data;
+             ggml_cpu_head2_qtype = st;
++            ggml_c2_c1h2_n[2]++; // Vollie c2 (0005)
+             ggml_cpu_head2_il    = il;
+             ggml_cpu_head2_lr_made = 0;
+             ggml_cpu_head2_lr_tried = lr;
+@@ -1630,6 +1632,10 @@ static bool ggml_cpu_head2(const struct ggml_compute_params * params, struct ggm
+         }
+         ggml_barrier(params->threadpool);
+     }
++    if (ith == 0) { // Vollie c2 (0005)
++        ggml_c2_c1h2_n[0]++;
++        ggml_c2_c1h2_n[1] += nc;
++    }
+     return true;
+ }
+ 
+@@ -5709,9 +5715,31 @@ static struct {
+     int state;       // 0 = no prompt open, 1 = prefill, 2 = decode
+     int pg, dg;      // batch and one-token graphs of this prompt
+     char run[64];    // VOLLIE_RUN at the prompt's start ("-" if unset)
+-    int64_t s[3][5]; // start, first decode graph, after the last graph: us, read_bytes, rchar, majflt, minflt
++    int64_t s[3][6]; // start, first decode graph, after the last graph: us, read_bytes, rchar, majflt, minflt, inblock (0005)
++    double  k[2][7]; // Vollie c2 (0005): VOLLIE_SKIP_STATS counters at the prompt's start and at its first decode graph
++    int64_t h[2][6]; // Vollie c2 (0005): VOLLIE_HEAD2 calls, cols, exact rows, copies; GGML_HEAD2 calls, copies; at the start
+ } ggml_cpu_c2io;
+ 
++// Vollie c2 (patches/llama.cpp-c1-olmoe/0005, counters only): the 0003 skip counters and both heads' counters, sampled
++// with the c2-io line's points, so each prompt gets its own c2-skip-run / c2-head-run line (prefill and decode apart).
++static void ggml_cpu_c2io_counters(double * k, int64_t * h) {
++    k[0] = (double) ggml_c2_st_tok; k[1] = (double) ggml_c2_st_pairs; k[2] = (double) ggml_c2_st_pairs_skip;
++    k[3] = ggml_c2_st_bytes; k[4] = ggml_c2_st_bytes_skip; k[5] = ggml_c2_st_bytes_read; k[6] = ggml_c2_st_bytes_unread;
++    if (h) {
++        h[0] = ggml_c2_h2_n[0]; h[1] = ggml_c2_h2_n[1]; h[2] = ggml_c2_h2_n[2]; h[3] = ggml_c2_h2_n[6];
++        h[4] = ggml_c2_c1h2_n[0]; h[5] = ggml_c2_c1h2_n[2];
++    }
++}
++
++// one part (a = earlier sample, b = later) of a c2-skip-run line
++static void ggml_cpu_c2io_skip_part(const char * name, const double * a, const double * b) {
++    const double tok = b[0] - a[0], pairs = b[1] - a[1], by = b[3] - a[3], rd = b[5] - a[5];
++    fprintf(stderr, " %s_tokens=%.0f %s_pairs_skipped=%.4f%% %s_expert_bytes_skipped=%.4f%% %s_MB_per_token_selected=%.3f "
++            "%s_MB_per_token_skipped=%.3f %s_bytes_unread=%.4f%%", name, tok, name, pairs > 0 ? 100.0*(b[2] - a[2])/pairs : 0.0,
++            name, by > 0 ? 100.0*(b[4] - a[4])/by : 0.0, name, tok > 0 ? by/tok/1e6 : 0.0, name, tok > 0 ? (b[4] - a[4])/tok/1e6 : 0.0,
++            name, rd > 0 ? 100.0*(b[6] - a[6])/rd : 0.0);
++}
++
+ static void ggml_cpu_c2io_sample(int64_t * s) {
+     s[0] = ggml_time_us();
+     s[1] = s[2] = -1;
+@@ -5726,16 +5754,27 @@ static void ggml_cpu_c2io_sample(int64_t * s) {
+         fclose(f);
+     }
+     ggml_cpu_faults(s + 3);
++    s[5] = -1;
++#if !defined(_WIN32)
++    struct rusage ru; // Vollie c2 (0005): blocks read by this process (512 B units), where /proc/self/io is unreadable
++    if (getrusage(RUSAGE_SELF, &ru) == 0) {
++        s[5] = ru.ru_inblock;
++    }
++#endif
+ }
+ 
+ void ggml_cpu_c2io_flush(void); // also called by the CPU backend's free (ggml-cpu.cpp)
+ void ggml_cpu_c2io_flush(void) {
+-    int64_t (*s)[5] = ggml_cpu_c2io.s;
++    int64_t (*s)[6] = ggml_cpu_c2io.s;
+     if (!ggml_cpu_c2io.state) {
+         return;
+     }
++    double kn[7];
++    int64_t hn[6];
++    ggml_cpu_c2io_counters(kn, hn);
+     if (ggml_cpu_c2io.state == 1) {
+         memcpy(s[1], s[2], sizeof s[1]); // no decode graph: the decode share is empty
++        memcpy(ggml_cpu_c2io.k[1], kn, sizeof kn);
+     }
+     fprintf(stderr, "c2-io run=%s prompt_graphs=%d decode_graphs=%d us=%lld/%lld/%lld read_bytes=%lld/%lld/%lld "
+             "rchar=%lld/%lld/%lld majflt=%lld/%lld/%lld minflt=%lld/%lld/%lld\n", ggml_cpu_c2io.run, ggml_cpu_c2io.pg,
+@@ -5743,6 +5782,26 @@ void ggml_cpu_c2io_flush(void) {
+             (long long) s[1][1], (long long) s[2][1], (long long) s[0][2], (long long) s[1][2], (long long) s[2][2],
+             (long long) s[0][3], (long long) s[1][3], (long long) s[2][3], (long long) s[0][4], (long long) s[1][4],
+             (long long) s[2][4]);
++    // Vollie c2 (0005): its own line, so that 0002's c2-io line keeps its format
++    fprintf(stderr, "c2-io-blk run=%s inblock=%lld/%lld/%lld\n", ggml_cpu_c2io.run, (long long) s[0][5], (long long) s[1][5],
++            (long long) s[2][5]);
++    const double * k0 = ggml_cpu_c2io.k[0], * k1 = ggml_cpu_c2io.k[1];
++    if (kn[1] > k0[1]) { // the prompt ran with a skip mask and VOLLIE_SKIP_STATS=1
++        fprintf(stderr, "c2-skip-run: run=%s sum=%g max=%g mass=%g c1_skip=%d c1_topp=%d c1_gap=%d", ggml_cpu_c2io.run,
++                (double) ggml_c2_skip_sum, (double) ggml_c2_skip_max, (double) ggml_c2_skip_mass, ggml_cpu_expert_skip,
++                ggml_cpu_expert_topp, ggml_cpu_expert_gap);
++        ggml_cpu_c2io_skip_part("prefill", k0, k1);
++        ggml_cpu_c2io_skip_part("decode", k1, kn);
++        fprintf(stderr, "\n");
++    }
++    const int64_t * h0 = ggml_cpu_c2io.h[0];
++    if (hn[0] > h0[0] || hn[4] > h0[4]) { // a two-stage head ran in this prompt
++        fprintf(stderr, "c2-head-run: run=%s c2_k=%lld c2_calls=%lld c2_cols=%lld c2_exact_rows_per_col=%.1f c2_copies=%lld "
++                "c2_copy=%d c1_m=%lld c1_calls=%lld c1_copies=%lld c1_copy=%d\n", ggml_cpu_c2io.run, (long long) ggml_c2_h2_n[7],
++                (long long) (hn[0] - h0[0]), (long long) (hn[1] - h0[1]), hn[1] > h0[1] ? (double) (hn[2] - h0[2])/(hn[1] - h0[1]) : 0.0,
++                (long long) (hn[3] - h0[3]), ggml_c2_h2_q != NULL, (long long) ggml_cpu_head2_m, (long long) (hn[4] - h0[4]),
++                (long long) (hn[5] - h0[5]), ggml_cpu_head2_q != NULL);
++    }
+     fflush(stderr);
+     ggml_cpu_c2io.state = 0;
+ }
+@@ -5765,9 +5824,11 @@ static void ggml_cpu_c2_begin(int64_t n_tok) {
+         snprintf(ggml_cpu_c2io.run, sizeof ggml_cpu_c2io.run, "%s", run && *run ? run : "-");
+         ggml_cpu_c2io.pg = ggml_cpu_c2io.dg = 0;
+         ggml_cpu_c2io_sample(ggml_cpu_c2io.s[0]);
++        ggml_cpu_c2io_counters(ggml_cpu_c2io.k[0], ggml_cpu_c2io.h[0]); // Vollie c2 (0005)
+         ggml_cpu_c2io.state = 1;
+     } else if (n_tok == 1 && ggml_cpu_c2io.state == 1) {
+         ggml_cpu_c2io_sample(ggml_cpu_c2io.s[1]);
++        ggml_cpu_c2io_counters(ggml_cpu_c2io.k[1], NULL); // Vollie c2 (0005)
+         ggml_cpu_c2io.state = 2;
+     }
+     ggml_cpu_c2io.pg += ggml_cpu_c2io.state == 1;

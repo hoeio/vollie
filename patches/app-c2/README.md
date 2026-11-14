@@ -119,3 +119,22 @@ installs as an update over r20 and keeps `olmoe-Mi`. Design, run list, schema an
   `/proc/self/io` read bytes over the run and to the first streamed chunk, the `c2-io` and `c2-pcold` lines, reply text,
   library hashes at each load. Report: every model's file, marker and end-of-kit sha256, each model's template render.
 - **"Save research results to Downloads"** next to the copy button (MediaStore, Android 10+).
+
+## 0006-kit-r22.patch (on top of 0005)
+
+Kit r22 (version 1.22.0+22), campaign 1's runtime + `patches/llama.cpp-c1-olmoe/0001-0005`. Same package and debug key:
+installs as an update over r21 and keeps both models. Design, run list, schema and owner steps:
+`campaigns/02-25toks-5pct/reports/memo-20-kit-r22.md`.
+
+- **Arms:** `off` = r21's knob-off arm; `num` = off + the model's `num` env from the model table (OLMoE
+  `VOLLIE_SKIP_MASS=900 VOLLIE_HEAD2=1024`, Granite `GGML_EXPERT_SKIP=130 GGML_HEAD2=2048 GGML_HEAD2_Q=q4_0`, both
+  `VOLLIE_SKIP_STATS=1`). `GGML_PREFILL_COLD` and `GGML_KEEP_WARM` are not used.
+- **Hold** (app side, no env): at every gate poll and once after the gate, the model file's pages that were resident at
+  the end of the previous run of that model and are not now are read back with `posix_fadvise(WILLNEED)`; after the
+  gate it waits until 98 % are back or 5 s passed. Its passes, MB, CPU time, blocks read and ms after the gate are in
+  `hold_stats`.
+- **Run list:** blocks G O O G; per block 2 warm-ups, two ABBA quads (off num num off), the first with hold in odd
+  blocks and without in even ones, then one profiled run per arm (with hold).
+- **Per row:** + `arm`, `hold`, `hold_stats`, `want_mb`, `wait_lost_mb`, `inblock_read_bytes` (getrusage, also to the
+  first chunk), `io_wait_ticks` (`/proc/self/stat` field 42), `run_cpu_ms`, and the runtime's `c2-io-blk`,
+  `c2-skip-run`, `c2-head-run` lines. Report: `memlock_rlimit`, `hold_rule`, each model's `num`.

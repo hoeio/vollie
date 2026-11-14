@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Campaign 2 research-kit report parser (kits r17 to r21; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
-memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md and memo-19-kit-r21.md). Standard library only.
+"""Campaign 2 research-kit report parser (kits r17 to r22; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
+memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md, memo-19-kit-r21.md and memo-20-kit-r22.md). Standard library
+only.
 
 usage: python3 -I tools/c2_research_parse.py <report.json | clipboard text "c2gz:..."> [--min-mhz 1800]
            [--prompt tools/c2_official_prompt.txt] [--sigma 0.4] [--r16 reports/device/r16_2026-11-08.json]
@@ -32,7 +33,15 @@ Kit r21 (N models, GGML_PREFILL_COLD in ABBA per block): identity per model (has
 one text across both arms, repack on, no skip/head2, a c2-io line per row), the advice probe, then per model and arm
 the scored runs' medians (tok/s, decode and prefill read MB and major faults from the c2-io line, prefill ms, mincore
 experts+rest before/after, MB marked), the ABBA pairs on minus off per block and per model, and a side-by-side table
-with one column per model."""
+with one column per model.
+
+Kit r22 (N models, arms off / num in ABBA, factor hold per quad): identity per model and arm (one text per arm, md5;
+off and num texts differ by design; the num env as in the model table and nowhere in the off arm; c2-io, c2-skip-run
+and c2-head-run lines), the I/O source (getrusage inblock, /proc/self/io), RLIMIT_MEMLOCK; per model, arm and hold the
+scored runs' medians; the num effect per model as the mean over ABBA quads of mean(num) - mean(off) with SE = sd/sqrt(n
+quads), overall and split by hold; the hold effect (hold minus no hold) on the off arm, all runs and the runs whose gate
+waited at least --wait-s seconds: tok/s and model MB resident before the run, difference of means with Welch SE; the
+hold's cost (MB read back, CPU ms, ms after the gate)."""
 import argparse
 import base64
 import gzip
@@ -632,6 +641,190 @@ def r21_tables(r):
     return out
 
 
+# kit r22 (memo-20): patches/llama.cpp-c1-olmoe/0005's per-prompt lines and the app's hold
+BLK_RE = re.compile(r'c2-io-blk run=(\S+) inblock=(-?\d+)/(-?\d+)/(-?\d+)')
+SKIPRUN_RE = re.compile(r'c2-skip-run: run=(\S+) .*?decode_tokens=(\d+) decode_pairs_skipped=([\d.]+)% '
+                        r'decode_expert_bytes_skipped=([\d.]+)% decode_MB_per_token_selected=([\d.]+) '
+                        r'decode_MB_per_token_skipped=([\d.]+) decode_bytes_unread=([\d.]+)%')
+HEADRUN_RE = re.compile(r'c2-head-run: run=(\S+) c2_k=(\d+) c2_calls=(\d+) c2_cols=(\d+) c2_exact_rows_per_col=([\d.]+) '
+                        r'c2_copies=(\d+) c2_copy=(\d) c1_m=(\d+) c1_calls=(\d+) c1_copies=(\d+) c1_copy=(\d)')
+
+
+def tagged(x, rx):
+    for l in x.get('c2') or []:
+        m = rx.search(l)
+        if m and m.group(1) == x.get('run_tag', m.group(1)):
+            return m
+    return None
+
+
+def blk_of(x):
+    """getrusage inblock over the prompt as MB: prefill, decode; None when absent or unreadable (-1)."""
+    m = tagged(x, BLK_RE)
+    if not m:
+        return None
+    a, b, c = (int(g) for g in m.groups()[1:])
+    mb = lambda u, v: None if u < 0 or v < 0 else (v - u) * 512 / 1e6
+    return {'pre_mb': mb(a, b), 'dec_mb': mb(b, c)}
+
+
+def skiprun_of(x):
+    m = tagged(x, SKIPRUN_RE)
+    return None if not m else {'dec_tokens': int(m.group(2)), 'dec_pairs_pct': float(m.group(3)),
+                               'dec_bytes_pct': float(m.group(4)), 'dec_mb_sel': float(m.group(5)),
+                               'dec_mb_skip': float(m.group(6)), 'dec_unread_pct': float(m.group(7))}
+
+
+def headrun_of(x):
+    m = tagged(x, HEADRUN_RE)
+    if not m:
+        return None
+    v = m.groups()
+    return {'c2_k': int(v[1]), 'c2_calls': int(v[2]), 'c2_copies': int(v[5]), 'c2_copy': v[6] == '1', 'c1_m': int(v[7]),
+            'c1_calls': int(v[8]), 'c1_copies': int(v[9]), 'c1_copy': v[10] == '1'}
+
+
+def md5(t):
+    import hashlib
+    return hashlib.md5(t.encode()).hexdigest()
+
+
+def mean_se(v):
+    v = [a for a in v if a is not None]
+    if not v:
+        return None, None, 0
+    return st.mean(v), (st.stdev(v) / len(v) ** 0.5 if len(v) > 1 else None), len(v)
+
+
+def fmt_se(v, nd=2):
+    m, se, n = mean_se(v)
+    return '-' if m is None else f"{m:+.{nd}f} ± {'-' if se is None else f'{se:.{nd}f}'} (n {n})"
+
+
+def welch(a, b, nd=2):
+    a, b = [x for x in a if x is not None], [x for x in b if x is not None]
+    if not a or not b:
+        return '-'
+    d = st.mean(a) - st.mean(b)
+    se = (st.variance(a) / len(a) + st.variance(b) / len(b)) ** 0.5 if len(a) > 1 and len(b) > 1 else None
+    return f"{d:+.{nd}f} ± {'-' if se is None else f'{se:.{nd}f}'} (n {len(a)} / {len(b)})"
+
+
+def res_mb(x, k='res_before'):
+    d = x.get(k)
+    return d.get('total_mb') if isinstance(d, dict) else None
+
+
+def r22_checks(r):
+    out = [l for l in r21_checks(r) if not re.match(r'\S+: \d+ runs, one text', l) and not l.startswith('advice probe')]
+    models = r.get('models') or {}
+    for k in r21_models(r):
+        rs = [x for x in r.get('runs', []) if x.get('model') == k]
+        num = (models.get(k) or {}).get('num') or {}
+        parts = []
+        texts = {}
+        for a in ('off', 'num'):
+            t = {md5(x['text'])[:8] for x in rs if x.get('arm') == a and x.get('text') is not None}
+            texts[a] = t
+            parts.append(f"{a}: {'one text ' + next(iter(t)) if len(t) == 1 else f'NO ({len(t)} texts)'}")
+        parts.append('off != num' if texts['off'] and texts['num'] and texts['off'] != texts['num'] else 'off == num (CHECK)')
+        bad_off = [x.get('run_tag') for x in rs if x.get('arm') == 'off' and set(num) & set(env_of(x))]
+        bad_num = [x.get('run_tag') for x in rs if x.get('arm') == 'num' and any(env_of(x).get(e) != v for e, v in num.items())]
+        pc = [x.get('run_tag') for x in rs if {'GGML_PREFILL_COLD', 'GGML_KEEP_WARM'} & set(env_of(x))]
+        nr = [x.get('run_tag') for x in rs if x.get('repack_loaded') is not True]
+        noio = [x.get('run_tag') for x in rs if io_of(x) is None]
+        nskip = [x.get('run_tag') for x in rs if x.get('arm') == 'num' and skiprun_of(x) is None]
+        nhead = [x.get('run_tag') for x in rs if x.get('arm') == 'num' and not ((headrun_of(x) or {}).get('c2_copy')
+                                                                                  or (headrun_of(x) or {}).get('c1_copy'))]
+        err = [x.get('run_tag') for x in rs if x.get('error')]
+        out.append(f"{k}: {len(rs)} runs; texts {'; '.join(parts)}; num env {num}: missing in {','.join(bad_num) or 'none'}, "
+                   f"in off arm {','.join(bad_off) or 'none'}; PREFILL_COLD/KEEP_WARM set: {','.join(pc) or 'none'}; repack on in "
+                   f"all: {'yes' if not nr else 'NO ' + ','.join(nr)}; no c2-io: {','.join(noio) or 'none'}; num without "
+                   f"c2-skip-run: {','.join(nskip) or 'none'}; num without an active head copy: {','.join(nhead) or 'none'}; "
+                   f"errors: {','.join(err) or 'none'}")
+    runs = r.get('runs', [])
+    ib = [x.get('inblock_read_bytes') for x in runs if x.get('inblock_read_bytes') is not None]
+    io = [x.get('io_read_bytes') for x in runs if x.get('io_read_bytes') is not None]
+    out.append(f"I/O source: getrusage inblock in {len(ib)} rows (non-zero in {sum(1 for v in ib if v)}), /proc/self/io in "
+               f"{len(io)} rows; memlock rlimit {r.get('memlock_rlimit')}")
+    return out
+
+
+def r22_stats(rs):
+    s = r21_stats(rs)
+    sk = [skiprun_of(x) or {} for x in rs]
+    bl = [blk_of(x) or {} for x in rs]
+    hs = [x.get('hold_stats') or {} for x in rs]
+    s.update({
+        'dec_inblock_mb': med(b.get('dec_mb') for b in bl), 'pre_inblock_mb': med(b.get('pre_mb') for b in bl),
+        'skip_bytes_pct': med(k.get('dec_bytes_pct') for k in sk), 'skip_mb_tok': med(k.get('dec_mb_skip') for k in sk),
+        'res_before': med(res_mb(x) for x in rs), 'wait_lost_mb': med(x.get('wait_lost_mb') for x in rs),
+        'cool_s': med(None if x.get('cool_ms') is None else x['cool_ms'] / 1000 for x in rs),
+        'hold_mb': med(h.get('advised_mb') for h in hs), 'hold_cpu_ms': med(None if h.get('cpu_us') is None else h['cpu_us'] / 1000 for h in hs),
+        'hold_final_ms': med(h.get('final_ms') for h in hs), 'hold_inblock_mb': med(None if h.get('inblock') is None else h['inblock'] * 512 / 1e6 for h in hs),
+    })
+    return s
+
+
+def r22_quads(rs):
+    """One block's scored runs in list order: the ABBA quads (off num num off, one hold value each)."""
+    out = []
+    for i in range(0, len(rs) - 3, 4):
+        q = rs[i:i + 4]
+        if [x.get('arm') for x in q] == ['off', 'num', 'num', 'off'] and len({bool(x.get('hold')) for x in q}) == 1:
+            out.append(q)
+    return out
+
+
+def quad_effect(q):
+    v = [x.get('decode_tps') for x in q]
+    return None if None in v else (v[1] + v[2]) / 2 - (v[0] + v[3]) / 2
+
+
+def r22_tables(r, wait_s=30):
+    runs = [x for x in r.get('runs', []) if x.get('proto') == 'r22']
+    if not runs:
+        return []
+    models = r21_models(r)
+    sc = lambda m, a=None, h=None: [x for x in runs if x.get('model') == m and x.get('phase') == 'on'
+                                    and (a is None or x.get('arm') == a) and (h is None or bool(x.get('hold')) == h)]
+    out = ['kit r22, scored runs (phase on), per model, arm and hold (*device*):']
+    for m in models:
+        for a in ('off', 'num'):
+            for h in (False, True):
+                s = r22_stats(sc(m, a, h))
+                out.append(f"  {m} {a} hold={'on ' if h else 'off'}: n {s['n']} tok/s {fmt(s['tps'])} [{fmt(s['tps_min'])}.."
+                           f"{fmt(s['tps_max'])}] | res before MB {fmt(s['res_before'], 0)} lost in wait {fmt(s['wait_lost_mb'], 0)} "
+                           f"gate s {fmt(s['cool_s'], 0)} | decode majflt {fmt(s['dec_majflt'], 0)} inblock MB {fmt(s['dec_inblock_mb'], 0)} | "
+                           f"prefill ms {fmt(s['pre_ms'], 0)} ttft ms {fmt(s['ttft_ms'], 0)} | skip bytes % {fmt(s['skip_bytes_pct'])} "
+                           f"MB/tok {fmt(s['skip_mb_tok'], 1)} | hold read-back MB {fmt(s['hold_mb'], 0)} cpu ms "
+                           f"{fmt(s['hold_cpu_ms'], 0)} after-gate ms {fmt(s['hold_final_ms'], 0)} | Cached MB {fmt(s['cached_mb'], 0)}")
+    out.append('num minus off, mean over ABBA quads of mean(num) - mean(off), tok/s ± SE:')
+    for m in models:
+        qs = []
+        for g in sorted({x.get('group') for x in runs if x.get('model') == m}, key=lambda g: int(str(g).lstrip('b') or 0)):
+            qs += r22_quads([x for x in runs if x.get('group') == g and x.get('phase') == 'on'])
+        e = lambda h=None: [quad_effect(q) for q in qs if h is None or bool(q[0].get('hold')) == h]
+        out.append(f"  {m}: all {fmt_se(e())} | hold on {fmt_se(e(True))} | hold off {fmt_se(e(False))}")
+    out.append(f"hold minus no hold, off arm (tok/s; MB resident before the run), Welch SE; 'waited' = gate wait >= {wait_s} s:")
+    for m in models:
+        on, off = sc(m, 'off', True), sc(m, 'off', False)
+        w = lambda v: [x for x in v if (x.get('cool_ms') or 0) >= wait_s * 1000]
+        tps = lambda v: [x.get('decode_tps') for x in v]
+        rb = lambda v: [res_mb(x) for x in v]
+        out.append(f"  {m}: all tok/s {welch(tps(on), tps(off))}, res MB {welch(rb(on), rb(off), 0)} | waited tok/s "
+                   f"{welch(tps(w(on)), tps(w(off)))}, res MB {welch(rb(w(on)), rb(w(off)), 0)}")
+        onn, offn = sc(m, 'num', True), sc(m, 'num', False)
+        out.append(f"  {m} (num arm, for reference): all tok/s {welch(tps(onn), tps(offn))}, res MB {welch(rb(onn), rb(offn), 0)}")
+    hs = [x.get('hold_stats') for x in runs if x.get('hold') and isinstance(x.get('hold_stats'), dict)]
+    if hs:
+        g = lambda k, f=1: spread([None if h.get(k) is None else h[k] * f for h in hs])
+        out.append(f"hold cost per gated run (median [min..max] n): read back MB {g('advised_mb')} | CPU ms {g('cpu_us', 1e-3)} | "
+                   f"passes {g('passes')} | ms after the gate {g('final_ms')} | blocks read MB {g('inblock', 512 / 1e6)} | "
+                   f"fadvise fails {g('advise_fails')}")
+    return out
+
+
 def main(argv=None):
     a = argparse.ArgumentParser()
     a.add_argument('report', nargs='?')
@@ -640,6 +833,7 @@ def main(argv=None):
     a.add_argument('--fault-run', type=int, default=1000, help='plain-run major faults above which a run is fault-bound')
     a.add_argument('--prompt', default=os.path.join(HERE, 'c2_official_prompt.txt'))
     a.add_argument('--r16', default=R16, help="campaign 1's kit r16 report, for kit r20's position-by-position table")
+    a.add_argument('--wait-s', type=float, default=30, help="kit r22: a gate wait of at least this many seconds is 'waited'")
     a.add_argument('--selftest', action='store_true')
     o = a.parse_args(argv)
     if o.selftest:
@@ -649,7 +843,8 @@ def main(argv=None):
     r = load(o.report)
     print(f"kit {r.get('kit')} app {r.get('app')} started {r.get('started')} stopped_early {r.get('stopped_early')}")
     r16 = load(o.r16) if r.get('kit') == 'r20' and o.r16 and os.path.exists(o.r16) else None
-    parts = (r21_checks(r), r21_tables(r)) if r.get('kit') == 'r21' else (
+    parts = (r21_checks(r), r21_tables(r)) if r.get('kit') == 'r21' else (r22_checks(r), r22_tables(r, o.wait_s)) \
+        if r.get('kit') == 'r22' else (
         checks(r, o.prompt), identity(r), groups(r, o.min_mhz, o.fault_run), ab(r, o.min_mhz, o.sigma),
         r16_compare(r, r16), waits(r), warm(r))
     for part in parts:
@@ -830,6 +1025,50 @@ def selftest():
     assert '| tok/s on | 13.00 | 12.00 | 9.00 |' in t, t
     r21['runs'][3]['text'] = 'other'
     assert any('one text across both arms: NO (2 texts)' in l for l in r21_checks(r21))
+    # r22: arms off / num in ABBA, hold per quad (first quad with hold in odd blocks), 0005's lines, the app's hold.
+    nums = {'granite': {'GGML_EXPERT_SKIP': '130', 'GGML_HEAD2': '2048', 'GGML_HEAD2_Q': 'q4_0', 'VOLLIE_SKIP_STATS': '1'},
+            'olmoe': {'VOLLIE_SKIP_MASS': '900', 'VOLLIE_HEAD2': '1024', 'VOLLIE_SKIP_STATS': '1'}}
+    def row22(m, g, arm, hold, i, tps, res, cool, phase='on'):
+        tag = f'{m}_{arm}{"_h" if hold else ""}.{i}'
+        c2 = [f'c2-io run={tag} prompt_graphs=1 decode_graphs=31 us=0/5000000/6500000 read_bytes=-1/-1/-1 rchar=0/0/0 '
+              f'majflt=0/100/150 minflt=0/0/0', f'c2-io-blk run={tag} inblock=0/1000000/1200000']
+        if arm == 'num':
+            c2 += [f'c2-skip-run: run={tag} sum=0 max=0 mass=900 c1_skip=0 c1_topp=0 c1_gap=0 prefill_tokens=156 '
+                   f'prefill_pairs_skipped=13.0000% prefill_expert_bytes_skipped=13.0000% prefill_MB_per_token_selected=346.000 '
+                   f'prefill_MB_per_token_skipped=45.000 prefill_bytes_unread=1.0000% decode_tokens=31 '
+                   f'decode_pairs_skipped=13.4000% decode_expert_bytes_skipped=13.4000% decode_MB_per_token_selected=346.000 '
+                   f'decode_MB_per_token_skipped=46.400 decode_bytes_unread=13.4000%',
+                   f'c2-head-run: run={tag} c2_k=1024 c2_calls=32 c2_cols=32 c2_exact_rows_per_col=6936.0 c2_copies=1 c2_copy=1 '
+                   f'c1_m=0 c1_calls=0 c1_copies=0 c1_copy=0']
+        return {'proto': 'r22', 'model': m, 'group': g, 'arm': arm, 'hold': hold, 'phase': phase, 'run_tag': tag,
+                'decode_tps': tps, 'env_set': {**ship, 'GGML_C2_IO': '1', **(nums[m] if arm == 'num' else {})},
+                'repack_loaded': True, 'text': f'T{m}{arm}', 'c2': c2, 'res_before': rz(res), 'res_after': rz(2600),
+                'cool_ms': cool, 'wait_lost_mb': 2600 - res, 'mem_before': 'avail=1MB cached=3000MB',
+                'inblock_read_bytes': 1000, 'libs': {'libllama.so': 'aa' * 32},
+                **({'hold_stats': {'advised_mb': 2600 - res, 'cpu_us': 20000, 'passes': 9, 'final_ms': 800, 'inblock': 100000,
+                                   'advise_fails': 0}} if hold else {})}
+    r22 = {'kit': 'r22', 'models': {k: {**shaM(k), 'num': nums[k]} for k in ('granite', 'olmoe')},
+           'build': {'libs': {'libllama.so': 'aa' * 32}}, 'memlock_rlimit': {'soft': 65536, 'hard': 65536}, 'runs': []}
+    for b, m in enumerate(['granite', 'olmoe', 'olmoe', 'granite'], 1):
+        r22['runs'].append(row22(m, f'b{b}', 'off', False, 90, 5, 1000, 0, 'warmup'))
+        for qi, hold in enumerate([b % 2 == 1, b % 2 == 0]):
+            for j, arm in enumerate(['off', 'num', 'num', 'off']):
+                # num +2 tok/s; hold +1 tok/s and 2,500 MB resident instead of 1,500 after a 60 s wait
+                tps = 17 + (2 if arm == 'num' else 0) + (1 if hold else 0) + (0.2 if j == 3 else 0) + 0.1 * qi
+                r22['runs'].append(row22(m, f'b{b}', arm, hold, 4 * qi + j, tps, 2500 if hold else 1500, 60000))
+    assert blk_of(r22['runs'][1]) == {'pre_mb': 512.0, 'dec_mb': 102.4}
+    assert skiprun_of(r22['runs'][2])['dec_bytes_pct'] == 13.4 and headrun_of(r22['runs'][2])['c2_copy']
+    c = r22_checks(r22)
+    assert any(l.startswith('granite: 18 runs; texts off: one text') and 'off != num' in l and 'missing in none, in off arm none'
+               in l and 'num without an active head copy: none' in l for l in c), c
+    assert any(l.startswith('I/O source: getrusage inblock in 36 rows (non-zero in 36)') for l in c), c
+    t = r22_tables(r22)
+    assert any(l.startswith('  granite num hold=on : n 4 tok/s 20.05') and 'skip bytes % 13.40' in l for l in t), t
+    assert any(l.startswith('  olmoe: all +1.90 ± 0.00 (n 4) | hold on +1.90') for l in t), t
+    assert any(l.startswith('  granite: all tok/s +1.00 ± 0.09 (n 4 / 4), res MB +1000 ± 0 (n 4 / 4) | waited tok/s +1.00') for l in t), t
+    assert any(l.startswith('hold cost per gated run') and 'read back MB 100.00 [100.00..100.00] n 16' in l for l in t), t
+    r22['runs'][3]['text'] = 'other'
+    assert any('num: NO (2 texts)' in l for l in r22_checks(r22) if l.startswith('granite'))
     print('selftest OK')
     return 0
 

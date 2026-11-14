@@ -126,3 +126,24 @@ section 0009.
   `mismatches=0` (2 chunks, `-b 512` with `_BATCH` and `-ub 1`); with `MASS=900` on the full set at `-b 512` R53's 12.1053.
 - The `-ub 1` runs go through campaign 1's fused one-token expert op, the phone's path; the counters show the skip there
   (`batch_bytes_unread` equals the bytes skipped, so every skipped expert slice is left unread).
+
+## 0005-kit-lines.patch (counters only, bit-identical)
+
+File: `ggml/src/ggml-cpu/ggml-cpu.c`. Kit r22's per-prompt lines (`campaigns/02-25toks-5pct/reports/memo-20-kit-r22.md`).
+Everything here runs only with `GGML_C2_IO=1` (0002's counter) and only prints; no knob of its own.
+
+- `c2-io-blk run=<VOLLIE_RUN> inblock=a/b/c`: `getrusage` `ru_inblock` (512-byte blocks read by the process) at 0002's
+  three points (prompt start, first decode graph, end). Printed right after the `c2-io` line, which keeps its format.
+  It is the same kernel counter as `/proc/self/io` `read_bytes`, read by a system call instead of a file the app could
+  not open in r21.
+- `c2-skip-run: run= sum= max= mass= c1_skip= c1_topp= c1_gap= prefill_… decode_…` with, per part, tokens, % pairs
+  skipped, % expert bytes skipped, MB per token selected and skipped, % of read bytes left unread: 0003's
+  `VOLLIE_SKIP_STATS` counters (every rule, campaign 1's included) split at the prompt's first decode graph. Printed
+  only if the prompt counted pairs, so it needs `VOLLIE_SKIP_STATS=1` and a skip rule.
+- `c2-head-run: run= c2_k= c2_calls= c2_cols= c2_exact_rows_per_col= c2_copies= c2_copy= c1_m= c1_calls= c1_copies= c1_copy=`:
+  0004's head and campaign 1's `GGML_HEAD2` in this prompt (ops run, copies made, whether a copy exists at the end).
+  Printed only if a two-stage head ran. Campaign 1's head gets three counters (ops, columns, copies) for this, its
+  arithmetic untouched.
+- **Identity** (*host*, 4 chunks, `-t 8`): per-chunk PPL equal to the 0001-0004 tree at `-b 512`, `-ub 32` and `-ub 1`
+  for both models in both kit r22 arms (off: `GGML_TINY_OP=262144 GGML_EXPERT_IO=1 VOLLIE_SAMPLER_BYPASS=1 GGML_C2_IO=1`;
+  num: + the model's num env, memo-20 §3).

@@ -1,0 +1,582 @@
+diff --git a/lib/device.dart b/lib/device.dart
+--- a/lib/device.dart
++++ b/lib/device.dart
+@@ -152,6 +152,119 @@ class DeviceProfile {
+     }
+   }
+ 
++  /// Kit r22: which pages of [path] are in the page cache now (mincore over a private read-only mapping, as
++  /// [pageCacheBytes]): one byte per page, 1 = resident. Null off Android or on any error. Reads no data.
++  static ({Uint8List v, int pageSize})? pageVector(String path) {
++    final libc = _libc;
++    if (libc == null) return null;
++    final open = libc.lookupFunction<Int32 Function(Pointer<Uint8>, Int32), int Function(Pointer<Uint8>, int)>('open');
++    final close = libc.lookupFunction<Int32 Function(Int32), int Function(int)>('close');
++    final mmap = libc.lookupFunction<Pointer<Void> Function(Pointer<Void>, IntPtr, Int32, Int32, Int32, IntPtr),
++        Pointer<Void> Function(Pointer<Void>, int, int, int, int, int)>('mmap');
++    final munmap = libc.lookupFunction<Int32 Function(Pointer<Void>, IntPtr), int Function(Pointer<Void>, int)>('munmap');
++    final mincore = libc.lookupFunction<Int32 Function(Pointer<Void>, IntPtr, Pointer<Uint8>),
++        int Function(Pointer<Void>, int, Pointer<Uint8>)>('mincore');
++    final pageSize = libc.lookupFunction<Int32 Function(), int Function()>('getpagesize')();
++    final free = libc.lookupFunction<Void Function(Pointer<Uint8>), void Function(Pointer<Uint8>)>('free');
++    final int len;
++    try {
++      len = File(path).lengthSync();
++    } catch (_) {
++      return null;
++    }
++    final name = _cString(path);
++    final fd = open(name, 0 /* O_RDONLY */);
++    free(name);
++    if (fd < 0) return null;
++    final addr = mmap(nullptr, len, 1 /* PROT_READ */, 1 /* MAP_SHARED */, fd, 0);
++    close(fd);
++    if (addr.address == -1 || addr.address == 0) return null;
++    final n = (len + pageSize - 1) ~/ pageSize;
++    final vec = _malloc!(n);
++    try {
++      if (mincore(addr, len, vec) != 0) return null;
++      final v = Uint8List.fromList(vec.asTypedList(n));
++      for (var i = 0; i < n; i++) {
++        v[i] &= 1;
++      }
++      return (v: v, pageSize: pageSize);
++    } finally {
++      free(vec);
++      munmap(addr, len);
++    }
++  }
++
++  /// Kit r22 ("hold"): asks the kernel to read back the pages of [path] that were resident in [want] and are not now
++  /// ([now]), as posix_fadvise(POSIX_FADV_WILLNEED) on each run of such pages (asynchronous readahead into the page
++  /// cache the model's own mapping shares; nothing is copied into the app). Returns the pages asked for and the calls
++  /// that failed; null off Android.
++  static ({int pages, int calls, int fails})? willNeedLost(String path, Uint8List want, Uint8List now, int pageSize) {
++    final libc = _libc;
++    if (libc == null) return null;
++    final open = libc.lookupFunction<Int32 Function(Pointer<Uint8>, Int32), int Function(Pointer<Uint8>, int)>('open');
++    final close = libc.lookupFunction<Int32 Function(Int32), int Function(int)>('close');
++    final fadvise = libc.lookupFunction<Int32 Function(Int32, Int64, Int64, Int32), int Function(int, int, int, int)>('posix_fadvise');
++    final free = libc.lookupFunction<Void Function(Pointer<Uint8>), void Function(Pointer<Uint8>)>('free');
++    final name = _cString(path);
++    final fd = open(name, 0 /* O_RDONLY */);
++    free(name);
++    if (fd < 0) return null;
++    var pages = 0, calls = 0, fails = 0;
++    try {
++      final n = math.min(want.length, now.length);
++      for (var i = 0; i < n;) {
++        if (want[i] == 0 || now[i] != 0) {
++          i++;
++          continue;
++        }
++        var j = i;
++        while (j < n && want[j] != 0 && now[j] == 0) {
++          j++;
++        }
++        calls++;
++        if (fadvise(fd, i * pageSize, (j - i) * pageSize, 3 /* POSIX_FADV_WILLNEED */) != 0) fails++;
++        pages += j - i;
++        i = j;
++      }
++    } finally {
++      close(fd);
++    }
++    return (pages: pages, calls: calls, fails: fails);
++  }
++
++  /// Kit r22: this process's getrusage(RUSAGE_SELF): blocks read from storage (ru_inblock, 512 B units; the same
++  /// counter as /proc/self/io read_bytes, readable where /proc/self/io is not) and user + system CPU time in µs.
++  static ({int inblock, int cpuUs})? rusage() {
++    final libc = _libc;
++    if (libc == null) return null;
++    final getrusage = libc.lookupFunction<Int32 Function(Int32, Pointer<Uint8>), int Function(int, Pointer<Uint8>)>('getrusage');
++    final free = libc.lookupFunction<Void Function(Pointer<Uint8>), void Function(Pointer<Uint8>)>('free');
++    final b = _malloc!(144); // struct rusage on arm64 (LP64): 2 timevals, then 14 longs
++    try {
++      if (getrusage(0 /* RUSAGE_SELF */, b) != 0) return null;
++      final q = b.cast<Int64>().asTypedList(18);
++      return (inblock: q[11], cpuUs: q[0] * 1000000 + q[1] + q[2] * 1000000 + q[3]);
++    } finally {
++      free(b);
++    }
++  }
++
++  /// Kit r22: getrlimit(RLIMIT_MEMLOCK) (soft, hard; -1 = unlimited): how much an mlock could pin. Null off Android.
++  static ({int soft, int hard})? memlockLimit() {
++    final libc = _libc;
++    if (libc == null) return null;
++    final getrlimit = libc.lookupFunction<Int32 Function(Int32, Pointer<Uint8>), int Function(int, Pointer<Uint8>)>('getrlimit');
++    final free = libc.lookupFunction<Void Function(Pointer<Uint8>), void Function(Pointer<Uint8>)>('free');
++    final b = _malloc!(16);
++    try {
++      if (getrlimit(8 /* RLIMIT_MEMLOCK */, b) != 0) return null;
++      final q = b.cast<Int64>().asTypedList(2);
++      return (soft: q[0], hard: q[1]);
++    } finally {
++      free(b);
++    }
++  }
++
+   /// "8 GB" phones report ~7.3 GB to apps, "6 GB" ones ~5.6 GB.
+   bool get roomyRam => totalRam >= 7000000000;
+   bool get lowRam => totalRam > 0 && totalRam < 5000000000;
+@@ -347,6 +460,18 @@ class DeviceProfile {
+     }
+   }
+ 
++  /// Kit r22: clock ticks this process waited for block I/O so far (/proc/self/stat field 42, delayacct_blkio_ticks;
++  /// 0 where delay accounting is off). Null off Linux.
++  static int? ioWaitTicks() {
++    try {
++      final stat = File('/proc/self/stat').readAsStringSync();
++      final f = stat.substring(stat.lastIndexOf(')') + 2).split(' '); // f[0] = field 3
++      return int.parse(f[39]);
++    } catch (_) {
++      return null;
++    }
++  }
++
+   /// Bytes this process caused to be read from storage so far (/proc/self/io
+   /// read_bytes: page faults and readahead included). Null off Linux.
+   static int? ioReadBytes() {
+diff --git a/lib/research.dart b/lib/research.dart
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -1,10 +1,12 @@
+ part of 'assistant.dart';
+ 
+-/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-19-kit-r21.md).
++/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-20-kit-r22.md).
+ /// model: a [KitModel] id ([Research.kitModels]); the first spec of a group (block) reloads that model.
+-/// proto: 'r21' = memo-19's two-model ABBA blocks (campaign 1's r16 gate before every gated run).
++/// proto: 'r22' = memo-20's two-model ABBA blocks (campaign 1's r16 gate before every gated run).
+ /// phase: 'warmup' (unscored), 'on' (scored) or 'prof' (profiled, not scored).
+-/// arm: 'off' / 'on' = GGML_PREFILL_COLD unset / set (the knob under test).
++/// arm: 'off' = the model's baseline (r21's knob-off arm); 'num' = baseline + the model's [KitModel.num] (declared
++///      numerics: skip + two-stage head, R59).
++/// hold: during the gate's wait and right after it, read back the model's pages that the wait took (memo-20 §2).
+ /// kind: 'official32' = the benchmark (_benchPrompt, 32 tokens, greedy, the app's streaming, as r16);
+ ///       'profiled32' = the same under the profiling env (r16's per-token lines).
+ /// env: set before the run, every other known knob unset. repack: weight repack at load (a change reloads the model).
+@@ -12,18 +14,19 @@ part of 'assistant.dart';
+ /// gate: r16's cool-down gate before the run (headroom < 0.65, at most 90 s, read every 5 s); false = no wait.
+ /// One model of the kit ([Research.kitModels]).
+ typedef KitModel = ({String id, String name, String arch, String file, int bytes, String sha256, String url, String source,
+-    String template, bool repack, Map<String, String> settings, List<int> experts});
++    String template, bool repack, Map<String, String> settings, Map<String, String> num, List<int> experts});
+ 
+ typedef RunSpec = ({String id, String model, String proto, String group, String phase, String arm, String kind,
+-    Map<String, String> env, bool repack, int threads, int reps, int pause, bool gate});
++    Map<String, String> env, bool repack, int threads, int reps, int pause, bool gate, bool hold});
+ 
+-/// Research kit r21: campaign 1's runtime (llama.cpp 620d2225c + patches/llama.cpp/0001-0003) +
+-/// patches/llama.cpp-c1-olmoe/0001-keep-warm + 0002-prefill-cold (GGML_PREFILL_COLD, GGML_C2_IO; off unless set).
+-/// The models of [kitModels] in one session, blocks in [blockOrder] (G O O G); in each block the knob in ABBA. One tap, one
+-/// JSON report (clipboard, a file next to the models, and "Save to Downloads").
++/// Research kit r22: campaign 1's runtime (llama.cpp 620d2225c + patches/llama.cpp/0001-0003) +
++/// patches/llama.cpp-c1-olmoe/0001 to 0005 (keep-warm and prefill-cold unused; 0003 skip, 0004 untied head, 0005 per-prompt
++/// counter lines). The models of [kitModels] in one session, blocks in [blockOrder] (G O O G); in each block the arms
++/// off / num in ABBA, one quad with hold and one without. One tap, one JSON report (clipboard, a file next to the
++/// models, and "Save to Downloads").
+ extension Research on Assistant {
+-  static const kit = 'r21';
+-  static const app = '1.21.0+21';
++  static const kit = 'r22';
++  static const app = '1.22.0+22';
+ 
+   /// r16's gate (campaign 1's Assistant._coolDown, R48 coolOfficial = true): before every gated run read the headroom;
+   /// below [Assistant.coolHeadroom] (0.65) -> go; else wait [gatePoll] and read again, until [gateWait] (90 s) has
+@@ -46,9 +49,16 @@ extension Research on Assistant {
+   /// The counters, in every run of both arms: one c2-io line per prompt (read_bytes, rchar, faults at the prompt's
+   /// start, its first decode token and its end).
+   static const _io = {'GGML_C2_IO': '1'};
+-  /// The knob: after each prefill layer, MADV_COLD on the expert slices the prompt routed 1 to 7 times (memo-18 §3 (d):
+-  /// tau 8, the middle of the flat 4-16 range for both models).
+-  static const _cold = {'GGML_PREFILL_COLD': '8'};
++  /// The num arm per model (R59, *host* inside the +5 % budget at -b 512 and -ub 1): OLMoE the c2 skip rule MASS=900 and
++  /// the untied two-stage head K=1024 (c1-olmoe 0003, 0004); Granite campaign 1's skip at 130 with its own two-stage head
++  /// (2,048 rows, Q4_0 screen), as screened in R59. VOLLIE_SKIP_STATS=1: the c2-skip-run line (0005), counters only.
++  static const _numOlmoe = {'VOLLIE_SKIP_MASS': '900', 'VOLLIE_HEAD2': '1024', 'VOLLIE_SKIP_STATS': '1'};
++  static const _numGranite = {'GGML_EXPERT_SKIP': '130', 'GGML_HEAD2': '2048', 'GGML_HEAD2_Q': 'q4_0', 'VOLLIE_SKIP_STATS': '1'};
++
++  /// hold (memo-20 §2): a gated run's wait reads back, at every gate poll and once after the gate, the pages of the
++  /// model file that were resident at the end of the previous run of that model and are not now (posix_fadvise
++  /// WILLNEED on each run of lost pages); after the gate it waits until [holdBack] of them are back or [holdMax] passed.
++  static const holdBack = 0.98, holdMax = Duration(seconds: 5), holdPoll = Duration(milliseconds: 200);
+ 
+   /// THE MODEL TABLE (memo-19 §2). Downloads, storage checks, blocks, residency and the report are generated from it: a
+   /// further model is one entry here (plus its host checks, memo-19 §8).
+@@ -61,42 +71,46 @@ extension Research on Assistant {
+       id: 'granite', name: 'Granite 4.0 H Tiny · granite-Mi (d6-e6 layout, stock weights)', arch: 'granitehybrid',
+       file: 'granite-Mi.gguf', bytes: 3161269344, sha256: '8df94de731a08a377150e4fcc5dcbd16212a6d102bc0b628cdc905cba0bc0f45',
+       url: 'https://huggingface.co/HoeioUser/vollie2/resolve/e893e8a65cff2f09f3de45e4840537c625806e0b/granite-Mi.gguf',
+-      source: 'kit', template: 'model', repack: true, settings: _c1Ship, experts: _graniteExperts,
++      source: 'kit', template: 'model', repack: true, settings: _c1Ship, num: _numGranite, experts: _graniteExperts,
+     ),
+     (
+       id: 'olmoe', name: 'OLMoE 1B-7B 0125 Instruct · olmoe-Mi', arch: 'olmoe',
+       file: 'olmoe-Mi.gguf', bytes: 3072399552, sha256: '5abf710b775cd64fd89d74a783c8a7056a409ba795cd401b9dd448ef8e444abb',
+       url: 'https://huggingface.co/HoeioUser/vollie2/resolve/e893e8a65cff2f09f3de45e4840537c625806e0b/olmoe-Mi.gguf',
+-      source: 'app', template: 'model', repack: true, settings: _c1Ship, experts: _olmoeExperts,
++      source: 'app', template: 'model', repack: true, settings: _c1Ship, num: _numOlmoe, experts: _olmoeExperts,
+     ),
+   ];
+   static final Map<String, KitModel> models = {for (final m in kitModels) m.id: m};
+   static final Map<String, KitModel> _byFile = {for (final m in kitModels) m.file: m};
+ 
+-  /// One block: load, two unscored warm-ups (arm off), 8 scored runs in ABBA (off on on off off on on off), then one
+-  /// profiled run per arm (order off/on in odd blocks, on/off in even ones). Every run but the warm-ups is gated.
++  /// One block: load, two unscored warm-ups (arm off, no hold), 8 scored runs in two ABBA quads (off num num off), the
++  /// first quad with hold in odd blocks and without in even ones (so each model of a G O O G order gets hold first once
++  /// and last once), then one profiled run per arm with hold (order off/num in odd blocks, num/off in even ones). Every
++  /// run but the warm-ups is gated.
+   static List<RunSpec> _block(int b, KitModel m) {
+-    RunSpec r(String arm, String phase, int reps, bool gate) {
++    RunSpec r(String arm, String phase, int reps, bool gate, bool hold) {
+       final prof = phase == 'prof';
+-      final env = {...m.settings, ..._io, if (arm == 'on') ..._cold, if (prof) ..._profOn};
++      final env = {...m.settings, ..._io, if (arm == 'num') ...m.num, if (prof) ..._profOn};
+       return (
+-        id: '${m.id}_$arm${prof ? '_prof' : phase == 'warmup' ? '_wu' : ''}', model: m.id, proto: 'r21', group: 'b$b',
+-        phase: phase, arm: arm, kind: prof ? 'profiled32' : 'official32', env: env,
+-        repack: m.repack, threads: 0, reps: reps, pause: 0, gate: gate,
++        id: '${m.id}_$arm${prof ? '_prof' : phase == 'warmup' ? '_wu' : hold ? '_h' : ''}', model: m.id, proto: 'r22',
++        group: 'b$b', phase: phase, arm: arm, kind: prof ? 'profiled32' : 'official32', env: env,
++        repack: m.repack, threads: 0, reps: reps, pause: 0, gate: gate, hold: hold,
+       );
+     }
+-    final p = b.isOdd ? ['off', 'on'] : ['on', 'off'];
++    final holdFirst = b.isOdd;
++    final p = b.isOdd ? ['off', 'num'] : ['num', 'off'];
+     return [
+-      r('off', 'warmup', 2, false),
+-      for (final a in ['off', 'on', 'on', 'off', 'off', 'on', 'on', 'off']) r(a, 'on', 1, true),
+-      for (final a in p) r(a, 'prof', 1, true),
++      r('off', 'warmup', 2, false, false),
++      for (final h in [holdFirst, !holdFirst])
++        for (final a in ['off', 'num', 'num', 'off']) r(a, 'on', 1, true, h),
++      for (final a in p) r(a, 'prof', 1, true, true),
+     ];
+   }
+ 
+   /// Block order: the table forward, then backward (two models: G O O G), so a drift of the day falls on every model.
+   static final List<KitModel> blockOrder = [...kitModels, ...kitModels.reversed];
+ 
+-  /// THE RUN LIST, in order (memo-19 §3).
++  /// THE RUN LIST, in order (memo-20 §3).
+   static final List<RunSpec> runs = [for (var b = 0; b < blockOrder.length; b++) ..._block(b + 1, blockOrder[b])];
+ 
+   /// The routed-expert tensors (*_exps) of each file as [start, end) byte ranges, from the frozen files' tensor tables
+@@ -168,7 +182,8 @@ extension Research on Assistant {
+     'GGML_CONV_RING', 'GGML_HEAD2', 'GGML_HEAD2_Q', 'GGML_HELPER_CPUS', 'GGML_BARRIER_BENCH', 'GGML_MM_CHUNK',
+     'GGML_EXPERT_Q4_LAYERS', 'GGML_DENSE_WILLNEED', 'GGML_CPU_BENCH', 'GGML_MMID_TOUCH',
+     'GGML_MMID_FUSE', 'GGML_MMID_CHUNK2', 'GGML_ROUTER_CAST', 'GGML_REPACK_RELEASE', 'GGML_KEEP_WARM',
+-    'GGML_PREFILL_COLD', 'GGML_PREFILL_COLD_LOG', 'GGML_C2_IO',
++    'GGML_PREFILL_COLD', 'GGML_PREFILL_COLD_LOG', 'GGML_C2_IO', 'GGML_HEAD2_BATCH', 'GGML_EXPERT_TOPP', 'GGML_EXPERT_GAP',
++    'GGML_EXPERT_MINK',
+     'VOLLIE_SKIP_SUM', 'VOLLIE_SKIP_MAX', 'VOLLIE_SKIP_MASS', 'VOLLIE_SKIP_MINK', 'VOLLIE_SKIP_STATS', 'VOLLIE_SKIP_WIRE',
+     'VOLLIE_TINY_OP', 'VOLLIE_GRAPH_STATS', 'VOLLIE_Q3K_X4', 'VOLLIE_MMID_NB', 'VOLLIE_MMID_FUSE', 'VOLLIE_EXPERT_IO',
+     'VOLLIE_SAMPLER_BYPASS', 'VOLLIE_PROF', 'VOLLIE_AB', 'VOLLIE_AB_WARM', 'VOLLIE_AB_BLOCK', 'VOLLIE_AB_BAAB',
+@@ -191,7 +206,7 @@ extension Research on Assistant {
+   static Map<String, Object?> _specJson(RunSpec s) => {
+         'id': s.id, 'model': s.model, 'proto': s.proto, 'group': s.group, 'phase': s.phase, 'arm': s.arm, 'kind': s.kind,
+         'env': s.env, 'repack': s.repack,
+-        'threads': s.threads, 'reps': s.reps, 'pause_s': s.pause, 'gate': s.gate,
++        'threads': s.threads, 'reps': s.reps, 'pause_s': s.pause, 'gate': s.gate, 'hold': s.hold,
+       };
+ 
+   /// The native libraries this process has mapped (llama.cpp's), from /proc/self/maps.
+@@ -481,8 +496,15 @@ extension Research on Assistant {
+       'mem_start': DeviceProfile.memInfo(),
+       'specs': Research.runs.map(Research._specJson).toList(),
+       'block_order': Research.blockOrder.map((m) => m.id).toList(),
+-      'baseline_note': 'every model runs campaign 1 shipping settings minus numerics (Granite WITHOUT GGML_EXPERT_SKIP=117 '
+-          'and GGML_HEAD2), repack on; the arms differ only in GGML_PREFILL_COLD',
++      'baseline_note': 'arm off = r21 knob-off arm (campaign 1 shipping settings minus numerics, repack on, GGML_C2_IO=1); '
++          'arm num = off + the model\'s num env (declared numerics, R59); GGML_PREFILL_COLD and GGML_KEEP_WARM are never set; '
++          'hold = app-side read-back of the pages the gate wait took (memo-20 §2), no env',
++      'hold_rule': {'back': Research.holdBack, 'max_ms': Research.holdMax.inMilliseconds, 'poll_ms': Research.holdPoll.inMilliseconds,
++                    'advice': 'posix_fadvise WILLNEED on the pages resident at the previous run end of the model and not now'},
++      'memlock_rlimit': () {
++        final l = DeviceProfile.memlockLimit();
++        return l == null ? null : {'soft': l.soft, 'hard': l.hard};
++      }(),
+       'prompt': Assistant._benchPrompt,
+       'tok_fields': Research.tokFields,
+       'tok_fields_c1': Research.tokFieldsC1,
+@@ -500,6 +522,7 @@ extension Research on Assistant {
+             'template_source': Research.models[m]!.template,
+             'repack_rule': Research.models[m]!.repack,
+             'settings': Research.models[m]!.settings,
++            'num': Research.models[m]!.num,
+             'file': Research.models[m]!.file,
+             'bytes': File(paths[m]!).lengthSync(),
+             'expected_bytes': Research.models[m]!.bytes,
+@@ -585,7 +608,8 @@ extension Research on Assistant {
+     // r16's gate (Assistant._coolDown of campaign 1): read; below [below] -> go; else wait 5 s and read again, until
+     // [maxWait] has passed (checked after a read). A null reading (NaN: polled too soon, or none) is "unknown, read
+     // again" (DeviceProfile.thermal spaces calls >= 1.1 s), never "cool".
+-    Future<({double? heat, bool timeout, bool unknown, List<List<num?>> series})> kitGate(double below, Duration maxWait) async {
++    Future<({double? heat, bool timeout, bool unknown, List<List<num?>> series})> kitGate(double below, Duration maxWait,
++        [void Function()? onPoll]) async {
+       final t0 = DateTime.now();
+       final series = <List<num?>>[];
+       double? last;
+@@ -598,6 +622,7 @@ extension Research on Assistant {
+           if (h < below) return (heat: h, timeout: false, unknown: false, series: series);
+           show('cooling: headroom ${(h * 100).round()}% (gate ${(below * 100).round()}%), ${ms ~/ 1000} s of ${maxWait.inSeconds} s');
+         }
++        onPoll?.call(); // r22 hold: read back what the wait took so far
+         if (ms >= maxWait.inMilliseconds) return (heat: last, timeout: true, unknown: last == null, series: series);
+         await Future<void>.delayed(h == null ? Duration.zero : Research.gatePoll);
+         if (_stopTest) return (heat: last, timeout: false, unknown: last == null, series: series);
+@@ -625,6 +650,38 @@ extension Research on Assistant {
+       };
+     }
+ 
++    // r22 hold: the model file's resident pages at the end of the last run of that model (the pages it needs), and the
++    // read-back that keeps them through a gate wait (memo-20 §2). One pass = mincore now, then WILLNEED on the runs of
++    // pages resident then and gone now. Its own blocks read and CPU time are measured around each pass.
++    final lastVec = <String, Uint8List>{};
++    var pageSize = 4096;
++    int wantPages(Uint8List w) => w.fold(0, (a, b) => a + b);
++    Map<String, int> holdPass(String path, Map<String, int> acc) {
++      final want = lastVec[path];
++      if (want == null) return acc;
++      final u0 = DeviceProfile.rusage();
++      final t0 = DateTime.now();
++      final now = DeviceProfile.pageVector(path);
++      if (now == null) return acc;
++      var lost = 0;
++      for (var i = 0; i < want.length && i < now.v.length; i++) {
++        if (want[i] != 0 && now.v[i] == 0) lost++;
++      }
++      final a = lost == 0 ? null : DeviceProfile.willNeedLost(path, want, now.v, now.pageSize);
++      final u1 = DeviceProfile.rusage();
++      acc['passes'] = (acc['passes'] ?? 0) + 1;
++      acc['lost_pages_max'] = math.max(acc['lost_pages_max'] ?? 0, lost);
++      acc['advised_pages'] = (acc['advised_pages'] ?? 0) + (a?.pages ?? 0);
++      acc['advise_calls'] = (acc['advise_calls'] ?? 0) + (a?.calls ?? 0);
++      acc['advise_fails'] = (acc['advise_fails'] ?? 0) + (a?.fails ?? 0);
++      acc['pass_ms'] = (acc['pass_ms'] ?? 0) + DateTime.now().difference(t0).inMilliseconds;
++      if (u0 != null && u1 != null) {
++        acc['cpu_us'] = (acc['cpu_us'] ?? 0) + u1.cpuUs - u0.cpuUs;
++        acc['inblock'] = (acc['inblock'] ?? 0) + u1.inblock - u0.inblock;
++      }
++      return acc;
++    }
++
+     final repOf = <String, int>{};
+     var pos = 0;
+     double? lastHeat; // no-gate runs: the reading after the previous run
+@@ -638,7 +695,7 @@ extension Research on Assistant {
+       final path = paths[s.model]!;
+       final row = <String, Object?>{
+         'pos': ++pos, 'id': s.id, 'model': s.model, 'proto': s.proto, 'group': s.group, 'phase': s.phase, 'arm': s.arm,
+-        'kind': s.kind, 'rep': rep, 'run_tag': tag, 'env': s.env, 'repack': s.repack, 'threads': threads,
++        'hold': s.hold, 'kind': s.kind, 'rep': rep, 'run_tag': tag, 'env': s.env, 'repack': s.repack, 'threads': threads,
+         'tok': <List<Object>>[], 'prof': <String>[], 'c2': <String>[],
+       };
+       byTag[tag] = row;
+@@ -666,8 +723,11 @@ extension Research on Assistant {
+         setNativeEnv('VOLLIE_RUN', tag);
+         row['env_set'] = Research._envNow();
+         final c0 = DateTime.now();
++        final want = lastVec[path];
++        if (want != null) row['want_mb'] = wantPages(want) * pageSize ~/ 1000000; // resident at the previous run's end
++        final hold = <String, int>{};
+         if (s.gate) {
+-          final g = await kitGate(Assistant.coolHeadroom, Research.gateWait);
++          final g = await kitGate(Assistant.coolHeadroom, Research.gateWait, s.hold ? () => holdPass(path, hold) : null);
+           row['cool_ms'] = DateTime.now().difference(c0).inMilliseconds;
+           row['gate'] = Assistant.coolHeadroom;
+           row['heat'] = g.heat;
+@@ -685,6 +745,42 @@ extension Research on Assistant {
+           await Future<void>.delayed(Duration(seconds: s.pause));
+         }
+         row['pause_s'] = s.pause;
++        // before any hold pass of the end: what the wait took (both hold states; with hold, after the in-wait passes)
++        final pre = want == null ? null : DeviceProfile.pageVector(path);
++        if (want != null && pre != null) {
++          var lost = 0;
++          for (var i = 0; i < want.length && i < pre.v.length; i++) {
++            if (want[i] != 0 && pre.v[i] == 0) lost++;
++          }
++          row['wait_lost_mb'] = lost * pre.pageSize ~/ 1000000;
++        }
++        if (s.hold && want != null) {
++          // the end of the wait: one more pass, then until holdBack of the wanted pages are back or holdMax passed
++          final h0 = DateTime.now();
++          final need = (wantPages(want) * Research.holdBack).ceil();
++          holdPass(path, hold);
++          var back = 0;
++          while (true) {
++            final v = DeviceProfile.pageVector(path);
++            if (v == null) break;
++            back = 0;
++            for (var i = 0; i < want.length && i < v.v.length; i++) {
++              if (want[i] != 0 && v.v[i] != 0) back++;
++            }
++            if (back >= need || DateTime.now().difference(h0) >= Research.holdMax) break;
++            await Future<void>.delayed(Research.holdPoll);
++          }
++          hold['final_ms'] = DateTime.now().difference(h0).inMilliseconds;
++          hold['back_mb'] = back * pageSize ~/ 1000000;
++        }
++        if (s.hold) {
++          row['hold_stats'] = {
++            ...hold,
++            if (hold.containsKey('advised_pages')) 'advised_mb': hold['advised_pages']! * pageSize ~/ 1000000,
++            if (hold.containsKey('lost_pages_max')) 'lost_mb_max': hold['lost_pages_max']! * pageSize ~/ 1000000,
++            if (want == null) 'note': 'no previous run of this model: nothing to hold',
++          };
++        }
+         show('${s.group} ${s.model} · ${s.id} ${i + 1}/${s.reps}');
+         row['res_before'] = !s.gate && lastRes != null ? lastRes : Research._residency(path);
+         if (!s.gate && lastRes != null) row['res_before_from'] = 'previous run end';
+@@ -697,6 +793,9 @@ extension Research on Assistant {
+         harvest(row); // untagged lines since the last run belong to this row
+         final f0 = DeviceProfile.pageFaults();
+         final io0 = DeviceProfile.ioReadBytes();
++        final ru0 = DeviceProfile.rusage();
++        final wt0 = DeviceProfile.ioWaitTicks();
++        int? ib1st;
+         final sw = Stopwatch();
+         final t0 = DateTime.now();
+         if (lastEnd != null) row['idle_ms'] = t0.difference(lastEnd!).inMilliseconds;
+@@ -707,12 +806,20 @@ extension Research on Assistant {
+           if (ch.text.isNotEmpty && firstMs == null) {
+             firstMs = sw.elapsedMicroseconds / 1000;
+             io1st = DeviceProfile.ioReadBytes(); // the app's own split (the c2-io line is the runtime's)
++            ib1st = DeviceProfile.rusage()?.inblock;
+           }
+         });
+         lastEnd = DateTime.now();
+         row['wall_ms'] = lastEnd!.difference(t0).inMilliseconds;
+         final f1 = DeviceProfile.pageFaults();
+         final io1 = DeviceProfile.ioReadBytes();
++        final ru1 = DeviceProfile.rusage();
++        final wt1 = DeviceProfile.ioWaitTicks();
++        final endVec = DeviceProfile.pageVector(path);
++        if (endVec != null) {
++          lastVec[path] = endVec.v; // r22 hold: the pages this model needs, for its next run
++          pageSize = endVec.pageSize;
++        }
+         row['mhz_after'] = DeviceProfile.cpuMhz();
+         row['mem_after'] = DeviceProfile.memInfo();
+         row['cap_after'] = Research._caps();
+@@ -735,6 +842,12 @@ extension Research on Assistant {
+         }
+         if (io0 != null && io1 != null) row['io_read_bytes'] = io1 - io0;
+         if (io0 != null && io1st != null) row['io_read_bytes_to_first_chunk'] = io1st! - io0;
++        if (ru0 != null && ru1 != null) {
++          row['inblock_read_bytes'] = (ru1.inblock - ru0.inblock) * 512; // r22: getrusage ru_inblock over the run
++          row['run_cpu_ms'] = (ru1.cpuUs - ru0.cpuUs) ~/ 1000;
++          if (ib1st != null) row['inblock_read_bytes_to_first_chunk'] = (ib1st! - ru0.inblock) * 512;
++        }
++        if (wt0 != null && wt1 != null) row['io_wait_ticks'] = wt1 - wt0;
+         row['text'] = c.text;
+         final pc = await _engine.getPerformanceContext();
+         row['sample_ms'] = pc?.sampleMs;
+diff --git a/lib/settings_screen.dart b/lib/settings_screen.dart
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -351,7 +351,7 @@ class _PerformanceCard extends StatelessWidget {
+               icon: const Icon(Icons.thermostat_rounded),
+               label: const Text('Run phone test (10 min)'),
+             ),
+-      // Research kit r21: the models of Research.kitModels (memo-19); the kit's own files are fetched here first.
++      // Research kit r22: the models of Research.kitModels (memo-20); the kit's own files are fetched here first.
+       if (!assistant.kitModelReady)
+         assistant.researching
+             ? OutlinedButton.icon(
+@@ -362,7 +362,7 @@ class _PerformanceCard extends StatelessWidget {
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.downloadKitModels,
+                 icon: const Icon(Icons.download_rounded),
+-                label: Text('Download kit r21 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
++                label: Text('Download kit r22 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
+                     '(${(assistant.kitMissingBytes / 1e9).toStringAsFixed(1)} GB, Wi-Fi)'),
+               ),
+       if (assistant.kitModelReady)
+@@ -375,7 +375,7 @@ class _PerformanceCard extends StatelessWidget {
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.researchRun,
+                 icon: const Icon(Icons.science_rounded),
+-                label: const Text('Run research kit r21 (~40-75 min)'),
++                label: const Text('Run research kit r22 (~35-80 min)'),
+               ),
+       if (assistant.kitNote != null && !assistant.researching)
+         Padding(
+diff --git a/pubspec.yaml b/pubspec.yaml
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@ name: vollie
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.21.0+21
++version: 1.22.0+22
+ 
+ environment:
+   sdk: ^3.10.7
+diff --git a/test/kit_lines_test.dart b/test/kit_lines_test.dart
+--- a/test/kit_lines_test.dart
++++ b/test/kit_lines_test.dart
+@@ -53,23 +53,48 @@ void main() {
+     expect(pc.tag, null);
+     expect(Research.parseLine('c2-pcold-advice advice=none errno_cold=0 errno_pageout=0 page=16384')!.tag, null);
+   });
+-  test('kit r21: run list generated from the model table', () {
++  test('kit r22: per-prompt counter lines of c1-olmoe 0005 are tagged', () {
++    final k = Research.parseLine('E/x c2-skip-run: run=olmoe_num_h.2 sum=0 max=0 mass=900 c1_skip=0 c1_topp=0 c1_gap=0 '
++        'prefill_tokens=156 prefill_pairs_skipped=13.0% prefill_expert_bytes_skipped=13.0% prefill_MB_per_token_selected=346.0 '
++        'prefill_MB_per_token_skipped=45.0 prefill_bytes_unread=1.0% decode_tokens=31 decode_pairs_skipped=13.4% '
++        'decode_expert_bytes_skipped=13.4% decode_MB_per_token_selected=346.0 decode_MB_per_token_skipped=46.4 decode_bytes_unread=13.4%')!;
++    expect(k.tag, 'olmoe_num_h.2');
++    final h = Research.parseLine('c2-head-run: run=granite_num.1 c2_k=0 c2_calls=0 c2_cols=0 c2_exact_rows_per_col=0.0 '
++        'c2_copies=0 c2_copy=0 c1_m=2048 c1_calls=32 c1_copies=1 c1_copy=1')!;
++    expect(h.tag, 'granite_num.1');
++    expect(Research.parseLine('c2-io-blk run=granite_off.0 inblock=10/20/30')!.tag, 'granite_off.0');
++  });
++  test('kit r22: run list generated from the model table', () {
+     final ids = Research.kitModels.map((m) => m.id).toList();
+     expect(Research.blockOrder.map((m) => m.id).toList(), [...ids, ...ids.reversed]);
+     expect(Research.runs.length, Research.blockOrder.length * 11);
++    final holdFirst = <String, List<bool>>{};
+     for (var b = 0; b < Research.blockOrder.length; b++) {
++      final m = Research.blockOrder[b];
+       final blk = Research.runs.where((r) => r.group == 'b${b + 1}').toList();
+-      expect(blk.every((r) => r.model == Research.blockOrder[b].id && r.repack), true);
+-      expect(blk.where((r) => r.phase == 'on').map((r) => r.arm).toList(), ['off', 'on', 'on', 'off', 'off', 'on', 'on', 'off']);
+-      expect(blk.where((r) => r.phase == 'prof').map((r) => r.arm).toSet(), {'off', 'on'});
+-      expect(blk.first.phase == 'warmup' && blk.first.reps == 2 && !blk.first.gate, true);
++      expect(blk.every((r) => r.model == m.id && r.repack), true);
++      final scored = blk.where((r) => r.phase == 'on').toList();
++      expect(scored.map((r) => r.arm).toList(), ['off', 'num', 'num', 'off', 'off', 'num', 'num', 'off']);
++      expect(scored.sublist(0, 4).every((r) => r.hold == scored[0].hold) && scored.sublist(4).every((r) => r.hold != scored[0].hold), true);
++      holdFirst.putIfAbsent(m.id, () => []).add(scored[0].hold);
++      expect(blk.where((r) => r.phase == 'prof').map((r) => r.arm).toSet(), {'off', 'num'});
++      expect(blk.where((r) => r.phase == 'prof').every((r) => r.hold), true);
++      expect(blk.first.phase == 'warmup' && blk.first.reps == 2 && !blk.first.gate && !blk.first.hold, true);
+       for (final r in blk) {
+         expect(r.env['GGML_C2_IO'], '1');
+-        expect(r.env['GGML_PREFILL_COLD'], r.arm == 'on' ? '8' : null);
+-        expect(r.env.containsKey('GGML_EXPERT_SKIP') || r.env.containsKey('GGML_HEAD2'), false);
++        expect(r.env.containsKey('GGML_PREFILL_COLD') || r.env.containsKey('GGML_KEEP_WARM'), false);
++        for (final e in m.num.entries) {
++          expect(r.env[e.key], r.arm == 'num' ? e.value : null);
++        }
+         expect(r.gate, r.phase != 'warmup');
+       }
+     }
++    for (final v in holdFirst.values) {
++      expect(v.toSet(), {true, false}); // each model: hold first once, hold last once
++    }
++    expect(Research.models['olmoe']!.num, {'VOLLIE_SKIP_MASS': '900', 'VOLLIE_HEAD2': '1024', 'VOLLIE_SKIP_STATS': '1'});
++    expect(Research.models['granite']!.num,
++        {'GGML_EXPERT_SKIP': '130', 'GGML_HEAD2': '2048', 'GGML_HEAD2_Q': 'q4_0', 'VOLLIE_SKIP_STATS': '1'});
+     for (final m in Research.kitModels) {
+       expect(m.experts.length.isEven && m.experts.last <= m.bytes, true);
+     }
