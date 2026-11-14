@@ -61,12 +61,14 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
    lab are to be reused by copying; the sibling folder itself stays unmodified). Campaign 1's 0001 (+ tiny-op)
    builds, loads `olmoe` and is identical to the base on OLMoE with its shipping settings minus the Granite
    numerics (*host*, 4 chunks, memo-13 §7).
-   **Now with the owner: kit r19 / R55** (campaign 1's runtime on OLMoE, three rows, working gate, mincore
-   residency). Memo-15 (*estimated*): OLMoE needs `Cached` ≥ about 2.86 GB to be fault-free; one of 19 recorded
-   sessions had that; expected result "not resident", `c1_off` 3.5 to 4.5, `c1_ship` 7 to 10 tok/s. The goal is
-   therefore conditional on the phone's memory state; the options (state-conditioned claim, a smaller file,
-   private expert memory, or "no") were put to the owner and wait for the r19 numbers. Also asked: one run of the
-   campaign-1 app's own benchmark as a same-day control.
+   **R55 is in (kit r19, R-log):** campaign 1's runtime on OLMoE printed medians of 4.43 (knobs off), 7.20
+   (shipping settings) and 7.51 tok/s (plus read-ahead guess), *device*. No run was resident: 0.4 to 1.4 GB of
+   the file in the page cache before a run, at most 2.18 GB after, 2.73 GB needed; the phone also dropped 0.5 to
+   1.4 GB of it during each 90 s wait. The fixed gate waited 10 minutes and never saw headroom below 0.774
+   (target 0.65); the clock cap was 1,555 MHz throughout. The cleanest tokens ran in 55 to 73 ms at that cap.
+   The raw r19 report exists only as pasted text; a transcribed summary is in `reports/device/`. **The goal
+   decision is the owner's** (state-conditioned claim, a smaller file, private expert memory, or "no"); the lead's
+   reading is in the session report of 2026-11-14. Granite "no" (memo-08 §6) still to be written into the R-log.
    APKs are hosted under `kits/` in `HoeioUser/vollie2`; every device round is an APK out and a JSON back.
 0. **R51 is scored** (R-log): on `olmoe-Mi` the largest skip inside the budget is **13.39 % of expert bytes**
    (`MASS=900`, PPL 12.1031, +3.32 %, *host*); `SUM=75` (17.48 %) is over by 0.0167. Prediction hit (band 6 to
@@ -143,3 +145,4 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 | 2026-11-14 | 3 (continued) | c2 series 0002 to 0009 (exact levers, kit interface, untied head) committed; kit r18 built and host-checked; R53 (head, host) and R54 (lever kit, device) pre-registered; R52 amendment 1; r18 handed to the owner. |
 | 2026-11-14 | 3 (continued) | First device result: R52, 3.34 tok/s on the stock runtime, void by hygiene, cause diagnosed (memo-13: page cache, heat, gate bug). Kit r18 withdrawn. Owner: reuse campaign 1's Vollie. |
 | 2026-11-14 | 3 (continued) | R55 pre-registered and kit r19 handed to the owner. R51 amendment 2 scored: three hits, f* stands on the no-repack path (olmoe-Mi 13.39 %, Q4_0 file 13.42 %). R53 (head) running on the host; its stock identity row reproduced 11.7146 on the full nine-patch series. |
+| 2026-11-14 | 3 (continued) | R55 scored from kit r19: 4.43 / 7.20 / 7.51 tok/s, never resident, clock capped at 1,555 MHz; expected-state prediction hit, ratio prediction missed. Goal decision put to the owner. |

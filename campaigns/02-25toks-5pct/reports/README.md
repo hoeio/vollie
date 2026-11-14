@@ -211,6 +211,58 @@ logs; all numbers *host*.
   ([R54 amendment 1](../prereg/R54-amendment-1.md)). The next kit fixes the gate, reports residency, and runs
   campaign 1's runtime beside the c2 series at the owner's instruction.
 
+### R55 OLMoE on campaign 1's runtime, residency measured (kit r19)
+
+- **Date:** 2026-11-14, 12:39 to 13:22 local. **Label:** *device* unless marked.
+- **Pre-registration:** [R55](../prereg/R55-olmoe-c1-runtime-residency-device.md), commit `ec9927b`, pushed before
+  the APK was handed over.
+- **Data:** [device/r19_2026-11-14_summary.json](device/r19_2026-11-14_summary.json), a summary transcribed by the
+  lead from the report the owner pasted (per-run fields and the per-token times of the three profiled runs).
+  **The raw report is not stored as a file**; the repository parser was therefore not run on it, and the
+  statistics below come from the transcribed fields.
+- **Checks:** model sha256 as pre-registered; the same reply text in all 19 runs; `repack_loaded` true; 156 prompt
+  tokens; 3 threads. Not checked beforehand: the R55 text names the APK hash, not the library hashes (the report
+  gives CPU module `252bfab2…`, `libllama.so` `7de4c7f1…`, and the three campaign-1 patch hashes).
+- **The gate now works and it timed out every time.** Before the first run it waited the full 10 minutes:
+  headroom 0.87, lowest 0.774, back to 0.866; the 0.65 target was never reached. Before every other run it
+  waited 90 s and ended at 0.81 to 0.86. The clock cap was 1,555 MHz on all big cores for the whole session
+  (one reading of 2,150 before one run). Battery 33.3 to 34.1 °C.
+
+| row | printed tok/s, five runs | median | ms per token (median) | major faults per run | mincore before run (MB) |
+|---|---|---|---|---|---|
+| `c1_off` | 3.68, 4.43, 4.54, 4.37, 5.02 | **4.43** | 218 | 16,029 to 59,659 | 609 to 1,225 |
+| `c1_ship` | 6.88, 8.03, 6.95, 8.60, 7.20 | **7.20** | 134 | 2,186 to 16,004 | 375 to 1,304 |
+| `c1_ship_io` | 7.36, 7.51, 7.64, 7.85, 7.02 | **7.51** | 129 | 990 to 20,836 | 631 to 1,391 |
+
+Profiled runs (one each): `c1_off` 5.59, `c1_ship` 7.44, `c1_ship_io` 10.64 tok/s. `cold`: 3.07.
+
+- **Residency (the reason for the round):** no run was resident. Before a run 0.4 to 1.4 GB of the file was in
+  the page cache; right after a run 1.7 to 2.2 GB (maximum 2,180 MB), against the 2,725 MB the benchmark touches
+  (*host*, memo-13) and the 2.6 GB line of the pre-registration. Two facts follow: the phone could not hold the
+  working set on this day, and it dropped 0.5 to 1.4 GB of the model's pages again during each 90-second wait.
+  `Cached` was 1.9 to 2.5 GB before runs; free swap was 0 to 142 MB.
+- **State and scoring.** All 18 scored runs are "not resident": the expected-state prediction is a **hit**
+  (≥ 12 of 18). The clock, 1,555 MHz, lies between the pre-registered "full" (≥ 2,000) and "throttled" (1,075 to
+  1,450) columns, where §3 calls for memo-15's per-run formula with ± 25 %; that scoring needs the raw report
+  and Bonnie's formula and is **not done here**. Against the table as printed: each median lies inside both
+  "not resident" cells of its row (`c1_off` 4.43 in 2.8 to 5.8 and 2.4 to 5.2; `c1_ship` 7.20 in 5.1 to 12.1 and
+  4.2 to 10.5; `c1_ship_io` 7.51 in 5.1 to 13.5 and 4.1 to 11.5) and inside the "expected medians" (3.5 to 4.5,
+  7 to 10, 7.5 to 10.5). The bands are wide; this is agreement, not a sharp test.
+- **Ratio prediction (steady ms of `c1_ship` / `c1_off` = 0.45 to 0.55 if not resident): miss.** Measured 0.616:
+  campaign 1's levers and read-ahead helped less than predicted.
+- **What campaign 1's runtime does on OLMoE:** 4.43 to 7.20 tok/s (× 1.63) with its shipping settings, 7.51
+  with the routed read-ahead plus next-layer guess (× 1.70). Major faults per run fall from 16k to 60k to
+  1k to 21k.
+- **Nearest thing to a compute-bound token:** in the `c1_ship_io` profiled run 26 of 32 tokens had at most 10
+  major faults; their median is 73 ms, the fastest token 55 ms, at a 1,555 MHz cap (barriers 305 per token,
+  against 564 with the knobs off). Per token the expert op took about 38 to 43 ms, the dense matmuls about 11 to
+  12 ms, the head about 4 ms in the cleanest tokens. That is consistent with memo-08's estimate of about 47 to 48
+  ms for this stack at full clock (*estimated*), and it is far from 38 ms.
+- **Kernel-level estimates (§4):** not applicable; no `c1_ship` run was resident at full clock.
+- **Not a verdict on the goal by the rule, but the numbers are plain:** on this phone on this day the best
+  configuration printed a median of 7.5 tok/s; the model was never resident and the clock never left its
+  thermal cap, and neither is something the runtime controls under the campaign's rules.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
 [memo-05, why skip was inert on Q4_0 experts: repack](memo-05-q4-experts-repack.md);
