@@ -87,6 +87,16 @@ The four open decisions below were answered, plus the file variant. The original
 10. **2026-11-13: workflow.** Push to `main` directly, no PR. The published contact e-mail and a private path
     were removed from campaign-1 files at the owner's instruction (they remain in git history).
 
+11. **2026-11-14: start from Vollie 1.** Campaign 2 is a follow-up of campaign 1; every kit, lever and prediction
+    starts from campaign 1's shipped runtime, app, kit protocol and lessons (CLAUDE.md, rules).
+12. **2026-11-14: two purposes.** Besides the 25 tok/s question, the campaign exists to test many models so that
+    its findings can be trusted beyond one model. The lead had proposed keeping OLMoE only as a control after
+    memo-18 showed that Granite needs about 0.7 GB less resident memory; the owner agreed with working on
+    residency on campaign 1's base first, and corrected the framing: all models of the set remain full subjects,
+    and results are reported per model.
+13. **2026-11-14: gate for batch-dependent numerics.** A numerics change that acts differently in batched prefill
+    and single-token decode is held to the budget at both `-b 512` and `-ub 1`.
+
 Naming, to avoid a collision: "stock weights" means the publisher's unmodified model; "stock served PPL" in the
 budget means the served GGUF run by the unmodified runtime (no skip, no two-stage head).
 

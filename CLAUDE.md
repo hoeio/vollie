@@ -28,6 +28,14 @@ Vollie runs a sparse (mixture-of-experts) LLM on a 2021 phone CPU (Samsung Galax
 
 ## Rules you must keep (short form; the full text is in the files above)
 
+- **Two purposes (owner, 2026-11-14).** Campaign 2 is about speed **and** about trust: many models are tested so
+  that a finding is known to generalise. Every model of the set stays a full subject; kits, patches and parsers
+  are model-generic; each lever is measured on at least two models in the same session and reported per model,
+  with what generalised and what did not. A slower model is a result to report, not a reason to drop it; only
+  the owner removes a model from the set.
+- **A numerics rule that behaves differently in batched prefill and in single-token decode** (for example a skip
+  rule that depends on batch size) must stay inside the budget at both `-b 512` and `-ub 1` (owner agreed,
+  2026-11-14).
 - **Start from Vollie 1 (owner, 2026-11-14).** Campaign 2 is a follow-up of campaign 1. Every kit, lever and
   prediction begins with campaign 1's shipped state (its runtime patch, its app, kit r16's run protocol and gate,
   the R-log's lessons on residency, heat and clock) and is expressed as a change to it; new numbers are compared

@@ -51,6 +51,13 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
+**Owner, 2026-11-14 (after memo-18):** agreed to solve residency on campaign 1's base first. And: campaign 2 has
+two purposes, speed and trust through many models. OLMoE is not demoted to a control; every lever is measured
+on at least two models in one session and reported per model; LFM2.5 is to be brought back into the device work
+when storage and run time allow (a third 3.8 GB file; propose it to the owner with the numbers). The gate for
+batch-dependent numerics (both `-b 512` and `-ub 1`) is agreed. Kit r21 (two models, `GGML_PREFILL_COLD`) is
+being built by Tom; pre-register it as R58 from memo-18's predictions before handing it over.
+
 **Latest (memo-18, 2026-11-14, *host* traces and an in-sample simulator, tok/s *estimated*):** corrected working
 sets: Granite 1.97 to 1.99 GB (decode 1.11 GB), OLMoE 2.67 GB (decode 2.16 GB); memo-13's figures were wrong
 (tracer bug). At equal page cache Granite is the better model for this phone: about 19.8 tok/s at 2.2 GB of
@@ -188,3 +195,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-14 | 3 (continued) | R53 scored (host): untied head K=1024 passes (+0.016 % alone, +3.335 % with skip MASS=900); both identity rows reproduced R50 and R51 on the full nine-patch series. |
 | 2026-11-14 | 3 (continued) | R56 scored from kit r20 (cool phone): OLMoE 11.25 tok/s at campaign 1's claim positions against Granite's 20.51; fault-free tokens 43 to 51 ms; never resident (max 2.39 of 2.73 GB); keep-warm closed. The gap to Vollie 1 is residency after the prefill. |
 | 2026-11-14 | 3 (continued) | R57: the owner ran campaign 1's kit as a same-day control: Granite 11.46 tok/s at the claim positions (20.51 on 2026-11-08), OLMoE 11.25 the same day. The gap to campaign 1's number is the phone's page cache on the day; residency is the problem for both models. |
+| 2026-11-14 | 3 (continued) | Memo-18: corrected working sets (Granite 1.97 to 1.99 GB, OLMoE 2.67 GB), page-cache simulator, first residency lever chosen (`GGML_PREFILL_COLD`). Owner: agreed; campaign 2 is also about trust through many models (all models stay full subjects); gate for batch-dependent numerics agreed. Kit r21 (two models in one session) in progress. |
