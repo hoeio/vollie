@@ -25,13 +25,30 @@ The kit r17 app (`com.insaneutils.vollie.c2`, version 1.17.0+17). Design and rep
 - Weight repack is set per kit run (`repack` in the run spec); a change reloads the model.
 - `lib/research.dart` is rewritten as a table-driven kit. Edit `Research.runs` to change what runs.
 
+## 0002-kit-r18.patch (on top of 0001)
+
+Kit r18, the lever kit (version 1.18.0+18). It keeps the package, the debug key and the model constants, so it installs as
+an update over r17 and keeps the downloaded model. Design, run list and report schema:
+`campaigns/02-25toks-5pct/reports/memo-12-kit-r18.md`.
+
+- The run list of memo-12 (stock, stack, profiled, one in-run A/B per lever, skip, head2, package, repack off).
+- The runtime's lines go to stderr (`VOLLIE_LINES=stderr`, always set). They are found anywhere in a log line, not only
+  at its start, and are filed to the right run by their `run=` id (`VOLLIE_RUN` is set per run). A prompt's per-prompt
+  lines arrive late (memo-11 §8); the last run's lines are flushed by freeing the context at the end of the kit.
+- Per-token lines are kept as compact tuples (`tok_fields`). `profiled32` runs also keep the full lines.
+- The env actually set is read back with `getenv`.
+- The build record `assets/kit_build.json` (llama.cpp commit, sha256 of every series patch, app patch and built
+  library) is written by `tools/c2_build_kit.sh` and goes into the report. The file is not in the patch.
+- Reports over 300,000 characters are copied to the clipboard as `c2gz:` + base64(gzip(JSON)); the file is plain JSON.
+- `test/kit_lines_test.dart`: line parsing (`flutter test test/kit_lines_test.dart`).
+
 ## Rebuild
 
 ```sh
 # a private copy of the app (2.3.0+45) without build outputs or signing secrets, e.g. lab/app-c2/
-git -C lab/app-c2 apply ../../patches/app-c2/0001-kit-r17.patch   # or: (cd lab/app-c2 && patch -p1 < …)
-# llama.cpp 620d2225c + patches/llama.cpp-c2/* in a scratch tree, then:
-tools/c2_build_kit.sh <llama.cpp tree> lab/app-c2
+for p in patches/app-c2/0*.patch; do git -C lab/app-c2 apply "$PWD/$p"; done
+# llama.cpp 620d2225c + every patch of patches/llama.cpp-c2/ in order, in a scratch tree, then:
+tools/c2_build_kit.sh <llama.cpp tree> lab/app-c2     # checks the tree against the series file by file
 ```
 
 `tools/c2_build_kit.sh` builds the CPU module and `libllama.so` with `android/build_cpu.sh`. It copies them into the

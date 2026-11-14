@@ -51,16 +51,17 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
-00. **R52 is pre-registered and the kit r17 APK is with the owner** (stock runtime baseline of `olmoe-Mi`;
-   prediction 13.8 tok/s, band 12.1 to 15.0, *estimated*). The owner cannot attach the phone to the laptop: every
-   device round is an APK (built here with `tools/c2_build_kit.sh`, app patch in `patches/app-c2/`, package
-   `com.insaneutils.vollie.c2`, installs beside the owner's app) sent as a file, and a JSON report sent back; parse
-   with `tools/c2_research_parse.py`. Memo-08 (*estimated*): exact stack 47.5 ms (43.3 to 50.5) with repack on,
-   best package 42.5 ms (36.9 to 46.6), 22.5 tok/s; 25 needs the exact stack ≤ 42.95 ms on the phone, the stop
-   line is ≥ 49.0 ms. Granite: proposed "no" (about 2 ms short with every crumb), to be written into the R-log.
-   In progress: lever port into `patches/llama.cpp-c2/` (0002 to 0007 on disk, uncommitted until the identity
-   checks are reported, memo-07); the runtime interface the kit needs (knobs re-read per run, per-run counters,
-   per-token profile lines, in-run A/B) is listed at the top of memo-10; R51 amendment 2 (`-nr` sweeps) running.
+00. **Waiting for the owner's phone run.** Kit r18 (lever kit, R54) is with the owner and replaces r17 (R52
+   amendment 1: one round instead of two). APKs are hosted under `kits/` in `HoeioUser/vollie2`; the owner cannot
+   attach the phone to the laptop, so every device round is an APK out and a JSON report back. Score with
+   `python3 -I tools/c2_research_parse.py <report.json>` against `prereg/R54-…` (and R52 on its `stock` group).
+   Decision lines (memo-08 §9, *estimated*): steady token of `stack` ≤ 42.95 ms means 25 is reachable;
+   ≥ 49.0 ms with `package` < 23.0 tok/s is the stop line. Central predictions: `stock` 13.8, `stack` 20.0,
+   `skip` 21.8, `package` 22.3 tok/s. Rebuild a kit with `tools/c2_build_kit.sh` (app patches in
+   `patches/app-c2/`, working copy `lab/app-c2/`, runtime tree `lab/llama.cpp-c2-android`).
+   Host, detached: the Q4_0 `-nr` sweep (R51 amendment 2, part 2; part 1 holds: `MASS=900` +3.33 % without
+   repack), then R53 (head screen; its `stock` and `MASS=900` rows are the full-set identity check of the whole
+   series). Granite: proposed "no" (memo-08 §6), still to be written into the R-log.
 0. **R51 is scored** (R-log): on `olmoe-Mi` the largest skip inside the budget is **13.39 % of expert bytes**
    (`MASS=900`, PPL 12.1031, +3.32 %, *host*); `SUM=75` (17.48 %) is over by 0.0167. Prediction hit (band 6 to
    15 %). In ms (*estimated*, memo-03): about 3.9 ms, about 0.8 ms short of 38.0 ms at the central estimate,
@@ -133,3 +134,4 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 | 2026-11-13 | 3 (continued) | Served files hosted at `HoeioUser/vollie2` (`e893e8a6`); owner: no tags. LFM2.5 screen finished and appended to R50: reference row suspect (BF16 worse than its quantizations), no card frozen, no phone round planned. R51 sweep started on the laptop. |
 | 2026-11-14 | 3 (continued) | R51 scored: f* = 13.39 % of expert bytes inside the budget on `olmoe-Mi` (hit); SUM-against-MASS prediction missed; amendment 1 void (no effect on the Q4_0 file). Next: device baseline pre-registration R52. |
 | 2026-11-14 | 3 (continued) | Memo-05 (repack path), R51 amendment 2 pre-registered and started; memo-08 (device predictions; OLMoE now about 22.5 tok/s at the centre, *estimated*); the owner cannot attach the phone, so memo-09/10 and kit r17 (stock-only APK) were built; R52 pre-registered; APK handed to the owner. |
+| 2026-11-14 | 3 (continued) | c2 series 0002 to 0009 (exact levers, kit interface, untied head) committed; kit r18 built and host-checked; R53 (head, host) and R54 (lever kit, device) pre-registered; R52 amendment 1; r18 handed to the owner. |

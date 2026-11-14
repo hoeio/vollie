@@ -11,3 +11,5 @@ see [../../README.md](../../README.md).
 - [R51 amendment 2](R51-amendment-2.md): the frontier re-measured on the phone's no-repack kernel path.
 - [R52](R52-olmoe-stock-baseline-device.md): OLMoE on the stock runtime, device baseline with kit r17.
 - [R53](R53-olmoe-head2-host.md): untied two-stage head on OLMoE, host perplexity.
+- [R52 amendment 1](R52-amendment-1.md): the baseline may be taken from kit r18.
+- [R54](R54-olmoe-lever-kit-device.md): OLMoE levers on the phone, kit r18.

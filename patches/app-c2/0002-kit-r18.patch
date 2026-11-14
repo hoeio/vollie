@@ -1,0 +1,472 @@
+diff --git a/lib/assistant.dart b/lib/assistant.dart
+index b71234f..5dba498 100644
+--- a/lib/assistant.dart
++++ b/lib/assistant.dart
+@@ -4,6 +4,7 @@ import 'dart:io';
+ import 'dart:math' as math;
+ 
+ import 'package:flutter/foundation.dart';
++import 'package:flutter/services.dart' show rootBundle;
+ import 'package:llamadart/llamadart.dart';
+ import 'package:shared_preferences/shared_preferences.dart';
+ 
+@@ -486,7 +487,12 @@ class Assistant extends ChangeNotifier {
+   static const _researchKey = 'research_report';
+ 
+   /// The last research run's JSON report, to copy and send back.
+-  String? get researchReport => _prefs.getString(_researchKey);
++  /// Kit r18+: a report over 300,000 characters is copied as "c2gz:" + base64(gzip(JSON)) (the Android clipboard
++  /// fails near 1 MB); the file next to the model is always plain JSON. tools/c2_research_parse.py reads both.
++  String? get researchReport {
++    final r = _prefs.getString(_researchKey);
++    return r == null || r.length <= 300000 ? r : 'c2gz:${base64.encode(gzip.encode(utf8.encode(r)))}';
++  }
+   void stopResearch() => _stopTest = true;
+   void _researchStatus(String s) {
+     optimizing = s;
+diff --git a/lib/device.dart b/lib/device.dart
+index 0080a25..7cd1545 100644
+--- a/lib/device.dart
++++ b/lib/device.dart
+@@ -478,6 +478,19 @@ final _unsetenv = _libc?.lookupFunction<Int32 Function(Pointer<Uint8>), int Func
+ /// Removes an environment variable for native code (campaign 2 kit: "off" means unset, not "").
+ void unsetNativeEnv(String name) => _unsetenv?.call(_cString(name));
+ 
++final _getenv = _libc?.lookupFunction<Pointer<Uint8> Function(Pointer<Uint8>), Pointer<Uint8> Function(Pointer<Uint8>)>('getenv');
++
++/// An environment variable as native code sees it (null = unset), read back for the kit report.
++String? getNativeEnv(String name) {
++  final p = _getenv?.call(_cString(name));
++  if (p == null || p.address == 0) return null;
++  final b = <int>[];
++  for (var i = 0; p[i] != 0; i++) {
++    b.add(p[i]);
++  }
++  return String.fromCharCodes(b);
++}
++
+ Pointer<Uint8> _cString(String s) {
+   final b = s.codeUnits, p = _malloc!(b.length + 1);
+   for (var i = 0; i < b.length; i++) {
+diff --git a/lib/research.dart b/lib/research.dart
+index f8ca571..b64480c 100644
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -1,50 +1,97 @@
+ part of 'assistant.dart';
+ 
+-/// One kit run spec (campaign 2, kit r17; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md).
++/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-12-kit-r18.md).
+ /// kind: 'official32' = the benchmark (_benchPrompt, 32 tokens, greedy, the app's streaming);
+ ///       'profiled32' = the same with one stream chunk per token, every chunk's arrival time kept;
+-///       'abba'       = story 200 with the spec's env, chunk times kept (for an in-run A/B once the runtime has one).
++///       'abba'       = story [Research.abTokens] tokens, one chunk per token, the hot-only cool-down gate (r15's
++///                      rule for A/B stories: both sides share the heat), for an in-run A/B (VOLLIE_AB).
+ /// env: set before the run, every other known knob unset. repack: weight repack at load (a change reloads the model).
+ /// threads: 0 = the app's pick. reps: repetitions in a row. pause: the kit's idle seconds after the cool-down gate.
+ typedef RunSpec = ({String id, String group, String kind, Map<String, String> env, bool repack, int threads, int reps, int pause});
+ 
+-/// Research kit r17: campaign 2's first kit, OLMoE (olmoe-Mi), stock runtime only (llama.cpp 620d2225c +
+-/// patches/llama.cpp-c2/0001, every knob unset). One tap, one JSON report on the clipboard and in a file.
++/// Research kit r18: the lever kit. Runtime: llama.cpp 620d2225c + patches/llama.cpp-c2/0001-0009 (every knob unset
++/// unless a spec sets it). One tap, one JSON report (clipboard and a file next to the model).
+ extension Research on Assistant {
+-  static const kit = 'r17';
+-  static const app = '1.17.0+17';
++  static const kit = 'r18';
++  static const app = '1.18.0+18';
+ 
+-  /// Every official run waits for the cool-down gate (headroom < 0.65, at most 90 s), as r15/r16.
++  /// Every official run waits for the cool-down gate (headroom < 0.65, at most 90 s), as r15-r17.
+   static const coolOfficial = true;
+ 
+-  /// false: every run re-reads the whole prompt (llamadart would otherwise reuse the previous identical prompt's
+-  /// KV cache on OLMoE, an attention-only model; campaign 1's Granite always re-read it, cached_prompt_tokens 0).
++  /// false: every run re-reads the whole prompt (no reuse of the previous identical prompt's KV cache), as r17.
+   static const reusePrefix = false;
+ 
+   static const _story = 'Write a short story about a lighthouse.';
+ 
++  /// Tokens per A/B generation: 16 warm-up + 47 blocks of 8 (host: OLMoE writes 400 greedy tokens without stopping).
++  static const abTokens = 400;
++
++  /// The two-stage head's exact rows (R53 may change it: one constant).
++  static const head2K = '1024';
++
++  // Building blocks of the run list.
++  static const _stack = {
++    'VOLLIE_TINY_OP': '65536',
++    'VOLLIE_Q3K_X4': '2',
++    'VOLLIE_MMID_NB': '1',
++    'VOLLIE_MMID_FUSE': '1',
++    'VOLLIE_EXPERT_IO': '1',
++    'VOLLIE_SAMPLER_BYPASS': '1',
++  };
++  static const _prof = {'VOLLIE_PROF': '1', 'VOLLIE_GRAPH_STATS': '1'};
++  static const _ab = {..._prof, 'VOLLIE_AB_WARM': '16', 'VOLLIE_AB_BLOCK': '8'};
++  static const _skip = {'VOLLIE_SKIP_MASS': '900', 'VOLLIE_SKIP_STATS': '1', 'VOLLIE_SKIP_WIRE': '1'};
++  static const _skipStats = {'VOLLIE_SKIP_STATS': '1', 'VOLLIE_SKIP_WIRE': '1'};
++
+   /// THE RUN LIST, in order. The lead edits only this (from the pre-registration); one line per spec.
+   static const List<RunSpec> runs = [
+-    (id: 'cold', group: 'baseline', kind: 'official32', env: {}, repack: true, threads: 0, reps: 1, pause: 0),
+-    (id: 'stock', group: 'stock', kind: 'official32', env: {}, repack: true, threads: 0, reps: 5, pause: 0),
+-    (id: 'stock-prof', group: 'profiled', kind: 'profiled32', env: {}, repack: true, threads: 0, reps: 2, pause: 0),
+-    (id: 'stock-nr', group: 'norepack', kind: 'official32', env: {}, repack: false, threads: 0, reps: 2, pause: 0),
++    (id: 'cold', group: 'cold', kind: 'official32', env: {}, repack: true, threads: 0, reps: 1, pause: 0),
++    (id: 'stock', group: 'stock', kind: 'official32', env: {}, repack: true, threads: 0, reps: 3, pause: 0),
++    (id: 'stack', group: 'stack', kind: 'official32', env: _stack, repack: true, threads: 0, reps: 5, pause: 0),
++    (id: 'stack_prof', group: 'stack_prof', kind: 'profiled32', env: {..._stack, ..._prof}, repack: true, threads: 0, reps: 2, pause: 0),
++    (id: 'ab_tiny', group: 'ab', kind: 'abba', env: {..._stack, ..._ab, 'VOLLIE_AB': 'knob:TINY_OP:0:65536'}, repack: true, threads: 0, reps: 3, pause: 0),
++    (id: 'ab_x4', group: 'ab', kind: 'abba', env: {..._stack, ..._ab, 'VOLLIE_AB': 'knob:Q3K_X4:0:2'}, repack: true, threads: 0, reps: 3, pause: 0),
++    (id: 'ab_x4_kernel', group: 'ab', kind: 'abba', env: {..._stack, ..._ab, 'VOLLIE_AB': 'knob:Q3K_X4:1:2'}, repack: true, threads: 0, reps: 3, pause: 0),
++    (id: 'ab_nb', group: 'ab', kind: 'abba', env: {..._stack, ..._ab, 'VOLLIE_AB': 'knob:MMID_NB:0:1'}, repack: true, threads: 0, reps: 3, pause: 0),
++    (id: 'ab_fuse', group: 'ab', kind: 'abba', env: {..._stack, ..._ab, 'VOLLIE_AB': 'knob:MMID_FUSE:0:1'}, repack: true, threads: 0, reps: 3, pause: 0),
++    (id: 'ab_io', group: 'ab', kind: 'abba', env: {..._stack, ..._ab, 'VOLLIE_AB': 'knob:EXPERT_IO:0:1'}, repack: true, threads: 0, reps: 3, pause: 0),
++    (id: 'ab_sampler', group: 'ab', kind: 'abba', env: {..._stack, ..._ab, 'VOLLIE_AB': 'knob:SAMPLER_BYPASS:0:1'}, repack: true, threads: 0, reps: 3, pause: 0),
++    (id: 'skip', group: 'skip', kind: 'official32', env: {..._stack, ..._skip}, repack: true, threads: 0, reps: 5, pause: 0),
++    (id: 'ab_skip', group: 'ab', kind: 'abba', env: {..._stack, ..._skipStats, ..._ab, 'VOLLIE_AB': 'knob:SKIP_MASS:0:900'}, repack: true, threads: 0, reps: 3, pause: 0),
++    (id: 'ab_head2', group: 'ab', kind: 'abba', env: {..._stack, ..._skip, ..._ab, 'VOLLIE_AB': 'knob:HEAD2:0:$head2K'}, repack: true, threads: 0, reps: 3, pause: 0),
++    (id: 'package', group: 'package', kind: 'official32', env: {..._stack, ..._skip, 'VOLLIE_HEAD2': head2K}, repack: true, threads: 0, reps: 5, pause: 0),
++    (id: 'norepack', group: 'norepack', kind: 'official32', env: _stack, repack: false, threads: 0, reps: 2, pause: 0),
+   ];
+ 
+-  /// Knob names cleared before every run (unset): campaign 1's, campaign 2's, and every name a spec uses.
++  /// Set for every run and every load: the runtime's lines go to stderr (the kit's log file), whatever the native logger.
++  static const _always = {'VOLLIE_LINES': 'stderr'};
++
++  /// Knob names cleared before every run (unset): campaign 1's, campaign 2's (0001-0009), and every name a spec uses.
+   static const _knownKnobs = [
+     'GGML_CPU_PROF', 'GGML_CPU_AB', 'GGML_CPU_AB_WARM', 'GGML_CPU_AB_BLOCK', 'GGML_CPU_AB_BAAB', 'GGML_CPU_AB_TOKEN',
+     'GGML_TINY_OP', 'GGML_EXPERT_IO', 'GGML_MMID', 'GGML_Q3K_X4', 'GGML_Q3K_VEC', 'GGML_Q3K_ILP', 'GGML_Q3K_PF',
+     'GGML_Q3K_KERN', 'GGML_EXPERT_ANON', 'GGML_EXPERT_SKIP', 'GGML_EXPERT_SKIP_RENORM', 'GGML_SSM_INPLACE',
+     'GGML_CONV_RING', 'GGML_HEAD2', 'GGML_HEAD2_Q', 'GGML_HELPER_CPUS', 'GGML_BARRIER_BENCH', 'GGML_MM_CHUNK',
+-    'GGML_EXPERT_Q4_LAYERS', 'GGML_DENSE_WILLNEED', 'VOLLIE_SAMPLER_BYPASS', 'GGML_CPU_BENCH', 'GGML_MMID_TOUCH',
++    'GGML_EXPERT_Q4_LAYERS', 'GGML_DENSE_WILLNEED', 'GGML_CPU_BENCH', 'GGML_MMID_TOUCH',
+     'GGML_MMID_FUSE', 'GGML_MMID_CHUNK2', 'GGML_ROUTER_CAST', 'GGML_REPACK_RELEASE',
+-    'VOLLIE_SKIP_SUM', 'VOLLIE_SKIP_MAX', 'VOLLIE_SKIP_MASS', 'VOLLIE_SKIP_MINK', 'VOLLIE_SKIP_STATS',
++    'VOLLIE_SKIP_SUM', 'VOLLIE_SKIP_MAX', 'VOLLIE_SKIP_MASS', 'VOLLIE_SKIP_MINK', 'VOLLIE_SKIP_STATS', 'VOLLIE_SKIP_WIRE',
++    'VOLLIE_TINY_OP', 'VOLLIE_GRAPH_STATS', 'VOLLIE_Q3K_X4', 'VOLLIE_MMID_NB', 'VOLLIE_MMID_FUSE', 'VOLLIE_EXPERT_IO',
++    'VOLLIE_SAMPLER_BYPASS', 'VOLLIE_PROF', 'VOLLIE_AB', 'VOLLIE_AB_WARM', 'VOLLIE_AB_BLOCK', 'VOLLIE_AB_BAAB',
++    'VOLLIE_RUN', 'VOLLIE_LINES', 'VOLLIE_HEAD2', 'VOLLIE_HEAD2_BATCH', 'VOLLIE_HEAD2_CHECK',
+   ];
+   static Set<String> get _knobs => {..._knownKnobs, for (final r in runs) ...r.env.keys};
+ 
+-  /// Every knob unset: the stock runtime. Called at every load and before every kit run.
+-  static void clearKnobs() => _knobs.forEach(unsetNativeEnv);
++  /// Every knob unset (the stock runtime), then [_always]. Called at every load and before every kit run.
++  static void clearKnobs() {
++    _knobs.forEach(unsetNativeEnv);
++    _always.forEach(setNativeEnv);
++  }
++
++  /// The knobs as native code sees them now (set ones only).
++  static Map<String, String> _envNow() => {
++        for (final k in _knobs)
++          if (getNativeEnv(k) != null) k: getNativeEnv(k)!,
++      };
+ 
+   static Map<String, Object?> _specJson(RunSpec s) => {
+         'id': s.id, 'group': s.group, 'kind': s.kind, 'env': s.env, 'repack': s.repack,
+@@ -66,6 +113,32 @@ extension Research on Assistant {
+     }
+   }
+ 
++  // memo-11 §3, the frozen per-token line (unanchored: a logger may prefix it).
++  static final _tokRe = RegExp(r'cpu-prof ab=([AB-]) tok=(\d+) us/token=(\d+) majflt=(\d+) minflt=(\d+) mhz=(\d+)/(\d+) '
++      r'run=([A-Za-z0-9._-]+) prompt=(\d+) blk=(\d+) threads=(\d+) ops=(\d+) barriers=(\d+) syncs=(\d+) skipped=(\d+) '
++      r'pairs=(\d+) head=(\d+) router=(\d+) mm=(\d+) mmid=(\d+) attn=(\d+) other=(\d+) wait=(\d+) \|');
++
++  /// Names of the compact per-token tuple ([_tokRe] groups 1-7 and 9-23; `run` is the row's own).
++  static const tokFields = [
++    'ab', 'tok', 'us', 'majflt', 'minflt', 'mhz4', 'mhz7', 'prompt', 'blk', 'threads', 'ops', 'barriers', 'syncs',
++    'skipped', 'pairs', 'head', 'router', 'mm', 'mmid', 'attn', 'other', 'wait',
++  ];
++
++  /// One log line: null unless it holds a runtime line (`cpu-prof ab=` or `c2-`, anywhere: a logger may prefix it);
++  /// else the line from its marker on, its `run=` id (null if none) and, for a per-token line, the compact tuple.
++  static ({String line, String? tag, List<Object>? tok})? parseLine(String l) {
++    final i = l.indexOf('cpu-prof ab='), j = l.indexOf('c2-');
++    final k = i >= 0 ? i : j;
++    if (k < 0) return null;
++    final s = l.substring(k);
++    final m = _tokRe.firstMatch(s);
++    return (
++      line: s,
++      tag: RegExp(r' run=([A-Za-z0-9._-]+)').firstMatch(s)?.group(1),
++      tok: m == null ? null : <Object>[m[1]!, for (var g = 2; g <= 23; g++) if (g != 8) int.parse(m[g]!)],
++    );
++  }
++
+   /// [_complete] with the kit's stream settings: perToken = one chunk per token; prefix reuse per [reusePrefix].
+   Future<LlamaCompletion> _kitComplete(String prompt, int maxTokens, bool perToken, void Function(LlamaCompletionChunk) onChunk) {
+     _pin();
+@@ -98,6 +171,8 @@ extension Research on Assistant {
+     final w = autoThreads;
+     final rows = <Map<String, Object?>>[];
+     final notes = <String>[];
++    final unmatched = <String>[];
++    var idleLines = 0;
+     DateTime? lastEnd;
+     final path = _loadedPath!;
+     final report = <String, Object?>{
+@@ -111,21 +186,57 @@ extension Research on Assistant {
+       'mem_start': DeviceProfile.memInfo(),
+       'specs': Research.runs.map(Research._specJson).toList(),
+       'prompt': Assistant._benchPrompt,
++      'story': Research._story,
++      'tok_fields': Research.tokFields,
+       'runs': rows,
+       'notes': notes,
++      'unmatched_lines': unmatched,
+     };
++    try {
++      report['build'] = jsonDecode(await rootBundle.loadString('assets/kit_build.json'));
++    } catch (e) {
++      notes.add('build info missing: $e');
++    }
+     Future<void> save() => _prefs.setString(Assistant._researchKey, jsonEncode(report));
+     void show(String s) {
+       final t = DateTime.now().difference(started).inSeconds;
+       _researchStatus('Research ${Research.kit} · ${t ~/ 60}:${(t % 60).toString().padLeft(2, '0')} · $s');
+     }
+ 
+-    List<String> logLines() {
++    // The runtime's lines, matched to rows by their run= id (VOLLIE_RUN): a prompt's c2-*-run lines are printed
++    // when the next prompt starts or the context is freed (memo-11 §8), so they may arrive one or more rows later.
++    // Lines without run= (c2-head-build, c2-ab error) go to the row being measured.
++    final byTag = <String, Map<String, Object?>>{};
++    var logPos = 0;
++    void harvest(Map<String, Object?>? current) {
++      List<String> lines;
+       try {
+-        return File(Assistant._loadLogPath).readAsLinesSync();
++        lines = File(Assistant._loadLogPath).readAsLinesSync();
+       } catch (_) {
+-        return const [];
++        return;
++      }
++      if (lines.length < logPos) logPos = 0; // the file was truncated (a load); nothing pending is lost: see the end
++      for (final l in lines.skip(logPos)) {
++        final p = Research.parseLine(l);
++        if (p == null) continue;
++        final tag = p.tag;
++        final row = tag == null ? current : byTag[tag];
++        if (row == null) {
++          if (tag == '-') {
++            idleLines++; // warm-ups and loads: no run id, knobs cleared
++          } else {
++            unmatched.add(p.line);
++          }
++          continue;
++        }
++        if (p.tok != null) {
++          (row['tok'] as List<List<Object>>).add(p.tok!);
++          if (row['kind'] == 'profiled32') (row['prof'] as List).add(p.line); // full lines, op table included
++        } else {
++          (row['c2'] as List).add(p.line);
++        }
+       }
++      logPos = lines.length;
+     }
+ 
+     // Loads with repack [on] (and [threads]) if the loaded model differs; returns the reload's ms, or null.
+@@ -136,7 +247,8 @@ extension Research on Assistant {
+       }
+       final t0 = DateTime.now();
+       _repack = on;
+-      await _engine.unloadModel();
++      Research.clearKnobs();
++      await _engine.unloadModel(); // frees the context: the last run's per-prompt lines are printed here
+       await _loadOn(Accel.cpu, threads, threads);
+       await _complete('Hi', 1); // the load's own warm-up
+       return DateTime.now().difference(t0).inMilliseconds;
+@@ -144,9 +256,12 @@ extension Research on Assistant {
+ 
+     Future<void> measure(RunSpec s, int rep) async {
+       final threads = s.threads > 0 ? s.threads : w;
++      final tag = '${s.id}.$rep';
+       final row = <String, Object?>{
+-        'id': s.id, 'group': s.group, 'kind': s.kind, 'rep': rep, 'env': s.env, 'repack': s.repack, 'threads': threads,
++        'id': s.id, 'group': s.group, 'kind': s.kind, 'rep': rep, 'run_tag': tag, 'env': s.env, 'repack': s.repack,
++        'threads': threads, 'tok': <List<Object>>[], 'prof': <String>[], 'c2': <String>[],
+       };
++      byTag[tag] = row;
+       show('${s.group} · ${s.id} ${rep + 1}/${s.reps}');
+       try {
+         final reload = await ensureLoad(s.repack, threads);
+@@ -154,12 +269,22 @@ extension Research on Assistant {
+         row['repack_loaded'] = _loadedRepack;
+         Research.clearKnobs();
+         s.env.forEach(setNativeEnv);
++        setNativeEnv('VOLLIE_RUN', tag);
++        row['env_set'] = Research._envNow();
+         final official = s.kind != 'abba';
+         final c0 = DateTime.now();
+-        final heat = official && !Research.coolOfficial ? (await DeviceProfile.thermal()).headroom : await _coolDown();
++        final double? heat;
++        if (official && !Research.coolOfficial) {
++          heat = (await DeviceProfile.thermal()).headroom;
++        } else {
++          heat = official ? await _coolDown() : await _coolDown(Assistant.hotHeadroom);
++        }
+         row['cool_ms'] = DateTime.now().difference(c0).inMilliseconds;
++        row['gate'] = official ? Assistant.coolHeadroom : Assistant.hotHeadroom;
+         row['heat'] = heat;
+-        row['gate_timeout'] = (row['cool_ms'] as int) >= Assistant._coolWait.inMilliseconds && heat != null && heat >= Assistant.coolHeadroom;
++        row['gate_timeout'] = (row['cool_ms'] as int) >= Assistant._coolWait.inMilliseconds &&
++            heat != null &&
++            heat >= (row['gate'] as double);
+         if (s.pause > 0) {
+           show('${s.group} · ${s.id} · idle ${s.pause}s');
+           await Future<void>.delayed(Duration(seconds: s.pause));
+@@ -171,16 +296,16 @@ extension Research on Assistant {
+         row['plugged'] = b0.plugged;
+         row['mhz_before'] = DeviceProfile.cpuMhz();
+         row['mem_before'] = DeviceProfile.memInfo();
++        harvest(null); // everything printed before this run belongs to earlier runs
+         final f0 = DeviceProfile.pageFaults();
+         final io0 = DeviceProfile.ioReadBytes();
+-        final logBefore = logLines().length;
+         final chunks = <double>[];
+         final sw = Stopwatch();
+         final t0 = DateTime.now();
+         if (lastEnd != null) row['idle_ms'] = t0.difference(lastEnd!).inMilliseconds;
+         sw.start();
+-        final c = await _kitComplete(official ? Assistant._benchPrompt : Research._story, official ? Assistant._benchTokens : 200,
+-            s.kind != 'official32', (ch) {
++        final c = await _kitComplete(official ? Assistant._benchPrompt : Research._story,
++            official ? Assistant._benchTokens : Research.abTokens, s.kind != 'official32', (ch) {
+           if (ch.text.isNotEmpty) chunks.add(sw.elapsedMicroseconds / 1000);
+         });
+         lastEnd = DateTime.now();
+@@ -204,16 +329,12 @@ extension Research on Assistant {
+           row['minflt'] = f1.minor - f0.minor;
+         }
+         if (io0 != null && io1 != null) row['io_read_bytes'] = io1 - io0;
+-        // per-token arrival times (ms from the request; profiled32/abba: one chunk per token)
+         if (s.kind != 'official32') row['chunk_ms'] = chunks;
+-        row['prof'] = logLines()
+-            .skip(logBefore)
+-            .where((l) => l.startsWith('cpu-prof') || l.startsWith('cpu-bench') || l.startsWith('c2-'))
+-            .toList();
+         row['text'] = c.text;
+         final pc = await _engine.getPerformanceContext();
+         row['sample_ms'] = pc?.sampleMs;
+         row['decode_ms'] = pc?.decodeMs;
++        harvest(row);
+       } catch (e) {
+         row['error'] = '$e';
+       }
+@@ -222,6 +343,7 @@ extension Research on Assistant {
+     }
+ 
+     try {
++      Research.clearKnobs();
+       // What is loaded and how the benchmark prompt is rendered (the model's own template unless _template is set).
+       final libs = Research._nativeLibs();
+       report['libs'] = {for (final l in libs) l.split('/').last: await DeviceProfile.sha256(l)};
+@@ -258,14 +380,26 @@ extension Research on Assistant {
+         }
+         if (_stopTest) break;
+       }
+-      // Full hash of the model file last, so it does not touch the page cache before the timed runs.
+-      show('hashing the model');
+-      (report['model'] as Map<String, Object?>)['sha256_end'] = await DeviceProfile.sha256(path);
+     } catch (e) {
+       notes.add('aborted: $e');
+     } finally {
+       Research.clearKnobs();
+       _repack = null;
++      // Free the context so the last run's per-prompt lines are printed, then file them before the reload truncates the log.
++      try {
++        await _engine.unloadModel();
++        harvest(null);
++      } catch (e) {
++        notes.add('final unload: $e');
++      }
++      report['idle_lines'] = idleLines;
++      try {
++        // Full hash of the model file last, so it does not touch the page cache before the timed runs.
++        show('hashing the model');
++        (report['model'] as Map<String, Object?>?)?['sha256_end'] = await DeviceProfile.sha256(path);
++      } catch (e) {
++        notes.add('hash: $e');
++      }
+       report['finished'] = DateTime.now().toIso8601String();
+       report['stopped_early'] = _stopTest;
+       report['mem_end'] = DeviceProfile.memInfo();
+@@ -279,7 +413,6 @@ extension Research on Assistant {
+       await DeviceProfile.keepScreenOn(false);
+       researching = false;
+       optimizing = null;
+-      await _engine.unloadModel();
+       status = EngineStatus.idle;
+       await load(path);
+     }
+diff --git a/lib/settings_screen.dart b/lib/settings_screen.dart
+index bdfc731..be341f1 100644
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -361,7 +361,7 @@ class _PerformanceCard extends StatelessWidget {
+           : OutlinedButton.icon(
+               onPressed: busy || optimizing ? null : assistant.researchRun,
+               icon: const Icon(Icons.science_rounded),
+-              label: const Text('Run research kit r17 (~5-20 min)'),
++              label: const Text('Run research kit r18 (~45-75 min)'),
+             ),
+       if (assistant.researchReport != null && !assistant.researching)
+         TextButton.icon(
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 74fd0c4..b3052fb 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@ name: vollie
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.17.0+17
++version: 1.18.0+18
+ 
+ environment:
+   sdk: ^3.10.7
+@@ -32,6 +32,8 @@ flutter:
+     # <think></think> block they were generated after, so each turn's prompt
+     # starts with the previous turn's exact tokens (see Assistant._saveTurn).
+     - assets/qwen35_chat_template.jinja
++    # Campaign 2 kit: written by tools/c2_build_kit.sh (llama.cpp commit, sha256 of every applied patch).
++    - assets/kit_build.json
+ 
+ # GGUF only: skip the LiteRT-LM runtime (~50 MB per ABI).
+ hooks:
+diff --git b/test/kit_lines_test.dart b/test/kit_lines_test.dart
+new file mode 100644
+index 0000000..6b09d4c
+--- /dev/null
++++ b/test/kit_lines_test.dart
+@@ -0,0 +1,25 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:vollie/assistant.dart';
++
++// Kit r18: the runtime's frozen lines (memo-11 §3) are found anywhere in a log line and filed by run id.
++void main() {
++  test('per-token line with a logger prefix', () {
++    const l = '0.00.276.155 I cpu-prof ab=B tok=6 us/token=23172 majflt=0 minflt=6945 mhz=0/0 run=ab_x4.2 prompt=3 blk=2 '
++        'threads=3 ops=501 barriers=274 syncs=414 skipped=0 pairs=0 head=0 router=94 mm=1470 mmid=14340 attn=76 '
++        'other=1265 wait=5866 | ADD 144:50+6 MUL_MAT_ID 48:14340+5595';
++    final p = Research.parseLine(l)!;
++    expect(p.tag, 'ab_x4.2');
++    expect(p.line.startsWith('cpu-prof ab=B'), true);
++    expect(p.tok, ['B', 6, 23172, 0, 6945, 0, 0, 3, 2, 3, 501, 274, 414, 0, 0, 0, 94, 1470, 14340, 76, 1265, 5866]);
++    expect(p.tok!.length, Research.tokFields.length);
++  });
++  test('per-prompt and untagged lines', () {
++    final p = Research.parseLine('c2-skip-run: run=skip.0 prompt=4 tokens=183 pairs=1464 pairs_skipped=13.7% '
++        'expert_bytes_skipped=13.7% MB_per_token_selected=1.0 MB_per_token_skipped=0.1 batch_bytes_unread=2.0%')!;
++    expect(p.tag, 'skip.0');
++    expect(p.tok, null);
++    final h = Research.parseLine('x c2-head-build: screen=q4_0x4x4 exact=q6_K_8x4 rows=50304 copy_mb=58.0 ms=60.8 threads=3 sum=0000000000000000')!;
++    expect(h.tag, null);
++    expect(Research.parseLine('llama_model_loader: loaded'), null);
++  });
++}
