@@ -51,6 +51,16 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
+**Latest (memo-18, 2026-11-14, *host* traces and an in-sample simulator, tok/s *estimated*):** corrected working
+sets: Granite 1.97 to 1.99 GB (decode 1.11 GB), OLMoE 2.67 GB (decode 2.16 GB); memo-13's figures were wrong
+(tracer bug). At equal page cache Granite is the better model for this phone: about 19.8 tok/s at 2.2 GB of
+cache against 11.5 for OLMoE with today's runtime; below about 2.2 GB no residency policy brings OLMoE to 20.
+Recommended first lever: `GGML_PREFILL_COLD` (mark rarely routed expert slices cold during the prefill; advice
+only, bit-identical, both models), predicted Granite 10.7 to 13.4 and OLMoE 11.6 to 13.2 at the residency measured
+on 2026-11-14. Next kit: two models in one session (Granite, OLMoE, OLMoE, Granite blocks), knob alternated,
+read bytes split into prefill and decode. Open rules question: a skip rule that behaves differently in batched
+prefill and single-token decode should be gated at both `-b 512` and `-ub 1`.
+
 **Latest (R57, same-day control, 2026-11-14):** campaign 1's own app and kit, unchanged, printed a median of
 **11.46 tok/s** on Granite at the claim positions today (20.51 on 2026-11-08), on a cool phone at 2,112 MHz.
 OLMoE the same day: 11.25. So OLMoE equals Vollie 1 at equal state, and **Vollie 1's 20.51 is not reproduced

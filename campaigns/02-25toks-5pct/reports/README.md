@@ -401,6 +401,15 @@ had 1,001 to 2,579 major faults.
   reports do not show. Residency under about 2 GB of page cache is the problem to solve for both models, and it
   comes before any kernel work.
 
+**Dated correction, 2026-11-14 (memo-18):** the working-set figures quoted in R52, R55, R56 and R57 from memo-13
+(OLMoE 2,725 MB, Granite 2,569 MB) came from a tracer with a bug in how it read the expert ids of batched
+tokens. The corrected page trace gives **Granite 1,966 to 1,986 MB** (prefill 1,908, decode 1,111) and **OLMoE
+2,673 MB** (prefill 2,524, decode 2,155), *host*. Granite's figure now agrees with the 1,990 to 2,015 MB of file
+pages at which R49's fault-free runs sat (*device*). Consequence for R57's reading: OLMoE and Granite printed
+the same on 2026-11-14 because Granite's run had less page cache; at equal page cache Granite needs about
+0.7 GB less in total and about 1.0 GB less for the decode tokens alone, so it becomes fault-free at a cache
+size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
 [memo-05, why skip was inert on Q4_0 experts: repack](memo-05-q4-experts-repack.md);
@@ -414,6 +423,7 @@ Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-0
 [memo-15, cost model refit with I/O and clock terms; residency odds](memo-15-cost-model-refit.md);
 [memo-16, why R55 is far from campaign 1: r16 against r19](memo-16-why-far-from-campaign-1.md);
 [memo-17, kit r20: campaign 1's r16 protocol on OLMoE, warm block, keep-warm](memo-17-kit-r20.md);
+[memo-18, residency options priced with a page-cache simulator; corrected working sets](memo-18-residency-options.md);
 [memo-03, lever pricing](memo-03-lever-pricing.md);
 [memo-04, OLMoE expert-skip](memo-04-olmoe-expert-skip.md);
 [memo-07, campaign-1 exact levers in the c2 series, identity on OLMoE](memo-07-c2-exact-levers.md);
