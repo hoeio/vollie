@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Campaign 2 research-kit report parser (kits r17, r18, r19; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
-memo-12-kit-r18.md and memo-14-kit-r19.md). Standard library only.
+"""Campaign 2 research-kit report parser (kits r17 to r20; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
+memo-12-kit-r18.md, memo-14-kit-r19.md and memo-17-kit-r20.md). Standard library only.
 
 usage: python3 -I tools/c2_research_parse.py <report.json | clipboard text "c2gz:..."> [--min-mhz 1800]
-           [--prompt tools/c2_official_prompt.txt] [--sigma 0.4]
+           [--prompt tools/c2_official_prompt.txt] [--sigma 0.4] [--r16 reports/device/r16_2026-11-08.json]
        python3 -I tools/c2_research_parse.py --selftest
 
 Prints the identity checks (model, libraries against the build record, chat template, prompt, greedy texts), one line
@@ -18,7 +18,15 @@ residency of the model before and after each run (res_before / res_after: expert
 gate's headroom series. Hygiene flags per run: 'throttled' (a big core below --min-mhz at run end), 'fault-bound'
 (> 100 major faults in the decode tokens of a profiled run, or > --fault-run major faults in a plain run, prefill
 included), 'gate timed out' (the headroom stayed at or above the gate for the whole wait), 'gate unknown' (no headroom
-reading at all)."""
+reading at all).
+
+Kit r20 (campaign 1's kit r16 protocol on OLMoE): rows carry pos (1-based place in the run list), proto ('r16', 'kw' or
+'warm') and phase. The r16 part is printed position by position next to campaign 1's own r16 report (--r16): tok/s,
+headroom at the gate, gate wait, idle before, prompt time, A78 clock at run end, model residency / RssFile, Cached,
+major faults. Then every wait of a gated run: page-cache MB of the model lost between the previous run's end and this
+run's start, with and without keep-warm active in that wait (GGML_KEEP_WARM on in the previous run), and the
+keep-warm passes seen (c2-keepwarm lines: count, CPU ms, aborted). The warm block (proto 'warm', no gate) is a
+different protocol and is printed apart; its warm-ups are their own groups and are not scored."""
 import argparse
 import base64
 import gzip
@@ -31,6 +39,8 @@ import sys
 SHA = '5abf710b775cd64fd89d74a783c8a7056a409ba795cd401b9dd448ef8e444abb'
 BIG = (4, 5, 6, 7)  # Snapdragon 888: cpu4-6 A78, cpu7 X1
 HERE = os.path.dirname(os.path.abspath(__file__))
+R16 = os.path.join(HERE, '..', 'reports', 'device', 'r16_2026-11-08.json')
+KW_RE = re.compile(r'c2-keepwarm pass=(\d+) .*?resident_mb=(\d+) touched=(\d+) wall_us=(\d+) cpu_us=(\d+) aborted=(\d)')
 # memo-11 §3 (frozen, unanchored)
 TOK_RE = re.compile(r'cpu-prof ab=([AB-]) tok=(\d+) us/token=(\d+) majflt=(\d+) minflt=(\d+) mhz=(\d+)/(\d+) '
                     r'run=([A-Za-z0-9._-]+) prompt=(\d+) blk=(\d+) threads=(\d+) ops=(\d+) barriers=(\d+) syncs=(\d+) '
@@ -153,7 +163,7 @@ def checks(r, prompt_file):
         with open(prompt_file, encoding='utf-8') as f:
             out.append('prompt == ' + os.path.basename(prompt_file) + ': ' + ('yes' if f.read() == p else 'NO'))
     pt = sorted({x.get('prompt_tokens') for x in r.get('runs', [])
-                 if x.get('prompt_tokens') is not None and x.get('kind', 'official32') != 'abba'})
+                 if x.get('prompt_tokens') is not None and x.get('kind', 'official32') not in ('abba', 'story200')})
     out.append(f'prompt_tokens seen in official runs: {pt}')
     if r.get('unmatched_lines'):
         out.append(f"unmatched runtime lines: {len(r['unmatched_lines'])}")
@@ -164,7 +174,7 @@ def identity(r):
     """Greedy texts of the 32-token runs: equal within a numerics class (repack, skip, head2); stock == stack."""
     out, cls = [], {}
     for x in r.get('runs', []):
-        if x.get('kind') == 'abba' or x.get('text') is None:
+        if x.get('kind') in ('abba', 'story200') or x.get('text') is None:
             continue
         e = env_of(x)
         key = (x.get('repack_loaded', x.get('repack')), e.get('VOLLIE_SKIP_MASS') or e.get('GGML_EXPERT_SKIP') or None,
@@ -177,7 +187,7 @@ def identity(r):
                    + ('identical' if len(texts) == 1 else f'DIFFER ({len(texts)} texts)'))
     by_id = {}
     for x in r.get('runs', []):
-        if x.get('kind') != 'abba' and x.get('text') is not None:
+        if x.get('kind') not in ('abba', 'story200') and x.get('text') is not None:
             by_id.setdefault(x.get('id'), set()).add(x['text'])
     if 'stock' in by_id and 'stack' in by_id:
         out.append('stock == stack: ' + ('yes' if by_id['stock'] == by_id['stack'] and len(by_id['stock']) == 1 else 'NO'))
@@ -185,6 +195,10 @@ def identity(r):
     if c1:
         texts = set().union(*(by_id[k] for k in c1))
         out.append(f"r19 rows {'/'.join(c1)} give one text: " + ('yes' if len(texts) == 1 else f'NO ({len(texts)} texts)'))
+    if r.get('kit') == 'r20':
+        texts = set().union(*by_id.values()) if by_id else set()
+        out.append(f"r20: every 32-token run ({'/'.join(sorted(by_id))}) gives one text: "
+                   + ('yes' if len(texts) == 1 else f'NO ({len(texts)} texts)'))
     if 'skip' in by_id and 'package' in by_id:
         out.append('skip == package (head2 changes no greedy token): ' + ('yes' if by_id['skip'] == by_id['package'] else 'no'))
     return out
@@ -223,6 +237,8 @@ def groups(r, min_mhz, fault_run=1000):
     order, by = [], {}
     for x in runs:
         g = x.get('group', '?')
+        if x.get('proto') == 'warm' and x.get('phase') == 'warmup':
+            g += ' warm-up (unscored)'
         if g not in by:
             order.append(g)
             by[g] = []
@@ -346,6 +362,97 @@ def ab(r, min_mhz, sigma_max):
     return out
 
 
+def memv(s, k):
+    m = re.search(k + r'=(\d+)MB', s or '')
+    return int(m.group(1)) if m else None
+
+
+def a78(s):
+    v = mhz(s)
+    return v[4] if len(v) > 4 else None
+
+
+def res_total(d):
+    return d.get('total_mb') if isinstance(d, dict) else None
+
+
+def kw_passes(x):
+    p = [tuple(int(v) for v in m.groups()) for l in x.get('c2') or [] for m in [KW_RE.search(l)] if m]
+    return p
+
+
+def r16_compare(r, r16):
+    """Kit r20's r16-protocol rows next to campaign 1's r16 run at the same position."""
+    rows = [x for x in r.get('runs', []) if x.get('proto') == 'r16']
+    if not rows:
+        return []
+    old = (r16 or {}).get('runs', [])
+    sec = lambda v: '-' if v is None else f'{v / 1000:.0f}'
+    out = ['r16 protocol, position by position (left: campaign 1 r16, Granite; right: this report, OLMoE). '
+           'tok/s | headroom at gate | gate wait s | idle before s | prompt s | A78 MHz end | RssFile / model res MB | '
+           'Cached MB | majflt']
+    for x in rows:
+        k = x.get('pos')
+        o = old[k - 1] if k and k - 1 < len(old) else {}
+        rb = x.get('res_before') if isinstance(x.get('res_before'), dict) else {}
+        out.append(
+            f"pos {k:>2} {x.get('phase', '?'):8} {x.get('kind', '?'):10} | "
+            f"r16 {fmt(o.get('decode_tps'))} | {fmt(o.get('heat'), 3)} | {sec(o.get('cool_ms'))} | {sec(o.get('idle_ms'))} | "
+            f"{fmt((o.get('ttft_ms') or 0) / 1000 if o.get('ttft_ms') else None, 1)} | {a78(o.get('mhz_after')) or '-'} | "
+            f"file {memv(o.get('mem_before'), 'file') or '-'} | {memv(o.get('mem_before'), 'cached') or '-'} | "
+            f"{o.get('majflt', '-')}  ||  "
+            f"r20 {fmt(x.get('decode_tps'))} | {fmt(x.get('heat'), 3)}{'T' if x.get('gate_timeout') else ''} | "
+            f"{sec(x.get('cool_ms'))} | {sec(x.get('idle_ms'))} | "
+            f"{fmt((x.get('ttft_ms') or 0) / 1000 if x.get('ttft_ms') else None, 1)} | {a78(x.get('mhz_after')) or '-'}"
+            f"{' ' + x['cap_after'].replace('cap=', 'cap ') if x.get('cap_after') else ''} | "
+            f"res {rb.get('experts_mb', '-')}+{rb.get('rest_mb', '-')} -> {res_total(x.get('res_after')) or '-'} | "
+            f"{memv(x.get('mem_before'), 'cached') or '-'} | {x.get('majflt', '-')}")
+    plain = lambda rs: [x['decode_tps'] for x in rs if x.get('phase') == 'on' and x.get('kind', 'official32') == 'official32'
+                        and x.get('decode_tps') is not None]
+    a, b = plain(old), plain(rows)
+    out.append(f"R49's ten plain official runs (phase on): r16 median {fmt(st.median(a) if a else None)} (n {len(a)}); "
+               f"r20 median {fmt(st.median(b) if b else None)} (n {len(b)}). T = gate timed out.")
+    return out
+
+
+def waits(r):
+    """Every gated run's wait: model MB lost from the page cache between the previous run's end and this run's start."""
+    runs = r.get('runs', [])
+    out, drop = [], {True: [], False: []}
+    for prev, x in zip(runs, runs[1:]):
+        if not x.get('gate') or res_total(prev.get('res_after')) is None or res_total(x.get('res_before')) is None:
+            continue
+        on = bool(env_of(prev).get('GGML_KEEP_WARM'))
+        d = res_total(prev['res_after']) - res_total(x['res_before'])
+        idle = (x.get('idle_ms') or 0) / 1000
+        p = kw_passes(x)
+        drop[on].append(d)
+        if on or p:
+            out.append(f"wait before pos {x.get('pos')} ({x.get('proto')}): idle {idle:.0f} s, keep-warm "
+                       f"{'on' if on else 'off'}, lost {d} MB; passes {len(p)}, CPU {sum(q[4] for q in p) / 1000:.0f} ms, "
+                       f"wall max {max((q[3] for q in p), default=0) / 1000:.0f} ms, aborted {sum(q[5] for q in p)}, "
+                       f"resident at last pass {p[-1][1] if p else '-'} MB")
+    for on in (False, True):
+        if drop[on]:
+            out.append(f"waits with keep-warm {'on' if on else 'off'}: n {len(drop[on])}, model MB lost per wait median "
+                       f"{st.median(drop[on]):.0f} min {min(drop[on])} max {max(drop[on])}")
+    return out
+
+
+def warm(r):
+    """The warm block (no gate): per run tok/s, headroom and A78 clock before -> after, residency."""
+    rows = [x for x in r.get('runs', []) if x.get('proto') == 'warm']
+    out = ['warm block (different protocol: no gate, back to back): pos id tok/s | headroom before -> after | '
+           'A78 MHz before -> after | cap after | model res before -> after MB | idle before ms'] if rows else []
+    for x in rows:
+        out.append(f"pos {x.get('pos')} {x.get('id')}{' (warm-up)' if x.get('phase') == 'warmup' else ''} "
+                   f"{fmt(x.get('decode_tps'))} | {fmt(x.get('heat'), 3)} -> {fmt(x.get('heat_after'), 3)} | "
+                   f"{a78(x.get('mhz_before')) or '-'} -> {a78(x.get('mhz_after')) or '-'} | "
+                   f"{(x.get('cap_after') or '-').replace('cap=', '')} | {res_total(x.get('res_before')) or '-'} -> "
+                   f"{res_total(x.get('res_after')) or '-'} | {x.get('idle_ms', '-')}")
+    return out
+
+
 def main(argv=None):
     a = argparse.ArgumentParser()
     a.add_argument('report', nargs='?')
@@ -353,6 +460,7 @@ def main(argv=None):
     a.add_argument('--sigma', type=float, default=0.4)
     a.add_argument('--fault-run', type=int, default=1000, help='plain-run major faults above which a run is fault-bound')
     a.add_argument('--prompt', default=os.path.join(HERE, 'c2_official_prompt.txt'))
+    a.add_argument('--r16', default=R16, help="campaign 1's kit r16 report, for kit r20's position-by-position table")
     a.add_argument('--selftest', action='store_true')
     o = a.parse_args(argv)
     if o.selftest:
@@ -361,7 +469,9 @@ def main(argv=None):
         a.error('report.json required')
     r = load(o.report)
     print(f"kit {r.get('kit')} app {r.get('app')} started {r.get('started')} stopped_early {r.get('stopped_early')}")
-    for part in (checks(r, o.prompt), identity(r), groups(r, o.min_mhz, o.fault_run), ab(r, o.min_mhz, o.sigma)):
+    r16 = load(o.r16) if r.get('kit') == 'r20' and o.r16 and os.path.exists(o.r16) else None
+    for part in (checks(r, o.prompt), identity(r), groups(r, o.min_mhz, o.fault_run), ab(r, o.min_mhz, o.sigma),
+                 r16_compare(r, r16), waits(r), warm(r)):
         if part:
             print('\n'.join(part))
     return 0
@@ -462,6 +572,45 @@ def selftest():
     assert 'r19 rows c1_off/c1_ship/c1_ship_prof/c1_ship_io_prof give one text: yes' in identity(r19), identity(r19)
     r19['runs'][1]['text'] = 'other'
     assert any('give one text: NO (2 texts)' in l for l in identity(r19))
+    # r20: positions against r16, waits with and without keep-warm, the warm block, stories out of the text check.
+    r16 = load(R16)
+    assert len(r16['runs']) == 21 and r16['runs'][0]['phase'] == 'baseline'
+    kwl = lambda n, cpu, ab=0: (f'c2-keepwarm pass={n} period_s=10 ranges=48 mb=2769 resident_mb=1800 touched=460800 '
+                                f'wall_us=300000 cpu_us={cpu} aborted={ab}')
+    ship = {'GGML_TINY_OP': '262144', 'GGML_EXPERT_IO': '1', 'VOLLIE_SAMPLER_BYPASS': '1'}
+    rz = lambda t: {'experts_mb': t - 40, 'rest_mb': 40, 'total_mb': t, 'ms': 300}
+    m20 = lambda pos, **k: mk(**{'pos': pos, 'proto': 'r16', 'phase': 'on', 'group': 'g1', 'id': 'ship', 'env': ship,
+                                 'gate': 0.65, 'cool_ms': 90000, 'idle_ms': 95000, 'heat': 0.8, 'gate_timeout': True,
+                                 'ttft_ms': 8800.0, 'res_before': rz(1000), 'res_after': rz(2000),
+                                 'mem_before': 'avail=1MB cached=2000MB file=900MB', **k})
+    r20 = {'kit': 'r20', 'runs': [
+        m20(1, phase='baseline', group='baseline', decode_tps=4.0),
+        m20(2, phase='warmup', group='warmup', kind='story200', id='ship_story', text='A lighthouse', prompt_tokens=17,
+            decode_tps=5.0),
+        m20(3, decode_tps=7.0, res_before=rz(1500)),
+        m20(4, proto='kw', group='kw', id='ship_kw', env={**ship, 'GGML_KEEP_WARM': '10'}, decode_tps=8.0, res_before=rz(1200)),
+        m20(5, proto='kw', group='kw', id='ship_kw', env={**ship, 'GGML_KEEP_WARM': '10'}, decode_tps=9.0, res_before=rz(1950),
+            c2=[kwl(1, 250000), kwl(2, 260000, 1)]),
+        m20(6, proto='warm', group='warm_ship', phase='warmup', id='ship_wu', gate=None, decode_tps=10.0, heat=0.8,
+            heat_after=0.82, mhz_before='mhz=1,1,1,1,1555,1555,1555,1555'),
+        m20(7, proto='warm', group='warm_ship', id='ship_w', gate=None, decode_tps=12.0, heat=0.82, heat_after=0.84),
+        m20(8, proto='warm', group='warm_ship', id='ship_w', gate=None, decode_tps=14.0, heat=0.84, heat_after=0.85)]}
+    t = r16_compare(r20, r16)
+    assert t[1].startswith('pos  1 baseline official32 | r16 12.27 | 0.870 | 90 | - | 9.2 | 1555 | file 313 | 2490 | ') \
+        and '||  r20 4.00 | 0.800T | 90 | 95 | 8.8 | 2112 | res 960+40 -> 2000 | 2000 | 0' in t[1], t[1]
+    assert 'r16 12.43' in t[2] and 'r16 13.97' in t[3] and 'file 658' in t[3], t
+    assert "r16 median 20.51 (n 10); r20 median 7.00 (n 1)" in t[-1], t[-1]
+    w = waits(r20)
+    assert any('wait before pos 5 (kw): idle 95 s, keep-warm on, lost 50 MB; passes 2, CPU 510 ms' in l and 'aborted 1' in l
+               for l in w), w
+    assert 'waits with keep-warm off: n 3, model MB lost per wait median 800 min 500 max 1000' in w[-2], w
+    assert w[-1].startswith('waits with keep-warm on: n 1, model MB lost per wait median 50'), w
+    wb = warm(r20)
+    assert len(wb) == 4 and 'pos 6 ship_wu (warm-up) 10.00 | 0.800 -> 0.820 | 1555 -> 2112' in wb[1], wb
+    g = groups(r20, 1800)
+    assert any(l.startswith('warm_ship warm-up (unscored): n 1') for l in g) and any(l.startswith('warm_ship: n 2 printed tok/s median 13.00') for l in g), g
+    idt = identity(r20)
+    assert any('r20: every 32-token run' in l and 'one text: yes' in l for l in idt), idt
     print('selftest OK')
     return 0
 

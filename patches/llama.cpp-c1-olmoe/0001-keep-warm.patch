@@ -1,0 +1,221 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -5722,8 +5722,197 @@
+ 
+ struct ggml_threadpool * ggml_threadpool_new(struct ggml_threadpool_params * tpp) {
+     return ggml_threadpool_new_impl(tpp, NULL, NULL);
++}
++
++// Vollie c2 (patches/llama.cpp-c1-olmoe/0001-keep-warm.patch): env GGML_KEEP_WARM=<period s> (0 / unset = off; advice only:
++// reads, never writes, results unchanged). While the process runs no graph (idle >= 1 s since the last one ended), a helper
++// thread wakes every <period> s and walks the routed-expert weights (*_exps, the MUL_MAT_ID weights the graphs read):
++// mincore per 1,024 pages, then one byte of every RESIDENT page is read through process_vm_readv (Linux/Android) or
++// vm_read_overwrite (macOS), so the kernel sees those page-cache pages referenced and keeps them through an idle wait.
++// Pages already reclaimed are not read back (no I/O; mincore filters them). Both reads fail safely (EFAULT, no signal) on
++// a range that has been unmapped since (a model freed), so the helper never needs to know when the model goes away.
++// It stops at the next 1,024-page step once any graph starts. The helper runs at SCHED_BATCH + nice 19 on the slowest
++// cores (Linux: the CPUs with the lowest cpuinfo_max_freq; GGML_MMID_TOUCH's in-op demand touch is the parked
++// precedent, this is its idle-time, fault-safe form). One "c2-keepwarm" line per pass on stderr.
++#if !defined(_WIN32)
++#if defined(__linux__)
++#include <sys/uio.h>
++#include <sys/syscall.h>
++#endif
++static atomic_int          ggml_cpu_kw_period = 0;      // seconds; set per graph from GGML_KEEP_WARM
++static bool                ggml_cpu_kw_started = false; // the helper exists (graph thread only)
++static atomic_int          ggml_cpu_kw_busy = 0;        // a graph is running
++static atomic_llong        ggml_cpu_kw_graphs = 0;      // graphs started so far
++static atomic_llong        ggml_cpu_kw_end_us = 0;      // when the last graph ended
++#define GGML_CPU_KW_MAX 256
++static struct { const char * p; size_t n; } ggml_cpu_kw_reg[GGML_CPU_KW_MAX]; // append-only, published by ggml_cpu_kw_n
++static atomic_int          ggml_cpu_kw_n = 0;
++
++// Graph thread, at a graph's start with the knob on: register the routed-expert weights this graph reads.
++// ponytail: append-only, 256 ranges (OLMoE: 48, Granite: 120); a reload adds new ranges, stale ones fail safely.
++static void ggml_cpu_kw_register(const struct ggml_cgraph * g) {
++    int n = atomic_load(&ggml_cpu_kw_n);
++    for (int i = 0; i < g->n_nodes && n < GGML_CPU_KW_MAX; i++) {
++        const struct ggml_tensor * w = g->nodes[i]->op == GGML_OP_MUL_MAT_ID ? g->nodes[i]->src[0] : NULL;
++        if (!w || !w->data || !strstr(w->name, "_exps")) {
++            continue;
++        }
++        int k = 0;
++        while (k < n && ggml_cpu_kw_reg[k].p != (const char *) w->data) {
++            k++;
++        }
++        if (k < n) {
++            continue;
++        }
++        ggml_cpu_kw_reg[n].p = (const char *) w->data;
++        ggml_cpu_kw_reg[n].n = ggml_nbytes(w);
++        atomic_store(&ggml_cpu_kw_n, ++n);
++    }
+ }
+ 
++static int64_t ggml_cpu_kw_cpu_us(void) {
++    struct timespec ts;
++    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
++    return (int64_t) ts.tv_sec*1000000 + ts.tv_nsec/1000;
++}
++
++// One byte of each page in pages[0..n) read without a signal on unmapped memory; returns the pages read.
++static long ggml_cpu_kw_read(char * const * pages, int n) {
++#if defined(__linux__)
++    static char sink[1024];
++    struct iovec loc = { sink, (size_t) n }, rem[1024];
++    for (int i = 0; i < n; i++) {
++        rem[i].iov_base = pages[i];
++        rem[i].iov_len  = 1;
++    }
++    const ssize_t r = process_vm_readv(getpid(), &loc, 1, rem, (unsigned long) n, 0);
++    return r < 0 ? 0 : (long) r;
++#elif defined(__APPLE__)
++    long ok = 0;
++    for (int i = 0; i < n; i++) {
++        char b;
++        vm_size_t got = 0;
++        ok += vm_read_overwrite(mach_task_self(), (vm_address_t) pages[i], 1, (vm_address_t) &b, &got) == KERN_SUCCESS && got == 1;
++    }
++    return ok;
++#else
++    GGML_UNUSED(pages); GGML_UNUSED(n);
++    return 0;
++#endif
++}
++
++static void ggml_cpu_kw_pass(int pass) {
++    const size_t page = (size_t) sysconf(_SC_PAGESIZE);
++    const long long g0 = atomic_load(&ggml_cpu_kw_graphs);
++    const int64_t t0 = ggml_time_us(), c0 = ggml_cpu_kw_cpu_us();
++    const int nr = atomic_load(&ggml_cpu_kw_n);
++    long pages = 0, resident = 0, touched = 0;
++    int aborted = 0;
++    unsigned char vec[1024];
++    char * list[1024];
++    for (int r = 0; r < nr && !aborted; r++) {
++        char * b = (char *) ((uintptr_t) ggml_cpu_kw_reg[r].p & ~(uintptr_t) (page - 1));
++        char * e = (char *) (((uintptr_t) ggml_cpu_kw_reg[r].p + ggml_cpu_kw_reg[r].n + page - 1) & ~(uintptr_t) (page - 1));
++        for (char * p = b; p < e; p += 1024*page) {
++            if (atomic_load(&ggml_cpu_kw_busy) || atomic_load(&ggml_cpu_kw_graphs) != g0) {
++                aborted = 1; // a generation started: stop now
++                break;
++            }
++            const size_t len = MIN((size_t) (e - p), 1024*page);
++            const int np = (int) (len/page);
++            pages += np;
++            if (mincore(p, len, (void *) vec) != 0) {
++                break; // unmapped (model freed): the rest of this range too
++            }
++            int m = 0;
++            for (int i = 0; i < np; i++) {
++                if (vec[i] & 1) {
++                    list[m++] = p + (size_t) i*page;
++                }
++            }
++            resident += m;
++            if (m > 0) {
++                touched += ggml_cpu_kw_read(list, m);
++            }
++        }
++    }
++    fprintf(stderr, "c2-keepwarm pass=%d period_s=%d ranges=%d mb=%.0f resident_mb=%.0f touched=%ld wall_us=%lld cpu_us=%lld aborted=%d\n",
++            pass, atomic_load(&ggml_cpu_kw_period), nr, (double) pages*page/1e6, (double) resident*page/1e6, touched,
++            (long long) (ggml_time_us() - t0), (long long) (ggml_cpu_kw_cpu_us() - c0), aborted);
++}
++
++static void * ggml_cpu_kw_main(void * arg) {
++    GGML_UNUSED(arg);
++    bool mask[GGML_MAX_N_THREADS] = {false};
++#if defined(__linux__)
++    // the slowest cores (lowest cpuinfo_max_freq); every core if unreadable
++    long fmax[GGML_MAX_N_THREADS], lo = -1;
++    int nc = 0;
++    for (; nc < GGML_MAX_N_THREADS; nc++) {
++        char path[96];
++        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", nc);
++        FILE * f = fopen(path, "r");
++        if (!f) {
++            break;
++        }
++        if (fscanf(f, "%ld", &fmax[nc]) != 1) {
++            fmax[nc] = -1;
++        }
++        fclose(f);
++        if (fmax[nc] > 0 && (lo < 0 || fmax[nc] < lo)) {
++            lo = fmax[nc];
++        }
++    }
++    for (int c = 0; c < GGML_MAX_N_THREADS; c++) {
++        mask[c] = lo < 0 || (c < nc && fmax[c] == lo); // never the inherited big-core pinning of the graph thread
++    }
++    ggml_thread_apply_affinity(mask);
++    ggml_thread_apply_priority(GGML_SCHED_PRIO_LOW);
++    setpriority(PRIO_PROCESS, (id_t) syscall(SYS_gettid), 19);
++#else
++    GGML_UNUSED(mask);
++    ggml_thread_apply_priority(GGML_SCHED_PRIO_LOW);
++#endif
++    for (int pass = 0;;) {
++        const int period = atomic_load(&ggml_cpu_kw_period); // set by the graph thread; a change is seen after one sleep
++        sleep(period > 0 ? (unsigned) period : 1);
++        if (period > 0 && !atomic_load(&ggml_cpu_kw_busy) && ggml_time_us() - atomic_load(&ggml_cpu_kw_end_us) >= 1000000) {
++            ggml_cpu_kw_pass(++pass);
++        }
++    }
++    return NULL;
++}
++
++// Graph thread, at every graph's start (before any worker runs).
++static void ggml_cpu_kw_begin(const struct ggml_cgraph * g) {
++    const char * kw = getenv("GGML_KEEP_WARM");
++    const int period = kw && *kw ? MAX(0, atoi(kw)) : 0;
++    atomic_store(&ggml_cpu_kw_period, period);
++    if (!period && !ggml_cpu_kw_started) {
++        return; // off and never on: nothing at all
++    }
++    atomic_store(&ggml_cpu_kw_busy, 1);
++    atomic_fetch_add(&ggml_cpu_kw_graphs, 1);
++    if (period) {
++        ggml_cpu_kw_register(g);
++        if (!ggml_cpu_kw_started) {
++            pthread_t t;
++            if (pthread_create(&t, NULL, ggml_cpu_kw_main, NULL) == 0) {
++                pthread_detach(t);
++                ggml_cpu_kw_started = true;
++            }
++        }
++    }
++}
++
++static void ggml_cpu_kw_end(void) {
++    if (ggml_cpu_kw_started) {
++        atomic_store(&ggml_cpu_kw_end_us, ggml_time_us());
++        atomic_store(&ggml_cpu_kw_busy, 0);
++    }
++}
++#endif
++
+ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cplan * cplan) {
+     ggml_cpu_init();
+ 
+@@ -5734,6 +5923,9 @@
+     int n_threads                               = cplan->n_threads;
+     struct ggml_threadpool * threadpool = cplan->threadpool;
+ 
++#if !defined(_WIN32)
++    ggml_cpu_kw_begin(cgraph); // Vollie c2: GGML_KEEP_WARM (off unless set)
++#endif
+     // Set before any worker reads it for this graph.
+     const char * tiny = getenv("GGML_TINY_OP");
+     ggml_cpu_tiny_thresh = tiny ? atoll(tiny) : 0;
+@@ -6071,6 +6263,9 @@
+         }
+     }
+ 
++#if !defined(_WIN32)
++    ggml_cpu_kw_end();
++#endif
+     enum ggml_status ret = threadpool->ec;
+ 
+     if (disposable_threadpool) {

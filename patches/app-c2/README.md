@@ -61,13 +61,34 @@ r16 shipped it), built with `tools/c2_build_kit.sh <tree> lab/app-c2 patches/lla
   `tok_fields_c1`); profiled runs keep the full lines.
 - `test/kit_lines_test.dart`: campaign 1's line, including a host line with `mhz=-1/-1`.
 
+## 0004-kit-r20.patch (on top of 0003)
+
+Kit r20 (version 1.20.0+20): campaign 1's kit r16 protocol on OLMoE. Same package and debug key: installs as an update
+over r17 to r19 and keeps the model. Native side: llama.cpp 620d2225c + `patches/llama.cpp/0001-0003` +
+`patches/llama.cpp-c1-olmoe/0001-keep-warm.patch`, built with
+`tools/c2_build_kit.sh <tree> lab/app-c2 patches/llama.cpp patches/llama.cpp-c1-olmoe`. Design, protocol, run list,
+schema: `campaigns/02-25toks-5pct/reports/memo-17-kit-r20.md`.
+
+- Run list (48 runs): part 1 = kit r16's 21 runs in r16's order (baseline, two 200-token stories, groups 1-4 of plain /
+  profiled / profiled / plain with r16's 20 s pause before groups 2 and 4, two plain runs), baseline configuration
+  `c1_ship`; part 2 = r16's group 2 again with `GGML_KEEP_WARM=10`; part 3 = the warm block (no gate): warm-up + 10
+  `c1_ship`, warm-up + 5 `EXPERT_IO=5`, warm-up + 5 `c1_off`.
+- Gate as r16: below 0.65, read every 5 s, at most 90 s, also before the first run (r19's 10-minute first wait is gone).
+  Kept from r19: thermal reads spaced 1.1 s, a null reading is read again. No end-of-run headroom read in gated runs
+  (r16 had none); the warm block reads it once after each run and uses it as the next run's "before".
+- No reload at the kit's start and no `GGML_REPACK_RELEASE` (r16 had neither); the model stays loaded as the app loaded it.
+- r16's streaming for every run (llamadart's default batching); stories record `mhz_blocks` as r16 did.
+- Rows carry `pos` (place in the list; part 1's pos k = r16's run k), `proto` (`r16`, `kw`, `warm`) and `phase`.
+- Untagged runtime lines printed during a run's wait (the keep-warm passes) are filed into that run's `c2` list.
+- `test/kit_lines_test.dart`: + the keep-warm line.
+
 ## Rebuild
 
 ```sh
 # a private copy of the app (2.3.0+45) without build outputs or signing secrets, e.g. lab/app-c2/
 for p in patches/app-c2/0*.patch; do git -C lab/app-c2 apply "$PWD/$p"; done
-# llama.cpp 620d2225c + every patch of patches/llama.cpp-c2/ in order, in a scratch tree, then:
-tools/c2_build_kit.sh <llama.cpp tree> lab/app-c2     # checks the tree against the series file by file
+# llama.cpp 620d2225c + every patch of the series dirs in order, in a scratch tree, then:
+tools/c2_build_kit.sh <llama.cpp tree> lab/app-c2 [series dir ...]   # default patches/llama.cpp-c2; checks the tree file by file
 ```
 
 `tools/c2_build_kit.sh` builds the CPU module and `libllama.so` with `android/build_cpu.sh`. It copies them into the

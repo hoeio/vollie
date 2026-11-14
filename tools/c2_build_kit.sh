@@ -3,14 +3,16 @@
 # (installs beside the owner's Vollie; later kits install as updates over earlier ones and keep the model).
 # Native side: llama.cpp's CPU module and libllama.so from <llama.cpp tree> via campaign 1's android/build_cpu.sh,
 # swapped into the app copy.
-# usage: tools/c2_build_kit.sh <llama.cpp tree> <app copy> [series dir (default patches/llama.cpp-c2)]
-#   <llama.cpp tree>: 620d2225c with every patch of the series applied in order; checked file by file here.
+# usage: tools/c2_build_kit.sh <llama.cpp tree> <app copy> [series dir ... (default patches/llama.cpp-c2)]
+#   <llama.cpp tree>: 620d2225c with every patch of the series dirs applied in order (dir by dir); checked file by file here.
+#   kit r20: tools/c2_build_kit.sh <tree> lab/app-c2 patches/llama.cpp patches/llama.cpp-c1-olmoe
 #   <app copy>: app 2.3.0+45 with patches/app-c2/*.patch applied in order.
 # out: lab/dist-c2/vollie-c2-<version>-research-<kit>.apk and BUILD-<kit>.txt; the app's assets/kit_build.json
 #      (llama.cpp commit, sha256 of every series patch, app patch and built library) goes into the kit's report.
 set -eu
 R=$(cd "$(dirname "$0")/.." && pwd); SRC=$(cd "$1" && pwd); APP=$(cd "$2" && pwd)
-SER=$(cd "${3:-$R/patches/llama.cpp-c2}" && pwd)
+shift 2; [ $# -gt 0 ] || set -- "$R/patches/llama.cpp-c2"
+PATCHES=; for d in "$@"; do d=$(cd "$d" && pwd); PATCHES="$PATCHES $(ls "$d"/0*.patch | tr '\n' ' ')"; done
 M=$R/lab/device-bin/c2/app-module; O=$R/lab/dist-c2
 V=$(sed -n 's/^version: //p' "$APP/pubspec.yaml"); KIT=$(sed -n "s/.*static const kit = '\(.*\)';/\1/p" "$APP/lib/research.dart")
 grep -q "applicationIdSuffix \".c2\"" "$APP/android/app/build.gradle" || { echo "app copy lacks the .c2 suffix: apply patches/app-c2 first"; exit 2; }
@@ -19,8 +21,8 @@ command -v ninja >/dev/null || PATH=$HOME/Library/Android/sdk/cmake/3.22.1/bin:$
 
 # 1. The tree must be exactly HEAD + the series: apply the series to a clean export of HEAD and compare every touched file.
 X=$(mktemp -d); git -C "$SRC" archive HEAD | tar -x -C "$X"
-for p in "$SER"/0*.patch; do (cd "$X" && git apply "$p") || { echo "series patch does not apply: $p"; exit 1; }; done
-files=$(cat "$SER"/0*.patch | sed -n 's#^+++ b/##p' | sort -u)
+for p in $PATCHES; do (cd "$X" && git apply "$p") || { echo "series patch does not apply: $p"; exit 1; }; done
+files=$(cat $PATCHES | sed -n 's#^+++ b/##p' | sort -u)
 [ "$files" = "$(git -C "$SRC" diff --name-only | sort -u)" ] || { echo "the tree's changed files differ from the series'"; exit 1; }
 for f in $files; do cmp -s "$X/$f" "$SRC/$f" || { echo "tree differs from the series: $f"; exit 1; }; done
 rm -rf "$X"
@@ -33,7 +35,7 @@ cp "$M/libggml-cpu-android_armv8.2_2.so" "$J/"; cp "$M/libllama.so" "$B/"
 # 3. Build record for the report.
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 { printf '{"kit": "%s", "app": "%s", "llama_cpp": "%s",\n "series": [' "$KIT" "$V" "$(git -C "$SRC" rev-parse HEAD)"
-  sep=; for p in "$SER"/0*.patch; do printf '%s\n  {"file": "%s", "sha256": "%s"}' "$sep" "$(basename "$p")" "$(sha "$p")"; sep=,; done
+  sep=; for p in $PATCHES; do printf '%s\n  {"file": "%s", "sha256": "%s"}' "$sep" "$(basename "$p")" "$(sha "$p")"; sep=,; done
   printf '],\n "app_patches": ['; sep=
   for p in "$R"/patches/app-c2/0*.patch; do printf '%s\n  {"file": "%s", "sha256": "%s"}' "$sep" "$(basename "$p")" "$(sha "$p")"; sep=,; done
   printf '],\n "libs": {"libggml-cpu-android_armv8.2_2.so": "%s", "libllama.so": "%s"}}\n' \

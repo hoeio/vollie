@@ -1,0 +1,348 @@
+diff --git a/lib/research.dart b/lib/research.dart
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -1,38 +1,43 @@
+ part of 'assistant.dart';
+ 
+-/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-14-kit-r19.md).
+-/// kind: 'official32' = the benchmark (_benchPrompt, 32 tokens, greedy, the app's streaming);
+-///       'profiled32' = the same with one stream chunk per token, every chunk's arrival time kept;
+-///       'abba'       = story [Research.abTokens] tokens, one chunk per token, the hot-only cool-down gate (r15's
+-///                      rule for A/B stories: both sides share the heat), for an in-run A/B.
++/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-17-kit-r20.md).
++/// proto: 'r16' = campaign 1's kit r16 protocol, position by position; 'kw' = an r16 group repeated with keep-warm on;
++///        'warm' = the warm block (a different protocol: no gate, runs back to back).
++/// phase: r16's phase label (baseline, warmup, ref, on, prof) or 'warmup' / 'on' in the warm block.
++/// kind: 'official32' = the benchmark (_benchPrompt, 32 tokens, greedy, the app's streaming, as r16);
++///       'profiled32' = the same under the profiling env (r16's streaming too);
++///       'story200'   = r16's story: [Research._story], 200 tokens, cpu4/cpu7 clocks every 8 received chunks.
+ /// env: set before the run, every other known knob unset. repack: weight repack at load (a change reloads the model).
+ /// threads: 0 = the app's pick. reps: repetitions in a row. pause: the kit's idle seconds after the cool-down gate.
++/// gate: r16's cool-down gate before the run (headroom < 0.65, at most 90 s, read every 5 s); false = no wait.
+ /// A spec id may appear more than once in the list; its runs are numbered on (rep) across the list.
+-typedef RunSpec = ({String id, String group, String kind, Map<String, String> env, bool repack, int threads, int reps, int pause});
++typedef RunSpec = ({String id, String proto, String group, String phase, String kind, Map<String, String> env, bool repack,
++    int threads, int reps, int pause, bool gate});
+ 
+-/// Research kit r19: campaign 1's runtime on OLMoE. Runtime: llama.cpp 620d2225c + patches/llama.cpp/0001-0003
+-/// (campaign 1's series as r16 shipped it; its compiled defaults on unless a row sets them to 0). One tap, one JSON
+-/// report (clipboard and a file next to the model).
++/// Research kit r20: campaign 1's kit r16 protocol on OLMoE, campaign 1's runtime (llama.cpp 620d2225c +
++/// patches/llama.cpp/0001-0003) + patches/llama.cpp-c1-olmoe/0001-keep-warm (GGML_KEEP_WARM, off unless set).
++/// Then an r16 group with keep-warm on, then the warm block. One tap, one JSON report (clipboard and a file).
+ extension Research on Assistant {
+-  static const kit = 'r19';
+-  static const app = '1.19.0+19';
++  static const kit = 'r20';
++  static const app = '1.20.0+20';
+ 
+-  /// Every official run waits for the cool-down gate: headroom < [Assistant.coolHeadroom] (0.65), at most
+-  /// [gateWait] (90 s), before the kit's first timed run at most [firstGateWait] (10 min).
++  /// r16's gate (campaign 1's Assistant._coolDown, R48 coolOfficial = true): before every gated run read the headroom;
++  /// below [Assistant.coolHeadroom] (0.65) -> go; else wait [gatePoll] and read again, until [gateWait] (90 s) has
++  /// passed since the gate began (checked after each read). The same 90 s before the first run (r16: no longer wait).
+   static const coolOfficial = true;
+-  static const gateWait = Duration(seconds: 90), firstGateWait = Duration(minutes: 10);
++  static const gateWait = Duration(seconds: 90), gatePoll = Duration(seconds: 5);
+ 
+   /// false: every run re-reads the whole prompt (no reuse of the previous identical prompt's KV cache), as r17.
+   static const reusePrefix = false;
+ 
+   static const _story = 'Write a short story about a lighthouse.';
+ 
+-  /// Tokens per A/B generation (no A/B in r19).
+-  static const abTokens = 400;
++  /// Tokens of r16's story runs.
++  static const storyTokens = 200;
+ 
+-  /// Set before the kit's own model load (and every reload), unset again after it: campaign 1's GGML_REPACK_RELEASE
+-  /// pages out the repacked tensors' mmapped sources at load. A load-time knob, so it holds for every row (memo-14).
+-  static const loadEnv = {'GGML_REPACK_RELEASE': '1'};
++  /// r16 did not reload the model and never set GGML_REPACK_RELEASE (campaign 1's app 2.2.21+44 / 2.3.0+45): the kit
++  /// runs on the model as the app loaded it (repack on by the app's rule). Kept in the report as {}.
++  static const loadEnv = <String, String>{};
+ 
+   // Building blocks of the run list (campaign 1's knob names; memo-14 §2).
+   /// (a) Every default-on knob of 0001 off (R25's "vanilla" set): the stock arithmetic and the stock op paths.
+@@ -47,22 +52,45 @@
+   /// (c) (b) plus the next-layer guess (EXPERT_IO 5 = 1 + 4, campaign 1's best: 12.0 vs 10.6 tok/s).
+   static const _c1ShipIo = {'GGML_TINY_OP': '262144', 'GGML_EXPERT_IO': '5', 'VOLLIE_SAMPLER_BYPASS': '1'};
+   /// campaign 1's per-token lines (r16): one `cpu-prof ab= tok=` line per decode token under an A/A label.
+-  static const _profOff = {'GGML_CPU_PROF': '1', 'GGML_CPU_AB_TOKEN': '1', 'GGML_CPU_AB': 'knob:MMID_FUSE+CHUNK2:0:0'};
+   static const _profOn = {'GGML_CPU_PROF': '1', 'GGML_CPU_AB_TOKEN': '1', 'GGML_CPU_AB': 'knob:MMID_FUSE+CHUNK2:1:1'};
+ 
++  /// Keep-warm (patches/llama.cpp-c1-olmoe/0001): a pass over the resident expert pages every 10 s while idle.
++  static const _kw = {'GGML_KEEP_WARM': '10'};
++
+   /// THE RUN LIST, in order. The lead edits only this (from the pre-registration); one line per spec.
+-  /// a, b, c, then a, b, c again with the remaining reps, so heat and cache drift hit every row.
++  /// Part 1 (proto r16) is kit r16's list position by position (campaign 1's research.dart, 2.2.21+44; R48/R49):
++  /// baseline, warm-up story, reference story, four groups of plain -> profiled -> profiled -> plain (groups 2 and 4
++  /// start with r16's 20 s idle pause after the gate), two plain runs last; every run behind r16's gate. Baseline
++  /// configuration = (b) c1_ship; "profiled" = c1_ship + r16's A/A per-token label (no change to the arithmetic).
+   static const List<RunSpec> runs = [
+-    (id: 'cold', group: 'cold', kind: 'official32', env: _c1Off, repack: true, threads: 0, reps: 1, pause: 0),
+-    (id: 'c1_off', group: 'c1_off', kind: 'official32', env: _c1Off, repack: true, threads: 0, reps: 3, pause: 0),
+-    (id: 'c1_ship', group: 'c1_ship', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 3, pause: 0),
+-    (id: 'c1_ship_io', group: 'c1_ship_io', kind: 'official32', env: _c1ShipIo, repack: true, threads: 0, reps: 3, pause: 0),
+-    (id: 'c1_off', group: 'c1_off', kind: 'official32', env: _c1Off, repack: true, threads: 0, reps: 2, pause: 0),
+-    (id: 'c1_off_prof', group: 'c1_off_prof', kind: 'profiled32', env: {..._c1Off, ..._profOff}, repack: true, threads: 0, reps: 1, pause: 0),
+-    (id: 'c1_ship', group: 'c1_ship', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 2, pause: 0),
+-    (id: 'c1_ship_prof', group: 'c1_ship_prof', kind: 'profiled32', env: {..._c1Ship, ..._profOn}, repack: true, threads: 0, reps: 1, pause: 0),
+-    (id: 'c1_ship_io', group: 'c1_ship_io', kind: 'official32', env: _c1ShipIo, repack: true, threads: 0, reps: 2, pause: 0),
+-    (id: 'c1_ship_io_prof', group: 'c1_ship_io_prof', kind: 'profiled32', env: {..._c1ShipIo, ..._profOn}, repack: true, threads: 0, reps: 1, pause: 0),
++    (id: 'ship', proto: 'r16', group: 'baseline', phase: 'baseline', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 1, pause: 0, gate: true),
++    (id: 'ship_story', proto: 'r16', group: 'warmup', phase: 'warmup', kind: 'story200', env: {..._c1Ship, ..._profOn}, repack: true, threads: 0, reps: 1, pause: 0, gate: true),
++    (id: 'ship_story', proto: 'r16', group: 'ref', phase: 'ref', kind: 'story200', env: {..._c1Ship, ..._profOn}, repack: true, threads: 0, reps: 1, pause: 0, gate: true),
++    (id: 'ship', proto: 'r16', group: 'g1', phase: 'on', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 1, pause: 0, gate: true),
++    (id: 'ship_prof', proto: 'r16', group: 'g1', phase: 'prof', kind: 'profiled32', env: {..._c1Ship, ..._profOn}, repack: true, threads: 0, reps: 2, pause: 0, gate: true),
++    (id: 'ship', proto: 'r16', group: 'g1', phase: 'on', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 1, pause: 0, gate: true),
++    (id: 'ship', proto: 'r16', group: 'g2', phase: 'on', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 1, pause: 20, gate: true),
++    (id: 'ship_prof', proto: 'r16', group: 'g2', phase: 'prof', kind: 'profiled32', env: {..._c1Ship, ..._profOn}, repack: true, threads: 0, reps: 2, pause: 0, gate: true),
++    (id: 'ship', proto: 'r16', group: 'g2', phase: 'on', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 1, pause: 0, gate: true),
++    (id: 'ship', proto: 'r16', group: 'g3', phase: 'on', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 1, pause: 0, gate: true),
++    (id: 'ship_prof', proto: 'r16', group: 'g3', phase: 'prof', kind: 'profiled32', env: {..._c1Ship, ..._profOn}, repack: true, threads: 0, reps: 2, pause: 0, gate: true),
++    (id: 'ship', proto: 'r16', group: 'g3', phase: 'on', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 1, pause: 0, gate: true),
++    (id: 'ship', proto: 'r16', group: 'g4', phase: 'on', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 1, pause: 20, gate: true),
++    (id: 'ship_prof', proto: 'r16', group: 'g4', phase: 'prof', kind: 'profiled32', env: {..._c1Ship, ..._profOn}, repack: true, threads: 0, reps: 2, pause: 0, gate: true),
++    (id: 'ship', proto: 'r16', group: 'g4', phase: 'on', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 1, pause: 0, gate: true),
++    (id: 'ship', proto: 'r16', group: 'end', phase: 'on', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 2, pause: 0, gate: true),
++    // Part 2 (proto kw): r16's group 2 again with keep-warm on in every run. The helper acts in the idle time AFTER a run
++    // that had it on, so the waits before runs 2-4 of this group are covered and the wait before run 1 is not.
++    (id: 'ship_kw', proto: 'kw', group: 'kw', phase: 'on', kind: 'official32', env: {..._c1Ship, ..._kw}, repack: true, threads: 0, reps: 1, pause: 20, gate: true),
++    (id: 'ship_kw_prof', proto: 'kw', group: 'kw', phase: 'prof', kind: 'profiled32', env: {..._c1Ship, ..._profOn, ..._kw}, repack: true, threads: 0, reps: 2, pause: 0, gate: true),
++    (id: 'ship_kw', proto: 'kw', group: 'kw', phase: 'on', kind: 'official32', env: {..._c1Ship, ..._kw}, repack: true, threads: 0, reps: 1, pause: 0, gate: true),
++    // Part 3 (proto warm, a DIFFERENT protocol): no gate; one unscored warm-up, then the scored runs back to back.
++    (id: 'ship_wu', proto: 'warm', group: 'warm_ship', phase: 'warmup', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 1, pause: 0, gate: false),
++    (id: 'ship_w', proto: 'warm', group: 'warm_ship', phase: 'on', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 10, pause: 0, gate: false),
++    (id: 'io_wu', proto: 'warm', group: 'warm_io', phase: 'warmup', kind: 'official32', env: _c1ShipIo, repack: true, threads: 0, reps: 1, pause: 0, gate: false),
++    (id: 'io_w', proto: 'warm', group: 'warm_io', phase: 'on', kind: 'official32', env: _c1ShipIo, repack: true, threads: 0, reps: 5, pause: 0, gate: false),
++    (id: 'off_wu', proto: 'warm', group: 'warm_off', phase: 'warmup', kind: 'official32', env: _c1Off, repack: true, threads: 0, reps: 1, pause: 0, gate: false),
++    (id: 'off_w', proto: 'warm', group: 'warm_off', phase: 'on', kind: 'official32', env: _c1Off, repack: true, threads: 0, reps: 5, pause: 0, gate: false),
+   ];
+ 
+   /// olmoe-Mi.gguf's routed-expert tensors as [start, end) byte ranges (48 tensors in 32 runs; 2,768,240,640 B), from
+@@ -86,6 +114,12 @@
+       'experts_mb': r.inRanges ~/ 1000000, 'rest_mb': (r.total - r.inRanges) ~/ 1000000, 'total_mb': r.total ~/ 1000000,
+       'ms': DateTime.now().difference(t0).inMilliseconds,
+     };
++  }
++
++  /// cpu[cpu]'s current clock in MHz (r16's story samples), null if unreadable.
++  static int? _mhz(int cpu) {
++    final k = int.tryParse(DeviceProfile.sysRead('/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_cur_freq'));
++    return k == null ? null : k ~/ 1000;
+   }
+ 
+   /// The big cores' clock caps (scaling_max_freq of policies 4 and 7, MHz): a thermal cap shows here.
+@@ -102,7 +136,7 @@
+     'GGML_Q3K_KERN', 'GGML_EXPERT_ANON', 'GGML_EXPERT_SKIP', 'GGML_EXPERT_SKIP_RENORM', 'GGML_SSM_INPLACE',
+     'GGML_CONV_RING', 'GGML_HEAD2', 'GGML_HEAD2_Q', 'GGML_HELPER_CPUS', 'GGML_BARRIER_BENCH', 'GGML_MM_CHUNK',
+     'GGML_EXPERT_Q4_LAYERS', 'GGML_DENSE_WILLNEED', 'GGML_CPU_BENCH', 'GGML_MMID_TOUCH',
+-    'GGML_MMID_FUSE', 'GGML_MMID_CHUNK2', 'GGML_ROUTER_CAST', 'GGML_REPACK_RELEASE',
++    'GGML_MMID_FUSE', 'GGML_MMID_CHUNK2', 'GGML_ROUTER_CAST', 'GGML_REPACK_RELEASE', 'GGML_KEEP_WARM',
+     'VOLLIE_SKIP_SUM', 'VOLLIE_SKIP_MAX', 'VOLLIE_SKIP_MASS', 'VOLLIE_SKIP_MINK', 'VOLLIE_SKIP_STATS', 'VOLLIE_SKIP_WIRE',
+     'VOLLIE_TINY_OP', 'VOLLIE_GRAPH_STATS', 'VOLLIE_Q3K_X4', 'VOLLIE_MMID_NB', 'VOLLIE_MMID_FUSE', 'VOLLIE_EXPERT_IO',
+     'VOLLIE_SAMPLER_BYPASS', 'VOLLIE_PROF', 'VOLLIE_AB', 'VOLLIE_AB_WARM', 'VOLLIE_AB_BLOCK', 'VOLLIE_AB_BAAB',
+@@ -123,8 +157,8 @@
+       };
+ 
+   static Map<String, Object?> _specJson(RunSpec s) => {
+-        'id': s.id, 'group': s.group, 'kind': s.kind, 'env': s.env, 'repack': s.repack,
+-        'threads': s.threads, 'reps': s.reps, 'pause_s': s.pause,
++        'id': s.id, 'proto': s.proto, 'group': s.group, 'phase': s.phase, 'kind': s.kind, 'env': s.env, 'repack': s.repack,
++        'threads': s.threads, 'reps': s.reps, 'pause_s': s.pause, 'gate': s.gate,
+       };
+ 
+   /// The native libraries this process has mapped (llama.cpp's), from /proc/self/maps.
+@@ -236,7 +270,7 @@
+       'tok_fields': Research.tokFields,
+       'tok_fields_c1': Research.tokFieldsC1,
+       'gate': {'below': Assistant.coolHeadroom, 'wait_ms': Research.gateWait.inMilliseconds,
+-               'first_wait_ms': Research.firstGateWait.inMilliseconds},
++               'poll_ms': Research.gatePoll.inMilliseconds, 'rule': 'r16'},
+       'load_env': Research.loadEnv,
+       'read_ahead_kb': {for (final b in ['sda', 'sdb', 'sdc']) b: DeviceProfile.sysRead('/sys/block/$b/queue/read_ahead_kb')},
+       'runs': rows,
+@@ -292,10 +326,9 @@
+     }
+ 
+     // Loads with repack [on] (and [threads]) if the loaded model differs; returns the reload's ms, or null.
+-    // r19: the kit's first run always reloads, so [Research.loadEnv] (a load-time knob) holds for every row.
+-    var kitLoaded = false;
++    // r20 (as r16): no reload at the kit's start; the model stays loaded for the whole kit (threads set in place).
+     Future<int?> ensureLoad(bool on, int threads) async {
+-      if (kitLoaded && _loadedAccel == Accel.cpu && _loadedRepack == on) {
++      if (_loadedAccel == Accel.cpu && _loadedRepack == on) {
+         await _benchOn(Accel.cpu, threads, threads);
+         return null;
+       }
+@@ -309,13 +342,14 @@
+       } finally {
+         Research.loadEnv.keys.forEach(unsetNativeEnv);
+       }
+-      kitLoaded = true;
+       await _complete('Hi', 1); // the load's own warm-up
+       return DateTime.now().difference(t0).inMilliseconds;
+     }
+ 
+-    // r19 gate: waits until the headroom is below [below], at most [maxWait]. A null reading (NaN: polled too soon,
+-    // or no reading) is "unknown, read again" (DeviceProfile.thermal spaces calls >= 1.1 s), never "cool".
++    // r16's gate (Assistant._coolDown of campaign 1): read; below [below] -> go; else wait 5 s and read again, until
++    // [maxWait] has passed (checked after a read). One change kept from r19: a null reading (NaN: polled too soon, or
++    // none) is "unknown, read again" (DeviceProfile.thermal spaces calls >= 1.1 s), never "cool" (r16 returned on null;
++    // with r16's single read per gate and no end-of-run read it never saw one).
+     Future<({double? heat, bool timeout, bool unknown, List<List<num?>> series})> kitGate(double below, Duration maxWait) async {
+       final t0 = DateTime.now();
+       final series = <List<num?>>[];
+@@ -330,20 +364,23 @@
+           show('cooling: headroom ${(h * 100).round()}% (gate ${(below * 100).round()}%), ${ms ~/ 1000} s of ${maxWait.inSeconds} s');
+         }
+         if (ms >= maxWait.inMilliseconds) return (heat: last, timeout: true, unknown: last == null, series: series);
+-        await Future<void>.delayed(h == null ? Duration.zero : const Duration(seconds: 5));
++        await Future<void>.delayed(h == null ? Duration.zero : Research.gatePoll);
+         if (_stopTest) return (heat: last, timeout: false, unknown: last == null, series: series);
+       }
+     }
+-    var firstTimed = true;
+     final repOf = <String, int>{};
++    var pos = 0; // 1-based position in the run list: proto r16 rows 1-21 = kit r16's runs 1-21
++    double? lastHeat; // the warm block's headroom: the reading after the previous run (no second read, no wait)
++    Map<String, Object?>? lastRes; // and its residency after the previous run
+ 
+     Future<void> measure(RunSpec s, int i) async {
+       final rep = repOf[s.id] = (repOf[s.id] ?? -1) + 1; // numbered across repeated ids
+       final threads = s.threads > 0 ? s.threads : w;
+       final tag = '${s.id}.$rep';
+       final row = <String, Object?>{
+-        'id': s.id, 'group': s.group, 'kind': s.kind, 'rep': rep, 'run_tag': tag, 'env': s.env, 'repack': s.repack,
+-        'threads': threads, 'tok': <List<Object>>[], 'prof': <String>[], 'c2': <String>[],
++        'pos': ++pos, 'id': s.id, 'proto': s.proto, 'group': s.group, 'phase': s.phase, 'kind': s.kind, 'rep': rep,
++        'run_tag': tag, 'env': s.env, 'repack': s.repack, 'threads': threads,
++        'tok': <List<Object>>[], 'prof': <String>[], 'c2': <String>[],
+       };
+       byTag[tag] = row;
+       show('${s.group} · ${s.id} ${i + 1}/${s.reps}');
+@@ -355,42 +392,57 @@
+         s.env.forEach(setNativeEnv);
+         setNativeEnv('VOLLIE_RUN', tag);
+         row['env_set'] = Research._envNow();
+-        final official = s.kind != 'abba';
++        final story = s.kind == 'story200';
+         final c0 = DateTime.now();
+-        final below = official ? Assistant.coolHeadroom : Assistant.hotHeadroom;
+-        final g = await kitGate(below, firstTimed ? Research.firstGateWait : Research.gateWait);
+-        row['gate_first'] = firstTimed;
+-        firstTimed = false;
+-        row['cool_ms'] = DateTime.now().difference(c0).inMilliseconds;
+-        row['gate'] = below;
+-        row['heat'] = g.heat;
+-        row['heat_series'] = g.series;
+-        row['gate_timeout'] = g.timeout;
+-        row['gate_unknown'] = g.unknown;
++        if (s.gate) {
++          final g = await kitGate(Assistant.coolHeadroom, Research.gateWait);
++          row['cool_ms'] = DateTime.now().difference(c0).inMilliseconds;
++          row['gate'] = Assistant.coolHeadroom;
++          row['heat'] = g.heat;
++          row['heat_series'] = g.series;
++          row['gate_timeout'] = g.timeout;
++          row['gate_unknown'] = g.unknown;
++        } else {
++          // warm block: no gate; the headroom read after the previous run stands for "before" (a fresh read here would be
++          // spaced 1.1 s from it and add idle time); the first warm run reads it once.
++          row['heat'] = lastHeat ?? (await DeviceProfile.thermal()).headroom;
++          row['heat_from'] = lastHeat != null ? 'previous run end' : 'read';
++          row['cool_ms'] = DateTime.now().difference(c0).inMilliseconds;
++          row['gate'] = null;
++        }
+         if (s.pause > 0) {
+           show('${s.group} · ${s.id} · idle ${s.pause}s');
+           await Future<void>.delayed(Duration(seconds: s.pause));
+         }
+         row['pause_s'] = s.pause;
+         show('${s.group} · ${s.id} ${i + 1}/${s.reps}');
+-        row['res_before'] = Research._residency(path);
++        // warm block: the count after the previous run stands for "before" (no second 3 GB mincore between back-to-back runs)
++        row['res_before'] = !s.gate && lastRes != null ? lastRes : Research._residency(path);
++        if (!s.gate && lastRes != null) row['res_before_from'] = 'previous run end';
+         row['cap_before'] = Research._caps();
+         final b0 = await DeviceProfile.battery();
+         row['batt_c_before'] = b0.tempC;
+         row['plugged'] = b0.plugged;
+         row['mhz_before'] = DeviceProfile.cpuMhz();
+         row['mem_before'] = DeviceProfile.memInfo();
+-        harvest(null); // everything printed before this run belongs to earlier runs
++        // Tagged lines go to their run; untagged ones printed since the last run (c2-keepwarm passes during this run's
++        // wait) belong to this row (r20; r19 filed them as unmatched).
++        harvest(row);
+         final f0 = DeviceProfile.pageFaults();
+         final io0 = DeviceProfile.ioReadBytes();
+         final chunks = <double>[];
++        final mhzBlocks = <List<int?>>[]; // r16's story: [cpu4, cpu7] MHz every 8 received chunks
+         final sw = Stopwatch();
+         final t0 = DateTime.now();
+         if (lastEnd != null) row['idle_ms'] = t0.difference(lastEnd!).inMilliseconds;
+         sw.start();
+-        final c = await _kitComplete(official ? Assistant._benchPrompt : Research._story,
+-            official ? Assistant._benchTokens : Research.abTokens, s.kind != 'official32', (ch) {
+-          if (ch.text.isNotEmpty) chunks.add(sw.elapsedMicroseconds / 1000);
++        // r16's streaming for every kind (llamadart's default batching), as r16's _complete.
++        final c = await _kitComplete(story ? Research._story : Assistant._benchPrompt,
++            story ? Research.storyTokens : Assistant._benchTokens, false, (ch) {
++          if (ch.text.isNotEmpty) {
++            chunks.add(sw.elapsedMicroseconds / 1000);
++            if (story && chunks.length % 8 == 0) mhzBlocks.add([Research._mhz(4), Research._mhz(7)]);
++          }
+         });
+         lastEnd = DateTime.now();
+         row['wall_ms'] = lastEnd!.difference(t0).inMilliseconds;
+@@ -399,8 +451,11 @@
+         row['mhz_after'] = DeviceProfile.cpuMhz();
+         row['mem_after'] = DeviceProfile.memInfo();
+         row['cap_after'] = Research._caps();
+-        row['res_after'] = Research._residency(path);
+-        row['heat_after'] = (await DeviceProfile.thermal()).headroom;
++        row['res_after'] = lastRes = Research._residency(path);
++        // r16 had no end-of-run headroom read (a read here would be < 1 s before the next gate's first one); the warm
++        // block reads it here instead of before the next run.
++        if (!s.gate) row['heat_after'] = lastHeat = (await DeviceProfile.thermal()).headroom;
++        if (s.gate) lastHeat = null;
+         row['batt_c_after'] = (await DeviceProfile.battery()).tempC;
+         final u = c.usage;
+         row['tokens'] = u?.completionTokens;
+@@ -416,6 +471,7 @@
+         }
+         if (io0 != null && io1 != null) row['io_read_bytes'] = io1 - io0;
+         if (s.kind != 'official32') row['chunk_ms'] = chunks;
++        if (story) row['mhz_blocks'] = mhzBlocks;
+         row['text'] = c.text;
+         final pc = await _engine.getPerformanceContext();
+         row['sample_ms'] = pc?.sampleMs;
+diff --git a/pubspec.yaml b/pubspec.yaml
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.19.0+19
++version: 1.20.0+20
+ 
+ environment:
+   sdk: ^3.10.7
+diff --git a/test/kit_lines_test.dart b/test/kit_lines_test.dart
+--- a/test/kit_lines_test.dart
++++ b/test/kit_lines_test.dart
+@@ -36,4 +36,11 @@
+         'nodes=565 barriers=564 kern=0 fuse=0 chunk2=0 | MUL_MAT_ID 48:33717+47255 MUL_MAT 145:4058+860 GLU 16:70+4')!;
+     expect(h.tok, ['B', 2, 107160, 1371, 264, 0, 1359, -1, -1, 565, 564, 0, 0, 0]);
+   });
++  test('kit r20: keep-warm pass line (untagged, filed to the next row)', () {
++    final p = Research.parseLine('E/x c2-keepwarm pass=3 period_s=10 ranges=48 mb=2768 resident_mb=1874 touched=457600 '
++        'wall_us=210000 cpu_us=180000 aborted=0')!;
++    expect(p.tag, null);
++    expect(p.tok, null);
++    expect(p.line.startsWith('c2-keepwarm pass=3'), true);
++  });
+ }
