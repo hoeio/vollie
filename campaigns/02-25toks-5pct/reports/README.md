@@ -130,6 +130,45 @@ c2 patch does not touch. If so it also revives a campaign-1 finding for this fil
 (3.6 GB then) got the app killed on the 8 GB phone (`models/granite-4.0-h-tiny-d6-e6.md`), which is why campaign 1
 put its experts in a type without a repack path. Tom is asked to establish the cause.
 
+#### R51 amendment 2, 2026-11-14: the frontier without repack (the `-nr` path)
+
+Pre-registration: [amendment 2](../prereg/R51-amendment-2.md), commit `93612e8`, pushed before the first `-nr`
+full-set log existed. Same build, text and flags as R51 with `PPL_ARGS=-nr`; 560 chunks and `n_seq=1` in all 13
+logs; all numbers *host*.
+
+| file | setting | PPL | % over its own `-nr` stock | expert bytes skipped | R51 value with repack |
+|---|---|---|---|---|---|
+| `olmoe-Mi` | stock | 11.7135 ± 0.0960 | 0 | 0 | 11.7146 |
+| | MASS=900 | 12.1032 ± 0.1005 | +3.33 | 13.39 % | +3.32, 13.39 % |
+| | SUM=70 | 12.1315 ± 0.1005 | +3.57 | 13.07 % | +3.50, 13.07 % |
+| | SUM=75 | 12.3212 ± 0.1025 | +5.19 | 17.48 % | +5.14, 17.48 % |
+| publisher Q4_0 | stock | 11.3793 ± 0.0931 | 0 | 0 | 11.3784 (R50) |
+| | SUM=45 | 11.3935 ± 0.0932 | +0.12 | 1.56 % | |
+| | MASS=950 | 11.3973 ± 0.0933 | +0.16 | 1.64 % | |
+| | SUM=55 | 11.4560 ± 0.0938 | +0.67 | 4.13 % | |
+| | MASS=925 | 11.5570 ± 0.0951 | +1.56 | 8.72 % | |
+| | SUM=65 | 11.5955 ± 0.0953 | +1.90 | 9.43 % | |
+| | **MASS=900** | **11.7442 ± 0.0972** | **+3.21** | **13.42 %** | |
+| | MASS=850 | 12.0710 ± 0.1006 | +6.08 | 20.05 % | |
+| | SUM=80 | 12.1834 ± 0.1016 | +7.07 | 22.41 % | |
+
+- **Prediction 1** (`olmoe-Mi` `-nr` stock within ± 0.5 % of 11.7146): **hit** (−0.01 %).
+- **Prediction 2** (each ratio within ± 0.4 points of R51, bytes within ± 0.3 points): **hit** for all three
+  settings (largest shift +0.07 points; bytes equal to two decimals).
+- **Prediction 3** (Q4_0 `-nr` stock within ± 0.5 % of 11.3784; f\* central 11 %, band 6 to 16 %): **hit**
+  (+0.01 %; f\* = 13.42 % at `MASS=900`, budget 11.3793 × 1.05 = 11.9483). The crossing lies between 13.42 % and
+  20.05 %, 6.6 points apart, so by R51's 5-point rule the position of the crossing is **unresolved**; f\* is
+  at least 13.42 %. No settings were added: the file is the second candidate and residency (R52) now decides
+  first.
+- **The `MASS=900` rule:** it stays inside +5.00 % of the `-nr` stock (+3.33 %), so R51's f\* = 13.39 % stands
+  on the no-repack path as well.
+- **Amendment 1 is thereby re-run:** with repack off the skip acts on the Q4_0 file, and its curve is the same
+  as `olmoe-Mi`'s within about 0.2 points at each setting.
+- **Hygiene deviation:** the rule asked for "no `CPU_REPACK` buffer line" in every log. At this log level
+  `llama-perplexity` prints no buffer lines at all, with or without repack, so the check cannot be made from
+  the logs. Indirect evidence that `-nr` took effect: the stock value differs from the repack value in the way
+  the 4-chunk comparison predicted, and the skip acted on the Q4_0 file, which it cannot do with repack on.
+
 ### R52 OLMoE on the stock runtime, first device run (kit r17)
 
 - **Date:** 2026-11-14, 11:07 to 11:12 local. **Label:** *device* unless marked. Raw report:
