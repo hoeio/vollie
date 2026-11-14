@@ -10,3 +10,4 @@ see [../../README.md](../../README.md).
 - [R51 amendment 1](R51-amendment-1.md): the same frontier on the second OLMoE file (publisher Q4_0).
 - [R51 amendment 2](R51-amendment-2.md): the frontier re-measured on the phone's no-repack kernel path.
 - [R52](R52-olmoe-stock-baseline-device.md): OLMoE on the stock runtime, device baseline with kit r17.
+- [R53](R53-olmoe-head2-host.md): untied two-stage head on OLMoE, host perplexity.

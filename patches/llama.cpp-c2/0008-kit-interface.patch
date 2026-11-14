@@ -1,0 +1,556 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -198,6 +198,7 @@ typedef void * thread_ret_t;
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <sys/mman.h> // Vollie c2 (0006): madvise
++#include <sys/resource.h> // Vollie c2 (0008): getrusage
+ #include <unistd.h>
+ 
+ #endif
+@@ -577,6 +578,7 @@ static struct ggml_state g_state = {0};
+ // Vollie c2 (0002): VOLLIE_GRAPH_STATS counts every barrier call of a graph (all threads; divided by the thread count
+ // at the end of the graph), so syncs inside ops (MUL_MAT, MUL_MAT_ID) are counted too
+ static bool       ggml_c2_gstats = false;
++static bool       ggml_c2_gcount = false; // c2 0008: count ops / barriers / syncs this graph (graph stats or profile)
+ static atomic_int ggml_c2_g_cur_syncs;
+ 
+ void ggml_barrier(struct ggml_threadpool * tp) {
+@@ -584,7 +586,7 @@ void ggml_barrier(struct ggml_threadpool * tp) {
+     if (n_threads == 1) {
+         return;
+     }
+-    if (ggml_c2_gstats) {
++    if (ggml_c2_gcount) {
+         atomic_fetch_add_explicit(&ggml_c2_g_cur_syncs, 1, memory_order_relaxed);
+     }
+ 
+@@ -1605,7 +1607,6 @@ static void ggml_c2_skip_report(void) {
+ }
+ 
+ // thread 0 only, after the stock row map is built; rebuilds it without the skipped pairs
+-// ponytail: env read once per process on first use, unsynchronised; fine for one context at a time
+ // primary (Vollie c2 0004): this call also zeroes the skipped dst rows and counts; the no-barrier one-token path builds
+ // the map on every thread and passes primary only on thread 0
+ static void ggml_c2_skip_map(struct ggml_tensor * dst, const struct ggml_tensor * ids, int64_t n_as,
+@@ -1617,22 +1618,7 @@ static void ggml_c2_skip_map(struct ggml_tensor * dst, const struct ggml_tensor
+     if (w->type != GGML_TYPE_F32 || w->ne[0] != 1 || w->ne[1] != n_ids || w->ne[2] != n_tok || n_ids > 64 || n_as > 512) {
+         return; // unexpected layout: keep the stock map
+     }
+-    static atomic_bool init = false; // c2 0004: every thread may get here at once, so the read is done under a lock
+-    if (!atomic_load_explicit(&init, memory_order_acquire)) {
+-        ggml_critical_section_start();
+-        if (!atomic_load_explicit(&init, memory_order_relaxed)) {
+-            ggml_c2_skip_sum  = ggml_c2_env("VOLLIE_SKIP_SUM");
+-            ggml_c2_skip_max  = ggml_c2_env("VOLLIE_SKIP_MAX");
+-            ggml_c2_skip_mass = ggml_c2_env("VOLLIE_SKIP_MASS");
+-            const char * mk = getenv("VOLLIE_SKIP_MINK");
+-            ggml_c2_skip_mink = mk && atoi(mk) > 1 ? atoi(mk) : 1; // the top slot is always kept
+-            if (ggml_c2_env("VOLLIE_SKIP_STATS") > 0) {
+-                atexit(ggml_c2_skip_report);
+-            }
+-            atomic_store_explicit(&init, true, memory_order_release);
+-        }
+-        ggml_critical_section_end();
+-    }
++    // c2 0008: the thresholds are read per graph (ggml_c2_kit_begin, before any worker runs), not latched here
+     const float t_sum = ggml_c2_skip_sum/1000.0f, t_max = ggml_c2_skip_max/1000.0f, p_mass = ggml_c2_skip_mass/1000.0f;
+ 
+     int64_t before[512];
+@@ -3578,6 +3564,300 @@ static bool ggml_c2_next_is_tiny(const struct ggml_cgraph * cgraph, int node_n,
+     return false;
+ }
+ 
++// ---- Vollie c2 (patches/llama.cpp-c2/0008): kit interface. Everything here runs on the calling thread before the
++// workers start (ggml_c2_kit_begin) or after they finish (ggml_c2_kit_end), except ggml_c2_prof_add (thread 0, in the
++// loop). Nothing changes a result: knobs keep their meaning, lines and counters are side effects.
++//  - every knob is read per graph (0001's skip knobs included; they were latched once per process);
++//  - prompt boundary: the first graph, a graph of more than one token after a one-token graph, or a change of
++//    VOLLIE_RUN (an id the app may set per run). At a boundary the per-prompt counter lines of the prompt that ended
++//    are printed (c2-skip-run with VOLLIE_SKIP_STATS=1, c2-graph-run with VOLLIE_GRAPH_STATS=1), the prompt number
++//    goes up and the token count restarts; decode graph t = 1, 2, ... of a prompt is a one-token graph;
++//  - VOLLIE_PROF=1: one cpu-prof line per one-token graph;
++//  - VOLLIE_AB=knob:<NAME>:<A>:<B>: one-token graph t runs side A for t <= VOLLIE_AB_WARM (default 16), then blocks of
++//    VOLLIE_AB_BLOCK (default 8) graphs in the order A B B A (VOLLIE_AB_BAAB=1: B A A B); prompt graphs run A;
++//  - lines go through ggml's log callback at INFO level (what llama_log_set installs), VOLLIE_LINES=stderr writes them
++//    to stderr directly. The exit lines of 0001 / 0002 (c2-skip:, c2-graph:) stay on stderr for the host tools.
++static bool    ggml_c2_prof_graph = false;   // this graph is profiled (VOLLIE_PROF=1 and one token)
++static int64_t ggml_c2_pf_comp[GGML_OP_COUNT], ggml_c2_pf_wait[GGML_OP_COUNT], ggml_c2_pf_cnt[GGML_OP_COUNT];
++static int64_t ggml_c2_pf_head, ggml_c2_pf_router, ggml_c2_pf_mm, ggml_c2_pf_mmid, ggml_c2_pf_attn, ggml_c2_pf_other, ggml_c2_pf_waitall;
++static bool    ggml_c2_lines_stderr = false;
++static char    ggml_c2_run[33] = "-";        // VOLLIE_RUN of the prompt being counted
++static int64_t ggml_c2_prompt = 0, ggml_c2_tok = 0;
++static bool    ggml_c2_seen = false, ggml_c2_last_one = false;
++static long    ggml_c2_flt0[2];               // majflt, minflt at this graph's start (profiled graphs)
++static int     ggml_c2_ab_knob = -1;          // index into ggml_c2_ab_names, -1 = no A/B
++static int64_t ggml_c2_ab_val[2];
++static int     ggml_c2_ab_warm = 16, ggml_c2_ab_block = 8, ggml_c2_ab_blk = 0;
++static bool    ggml_c2_ab_baab = false;
++static char    ggml_c2_ab_side = '-';
++static const char * const ggml_c2_ab_names[] = { "TINY_OP", "Q3K_X4", "MMID_NB", "MMID_FUSE", "EXPERT_IO", "SAMPLER_BYPASS",
++                                                 "SKIP_SUM", "SKIP_MAX", "SKIP_MASS", "HEAD2" };
++// snapshots for the per-prompt and per-graph differences
++static unsigned long long ggml_c2_sk0_tok, ggml_c2_sk0_pairs, ggml_c2_sk0_skip, ggml_c2_skg_pairs, ggml_c2_skg_skip;
++static double  ggml_c2_sk0_bytes, ggml_c2_sk0_bskip, ggml_c2_sk0_read, ggml_c2_sk0_unread;
++static int64_t ggml_c2_gs0[6];
++static void ggml_c2_head2_knobs(void); // 0009 hooks (empty below until 0009)
++static void ggml_c2_head2_ab(int64_t v);
++static void ggml_c2_head2_flush(const char * run, int64_t prompt);
++
++static void ggml_c2_line(const char * fmt, ...) {
++    char buf[2048];
++    va_list ap;
++    va_start(ap, fmt);
++    vsnprintf(buf, sizeof buf, fmt, ap);
++    va_end(ap);
++    if (ggml_c2_lines_stderr) {
++        fprintf(stderr, "%s\n", buf);
++        fflush(stderr);
++    } else {
++        GGML_LOG_INFO("%s\n", buf);
++    }
++}
++
++static void ggml_c2_faults(long f[2]) {
++#if !defined(_WIN32)
++    struct rusage ru;
++    if (getrusage(RUSAGE_SELF, &ru) == 0) {
++        f[0] = ru.ru_majflt;
++        f[1] = ru.ru_minflt;
++        return;
++    }
++#endif
++    f[0] = f[1] = 0;
++}
++
++static int ggml_c2_mhz(int cpu) { // current clock of one core in MHz, 0 where sysfs has none
++#if defined(__linux__)
++    char path[96];
++    snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", cpu);
++    FILE * f = fopen(path, "r");
++    long khz = 0;
++    if (f) {
++        if (fscanf(f, "%ld", &khz) != 1) {
++            khz = 0;
++        }
++        fclose(f);
++    }
++    return (int) (khz / 1000);
++#else
++    GGML_UNUSED(cpu);
++    return 0;
++#endif
++}
++
++// 0 = A, 1 = B for one-token graph t of a prompt (t <= warm: A, blk 0); the same rule as llama-sampler.cpp's
++static int ggml_c2_ab_side_of(int64_t t, int * blk) {
++    if (t <= ggml_c2_ab_warm) {
++        *blk = 0;
++        return 0;
++    }
++    const int64_t k = (t - ggml_c2_ab_warm - 1) / ggml_c2_ab_block;
++    *blk = (int) k + 1;
++    return (k % 4 == 1 || k % 4 == 2) != ggml_c2_ab_baab;
++}
++
++static void ggml_c2_flush(void) { // the counters of the prompt that just ended
++    if (ggml_c2_st_tok > ggml_c2_sk0_tok && getenv("VOLLIE_SKIP_STATS") && atoi(getenv("VOLLIE_SKIP_STATS")) == 1) {
++        const double tok = (double) (ggml_c2_st_tok - ggml_c2_sk0_tok);
++        const double pairs = (double) (ggml_c2_st_pairs - ggml_c2_sk0_pairs), bytes = ggml_c2_st_bytes - ggml_c2_sk0_bytes;
++        const double read = ggml_c2_st_bytes_read - ggml_c2_sk0_read;
++        ggml_c2_line("c2-skip-run: run=%s prompt=%lld tokens=%.0f pairs=%.0f pairs_skipped=%.4f%% expert_bytes_skipped=%.4f%% "
++                     "MB_per_token_selected=%.3f MB_per_token_skipped=%.3f batch_bytes_unread=%.4f%%",
++                     ggml_c2_run, (long long) ggml_c2_prompt, tok, pairs,
++                     100.0*(double) (ggml_c2_st_pairs_skip - ggml_c2_sk0_skip)/(pairs > 0 ? pairs : 1),
++                     100.0*(ggml_c2_st_bytes_skip - ggml_c2_sk0_bskip)/(bytes > 0 ? bytes : 1),
++                     bytes/tok/1e6, (ggml_c2_st_bytes_skip - ggml_c2_sk0_bskip)/tok/1e6,
++                     100.0*(ggml_c2_st_bytes_unread - ggml_c2_sk0_unread)/(read > 0 ? read : 1));
++    }
++    ggml_c2_sk0_tok = ggml_c2_st_tok; ggml_c2_sk0_pairs = ggml_c2_st_pairs; ggml_c2_sk0_skip = ggml_c2_st_pairs_skip;
++    ggml_c2_sk0_bytes = ggml_c2_st_bytes; ggml_c2_sk0_bskip = ggml_c2_st_bytes_skip;
++    ggml_c2_sk0_read = ggml_c2_st_bytes_read; ggml_c2_sk0_unread = ggml_c2_st_bytes_unread;
++    const int64_t gs[6] = { ggml_c2_g_graphs, ggml_c2_g_nodes, ggml_c2_g_ops, ggml_c2_g_tiny, ggml_c2_g_barriers, ggml_c2_g_syncs };
++    if (gs[0] > ggml_c2_gs0[0] && ggml_c2_gstats) {
++        const double g = (double) (gs[0] - ggml_c2_gs0[0]);
++        ggml_c2_line("c2-graph-run: run=%s prompt=%lld one_token_graphs=%.0f nodes=%.1f ops_run=%.1f ops_tiny=%.1f barriers=%.1f syncs=%.1f",
++                     ggml_c2_run, (long long) ggml_c2_prompt, g, (gs[1] - ggml_c2_gs0[1])/g, (gs[2] - ggml_c2_gs0[2])/g,
++                     (gs[3] - ggml_c2_gs0[3])/g, (gs[4] - ggml_c2_gs0[4])/g, (gs[5] - ggml_c2_gs0[5])/g);
++    }
++    memcpy(ggml_c2_gs0, gs, sizeof gs);
++    ggml_c2_head2_flush(ggml_c2_run, ggml_c2_prompt);
++}
++
++// Returns the graph's start time (µs) for the profile line.
++static int64_t ggml_c2_kit_begin(const struct ggml_cgraph * cgraph) {
++    const int64_t t_start = ggml_time_us();
++    const char * e;
++    // 0001's knobs, now per graph
++    ggml_c2_skip_sum  = ggml_c2_env("VOLLIE_SKIP_SUM");
++    ggml_c2_skip_max  = ggml_c2_env("VOLLIE_SKIP_MAX");
++    ggml_c2_skip_mass = ggml_c2_env("VOLLIE_SKIP_MASS");
++    e = getenv("VOLLIE_SKIP_MINK");
++    ggml_c2_skip_mink = e && atoi(e) > 1 ? atoi(e) : 1; // the top slot is always kept
++    static bool skip_exit = false;
++    if (!skip_exit && ggml_c2_env("VOLLIE_SKIP_STATS") > 0) {
++        skip_exit = true;
++        atexit(ggml_c2_skip_report);
++    }
++    ggml_c2_head2_knobs();
++    e = getenv("VOLLIE_LINES");
++    ggml_c2_lines_stderr = e && strcmp(e, "stderr") == 0;
++    // A/B
++    ggml_c2_ab_knob = -1;
++    e = getenv("VOLLIE_AB");
++    if (e && *e) {
++        char name[24];
++        long long a, b;
++        if (sscanf(e, "knob:%23[A-Z0-9_]:%lld:%lld", name, &a, &b) == 3) {
++            for (int i = 0; i < (int) (sizeof ggml_c2_ab_names/sizeof ggml_c2_ab_names[0]); i++) {
++                if (strcmp(name, ggml_c2_ab_names[i]) == 0) {
++                    ggml_c2_ab_knob = i;
++                    ggml_c2_ab_val[0] = a;
++                    ggml_c2_ab_val[1] = b;
++                }
++            }
++        }
++        static bool warned = false;
++        if (ggml_c2_ab_knob < 0 && !warned) {
++            warned = true;
++            ggml_c2_line("c2-ab: error=unknown_or_malformed value=%.60s", e);
++        }
++        ggml_c2_ab_warm  = (e = getenv("VOLLIE_AB_WARM"))  && *e ? MAX(0, atoi(e)) : 16;
++        ggml_c2_ab_block = (e = getenv("VOLLIE_AB_BLOCK")) && *e ? MAX(1, atoi(e)) : 8;
++        ggml_c2_ab_baab  = (e = getenv("VOLLIE_AB_BAAB"))  && atoi(e) == 1;
++    }
++    // prompt boundary
++    char run[33] = "-";
++    if ((e = getenv("VOLLIE_RUN")) && *e) {
++        int n = 0;
++        for (; e[n] && n < 32; n++) {
++            const char c = e[n];
++            run[n] = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' ? c : '_';
++        }
++        run[n] = 0;
++    }
++    const bool one = cgraph->n_nodes > 0 && cgraph->nodes[0]->ne[1] == 1;
++    if (!ggml_c2_seen || strcmp(run, ggml_c2_run) != 0 || (!one && ggml_c2_last_one)) {
++        if (ggml_c2_seen) {
++            ggml_c2_flush();
++        }
++        ggml_c2_prompt++;
++        ggml_c2_tok = 0;
++        snprintf(ggml_c2_run, sizeof ggml_c2_run, "%s", run);
++        if (ggml_c2_ab_knob >= 0) {
++            ggml_c2_line("c2-ab: run=%s prompt=%lld knob=%s a=%lld b=%lld warm=%d block=%d order=%s", ggml_c2_run,
++                         (long long) ggml_c2_prompt, ggml_c2_ab_names[ggml_c2_ab_knob], (long long) ggml_c2_ab_val[0],
++                         (long long) ggml_c2_ab_val[1], ggml_c2_ab_warm, ggml_c2_ab_block, ggml_c2_ab_baab ? "BAAB" : "ABBA");
++        }
++    }
++    ggml_c2_seen = true;
++    ggml_c2_last_one = one;
++    if (one) {
++        ggml_c2_tok++;
++    }
++    // the A/B side of this graph overrides the env value of its knob (prompt graphs: side A)
++    ggml_c2_ab_side = '-';
++    ggml_c2_ab_blk  = 0;
++    if (ggml_c2_ab_knob >= 0) {
++        const int side = one ? ggml_c2_ab_side_of(ggml_c2_tok, &ggml_c2_ab_blk) : 0;
++        const int64_t v = ggml_c2_ab_val[side];
++        ggml_c2_ab_side = side ? 'B' : 'A';
++        switch (ggml_c2_ab_knob) {
++            case 0: ggml_c2_tiny = v; break;
++            case 1: ggml_c2_q3k_x4 = v == 1 || v == 2 ? (int) v : 0; break;
++            case 2: ggml_c2_mmid_nb = v == 1; break;
++            case 3: ggml_c2_mmid_fuse = v == 1; break;
++            case 4: ggml_c2_expert_io = v == 1; break;
++            case 5: break; // SAMPLER_BYPASS: libllama reads VOLLIE_AB itself
++            case 6: ggml_c2_skip_sum  = (float) v; break;
++            case 7: ggml_c2_skip_max  = (float) v; break;
++            case 8: ggml_c2_skip_mass = (float) v; break;
++            case 9: ggml_c2_head2_ab(v); break;
++        }
++    }
++    // profile
++    e = getenv("VOLLIE_PROF");
++    ggml_c2_prof_graph = one && e && atoi(e) == 1;
++    ggml_c2_gcount = ggml_c2_gstats || ggml_c2_prof_graph;
++    if (ggml_c2_prof_graph) {
++        memset(ggml_c2_pf_comp, 0, sizeof ggml_c2_pf_comp);
++        memset(ggml_c2_pf_wait, 0, sizeof ggml_c2_pf_wait);
++        memset(ggml_c2_pf_cnt,  0, sizeof ggml_c2_pf_cnt);
++        ggml_c2_pf_head = ggml_c2_pf_router = ggml_c2_pf_mm = ggml_c2_pf_mmid = ggml_c2_pf_attn = ggml_c2_pf_other = ggml_c2_pf_waitall = 0;
++        ggml_c2_faults(ggml_c2_flt0);
++        ggml_c2_skg_pairs = ggml_c2_st_pairs;
++        ggml_c2_skg_skip  = ggml_c2_st_pairs_skip;
++    }
++    return t_start;
++}
++
++// thread 0: node (the first of a fused group) computed from t0 to t1, past its barrier at t2
++static void ggml_c2_prof_add(const struct ggml_tensor * node, int64_t t0, int64_t t1, int64_t t2) {
++    const int64_t c = t1 - t0;
++    ggml_c2_pf_comp[node->op] += c;
++    ggml_c2_pf_wait[node->op] += t2 - t1;
++    ggml_c2_pf_cnt[node->op]++;
++    ggml_c2_pf_waitall += t2 - t1;
++    const char * w = node->src[0] ? node->src[0]->name : "";
++    switch (node->op) {
++        case GGML_OP_MUL_MAT:
++            if (strcmp(w, "output.weight") == 0 || strcmp(w, "token_embd.weight") == 0) {
++                ggml_c2_pf_head += c;
++            } else if (strstr(w, "ffn_gate_inp") != NULL) {
++                ggml_c2_pf_router += c;
++            } else {
++                ggml_c2_pf_mm += c;
++            }
++            break;
++        case GGML_OP_MUL_MAT_ID:     ggml_c2_pf_mmid += c; break;
++        case GGML_OP_FLASH_ATTN_EXT:
++        case GGML_OP_SOFT_MAX:       ggml_c2_pf_attn += c; break;
++        default:                     ggml_c2_pf_other += c; break;
++    }
++}
++
++static void ggml_c2_kit_end(const struct ggml_cgraph * cgraph, int n_threads, int64_t t_start) {
++    GGML_UNUSED(cgraph);
++    if (!ggml_c2_prof_graph) {
++        return;
++    }
++    long f[2];
++    ggml_c2_faults(f);
++    const int64_t us = ggml_time_us() - t_start;
++    char ops[1400];
++    int n = 0;
++    for (int op = 0; op < GGML_OP_COUNT && n < (int) sizeof ops - 64; op++) {
++        if (ggml_c2_pf_cnt[op]) {
++            n += snprintf(ops + n, sizeof ops - n, " %s %lld:%lld+%lld", ggml_op_name((enum ggml_op) op), (long long) ggml_c2_pf_cnt[op],
++                          (long long) ggml_c2_pf_comp[op], (long long) ggml_c2_pf_wait[op]);
++        }
++    }
++    ops[n] = 0;
++    ggml_c2_line("cpu-prof ab=%c tok=%lld us/token=%lld majflt=%ld minflt=%ld mhz=%d/%d run=%s prompt=%lld blk=%d threads=%d "
++                 "ops=%lld barriers=%lld syncs=%d skipped=%llu pairs=%llu head=%lld router=%lld mm=%lld mmid=%lld attn=%lld "
++                 "other=%lld wait=%lld |%s",
++                 ggml_c2_ab_side, (long long) ggml_c2_tok, (long long) us, f[0] - ggml_c2_flt0[0], f[1] - ggml_c2_flt0[1],
++                 ggml_c2_mhz(4), ggml_c2_mhz(7), ggml_c2_run, (long long) ggml_c2_prompt, ggml_c2_ab_blk, n_threads,
++                 (long long) ggml_c2_g_cur_ops, (long long) ggml_c2_g_cur_barriers + 1,
++                 atomic_load_explicit(&ggml_c2_g_cur_syncs, memory_order_relaxed)/(n_threads > 1 ? n_threads : 1),
++                 ggml_c2_st_pairs_skip - ggml_c2_skg_skip, ggml_c2_st_pairs - ggml_c2_skg_pairs,
++                 (long long) ggml_c2_pf_head, (long long) ggml_c2_pf_router, (long long) ggml_c2_pf_mm, (long long) ggml_c2_pf_mmid,
++                 (long long) ggml_c2_pf_attn, (long long) ggml_c2_pf_other, (long long) ggml_c2_pf_waitall, ops);
++}
++
++// the lines of the prompt being counted, now (libllama calls this when a context is freed, through the CPU backend's
++// proc address "ggml_backend_cpu_c2_flush"); the next graph still starts a new prompt as usual
++void ggml_cpu_c2_flush(void);
++void ggml_cpu_c2_flush(void) {
++    if (ggml_c2_seen) {
++        ggml_c2_flush();
++    }
++}
++
++// 0009 hooks; 0009 replaces these
++static void ggml_c2_head2_knobs(void) {}
++static void ggml_c2_head2_ab(int64_t v) { GGML_UNUSED(v); }
++static void ggml_c2_head2_flush(const char * run, int64_t prompt) { GGML_UNUSED(run); GGML_UNUSED(prompt); }
++
+ static thread_ret_t ggml_graph_compute_thread(void * data) {
+     struct ggml_compute_state * state = (struct ggml_compute_state *) data;
+     struct ggml_threadpool    * tp    = state->threadpool;
+@@ -3623,6 +3903,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+         const bool tiny = ggml_c2_tiny > 0 && params.nth > 1 &&
+                           ggml_c2_runs_tiny(cgraph, node_n, ggml_cpu_fuse_count(cgraph, node_n, cplan));
+ 
++        const bool    c2prof = ggml_c2_prof_graph && state->ith == 0; // Vollie c2 (0008): VOLLIE_PROF
++        const int64_t c2t0   = c2prof ? ggml_time_us() : 0;
++
+         // TODO: move fused-op detection into ggml_graph_plan so fusion decisions are made once at planning time
+         // Try fused ops, fall back to normal compute
+         int n_fused;
+@@ -3654,8 +3937,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+             tp->ec    = GGML_STATUS_ABORTED;
+         }
+ 
++        const int64_t c2t1 = c2prof ? ggml_time_us() : 0;
+         const bool barrier = node_n + 1 < cgraph->n_nodes && !(tiny && ggml_c2_next_is_tiny(cgraph, node_n, cplan));
+-        if (state->ith == 0 && ggml_c2_gstats) {
++        if (state->ith == 0 && ggml_c2_gcount) {
+             ggml_c2_g_cur_ops++;
+             ggml_c2_g_cur_tiny     += tiny;
+             ggml_c2_g_cur_barriers += barrier;
+@@ -3679,6 +3963,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+             }
+             ggml_barrier(state->threadpool);
+         }
++        if (c2prof) {
++            ggml_c2_prof_add(node, c2t0, c2t1, ggml_time_us()); // Vollie c2 (0008)
++        }
+     }
+ 
+ #ifdef GGML_USE_OPENMP
+@@ -3687,7 +3974,11 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+     GGML_PRINT_DEBUG("thread #%d compute-done cplan %p last-graph %d\n", state->ith, (const void *)cplan, state->last_graph);
+ #endif
+ 
++    const int64_t c2tw = ggml_c2_prof_graph && state->ith == 0 ? ggml_time_us() : 0;
+     ggml_barrier(state->threadpool);
++    if (c2tw) {
++        ggml_c2_pf_waitall += ggml_time_us() - c2tw; // Vollie c2 (0008): the closing barrier's wait
++    }
+ 
+ #ifdef GGML_USE_CPU_RISCV64_SPACEMIT
+     ggml_backend_cpu_riscv64_spacemit_clear_numa_thread_affinity_threaded(state->ith);
+@@ -3926,8 +4217,10 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+         const char * t = getenv("VOLLIE_TINY_OP");
+         ggml_c2_tiny = t ? atoll(t) : 0;
+         const char * gs = getenv("VOLLIE_GRAPH_STATS");
+-        if (gs && atoi(gs) == 1 && !ggml_c2_gstats) {
+-            ggml_c2_gstats = true;
++        static bool gs_exit = false; // c2 0008: read per graph; the exit line is registered once
++        ggml_c2_gstats = gs && atoi(gs) == 1;
++        if (ggml_c2_gstats && !gs_exit) {
++            gs_exit = true;
+             atexit(ggml_c2_gstats_report);
+         }
+         ggml_c2_g_cur_ops = ggml_c2_g_cur_tiny = ggml_c2_g_cur_barriers = 0;
+@@ -3945,6 +4238,7 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+         const char * io = getenv("VOLLIE_EXPERT_IO"); // Vollie c2 (0006)
+         ggml_c2_expert_io = io && atoi(io) == 1;
+     }
++    const int64_t c2_t_start = ggml_c2_kit_begin(cgraph); // Vollie c2 (0008): skip knobs, A/B side, prompt boundary
+ 
+     bool disposable_threadpool = false;
+ 
+@@ -4012,6 +4306,7 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+         ggml_c2_g_barriers += ggml_c2_g_cur_barriers + 1; // + the closing barrier
+         ggml_c2_g_syncs    += atomic_load_explicit(&ggml_c2_g_cur_syncs, memory_order_relaxed)/(n_threads > 1 ? n_threads : 1);
+     }
++    ggml_c2_kit_end(cgraph, n_threads, c2_t_start); // Vollie c2 (0008): per-token profile line
+ 
+     enum ggml_status ret = threadpool->ec;
+ 
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
+--- a/ggml/src/ggml-cpu/ggml-cpu.cpp
++++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
+@@ -655,6 +655,8 @@ static ggml_backend_feature * ggml_backend_cpu_get_features(ggml_backend_reg_t r
+     GGML_UNUSED(reg);
+ }
+ 
++extern "C" void ggml_cpu_c2_flush(void); // Vollie c2 (0008), ggml-cpu.c
++
+ static void * ggml_backend_cpu_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+     if (strcmp(name, "ggml_backend_set_n_threads") == 0) {
+         ggml_backend_set_n_threads_t fct = ggml_backend_cpu_set_n_threads;
+@@ -679,6 +681,9 @@ static void * ggml_backend_cpu_get_proc_address(ggml_backend_reg_t reg, const ch
+     if (strcmp(name, "ggml_backend_cpu_set_use_ref") == 0) {
+         return (void *)ggml_backend_cpu_set_use_ref;
+     }
++    if (strcmp(name, "ggml_backend_cpu_c2_flush") == 0) { // Vollie c2 (0008)
++        return (void *)ggml_cpu_c2_flush;
++    }
+ 
+     // threadpool - TODO:  move to ggml-base
+     if (strcmp(name, "ggml_threadpool_new") == 0) {
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -576,6 +576,13 @@ llama_context::~llama_context() {
+     // wait for any pending asynchronous copies into the output buffers before they are freed
+     synchronize();
+ 
++    // Vollie c2 (0008): print the per-prompt kit lines of the last prompt (CPU backend; absent elsewhere)
++    if (ggml_backend_reg_t reg = ggml_backend_reg_by_name("CPU")) {
++        if (auto * flush = (void (*)(void)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cpu_c2_flush")) {
++            flush();
++        }
++    }
++
+     // when training, ggml_opt allocates extra buffers through the scheduler, so the sizes no longer match the expectation
+     if (!model.hparams.no_alloc && !opt_ctx) {
+         for (size_t i = 0; i < backend_ptrs.size(); ++i) {
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2284,14 +2284,19 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+ 
+     // Vollie c2 (patches/llama.cpp-c2/0001): expert skip. With VOLLIE_SKIP_SUM / _MAX / _MASS > 0 the expert
+     // MUL_MAT_IDs get the mixture weights as src[3] and the CPU module leaves low-weight pairs out; unset: stock graph
+-    static const bool vollie_skip = [] {
++    // c2 0008: read at every graph build (no latch). Also wired with VOLLIE_SKIP_WIRE=1 (load-time for the kit: a reused
++    // graph keeps its wiring) or when VOLLIE_AB names a SKIP_ knob; wired with every threshold 0 the CPU module builds
++    // the stock row map, so the results stay stock.
++    const bool vollie_skip = [] {
+         for (const char * k : { "VOLLIE_SKIP_SUM", "VOLLIE_SKIP_MAX", "VOLLIE_SKIP_MASS" }) {
+             const char * v = getenv(k);
+             if (v && atof(v) > 0) {
+                 return true;
+             }
+         }
+-        return false;
++        const char * w  = getenv("VOLLIE_SKIP_WIRE");
++        const char * ab = getenv("VOLLIE_AB");
++        return (w && atoi(w) == 1) || (ab && strstr(ab, ":SKIP_") != nullptr);
+     }();
+     auto vollie_skip_wire = [&](ggml_tensor * t) {
+         if (vollie_skip && !weight_before_ffn && t->op == GGML_OP_MUL_MAT_ID && t->src[3] == nullptr) {
+diff --git a/src/llama-sampler.cpp b/src/llama-sampler.cpp
+--- a/src/llama-sampler.cpp
++++ b/src/llama-sampler.cpp
+@@ -2882,6 +2882,8 @@ struct llama_sampler_penalties : public llama_sampler_backend {
+     std::vector<int32_t> host_token_ids;
+     std::vector<int32_t> host_counts;
+ 
++    int64_t vollie_n_apply = 0; // Vollie c2 (0008): apply calls since the last reset (A/B side)
++
+     void copy_state(const llama_sampler_penalties & src) {
+         // note: inp_token_ids/inp_counts belong to the current sampling graph
+         prev        = src.prev;
+@@ -2963,6 +2965,29 @@ static bool llama_sampler_vollie_bypass() {
+     return v && *v && strcmp(v, "0") != 0;
+ }
+ 
++// Vollie c2 (0008): with VOLLIE_AB=knob:SAMPLER_BYPASS:<a>:<b> the side of the n-th apply call since the sampler's last
++// reset (n = 1: the token sampled from the prompt's logits) is the side of the CPU module's decode graph n - 1 (graph 0 =
++// the prompt, side A), by the same rule (VOLLIE_AB_WARM, default 16; VOLLIE_AB_BLOCK, default 8; VOLLIE_AB_BAAB=1);
++// value 0 = off, anything else = on. Without that knob: VOLLIE_SAMPLER_BYPASS as before.
++static bool llama_sampler_vollie_bypass_at(int64_t n) {
++    const char * ab = getenv("VOLLIE_AB");
++    int a = 0, b = 0;
++    if (!ab || sscanf(ab, "knob:SAMPLER_BYPASS:%d:%d", &a, &b) != 2) {
++        return llama_sampler_vollie_bypass();
++    }
++    const char * e;
++    const int64_t warm  = (e = getenv("VOLLIE_AB_WARM"))  && *e ? std::max(0, atoi(e)) : 16;
++    const int64_t block = (e = getenv("VOLLIE_AB_BLOCK")) && *e ? std::max(1, atoi(e)) : 8;
++    const bool    baab  = (e = getenv("VOLLIE_AB_BAAB"))  && atoi(e) == 1;
++    const int64_t t = n - 1;
++    bool side_b = false;
++    if (t > warm) {
++        const int64_t k = (t - warm - 1) / block;
++        side_b = (k % 4 == 1 || k % 4 == 2) != baab;
++    }
++    return (side_b ? b : a) != 0;
++}
++
+ static void llama_sampler_penalties_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+     auto * ctx = (llama_sampler_penalties *) smpl->ctx;
+ 
+@@ -2970,7 +2995,7 @@ static void llama_sampler_penalties_apply(struct llama_sampler * smpl, llama_tok
+         return;
+     }
+ 
+-    if (llama_sampler_vollie_bypass() && cur_p->size == (size_t) ctx->n_vocab &&
++    if (llama_sampler_vollie_bypass_at(++ctx->vollie_n_apply) && cur_p->size == (size_t) ctx->n_vocab &&
+         std::all_of(ctx->token_count.begin(), ctx->token_count.end(), [cur_p](const auto & tc) {
+             return tc.first >= 0 && (size_t) tc.first < cur_p->size && cur_p->data[tc.first].id == tc.first;
+         })) {
+@@ -3016,6 +3041,7 @@ static void llama_sampler_penalties_reset(struct llama_sampler * smpl) {
+     auto * ctx = (llama_sampler_penalties *) smpl->ctx;
+     ctx->prev.clear();
+     ctx->token_count.clear();
++    ctx->vollie_n_apply = 0; // Vollie c2 (0008)
+ }
+ 
+ static struct llama_sampler * llama_sampler_penalties_clone(const struct llama_sampler * smpl) {
