@@ -1,9 +1,11 @@
 # Campaign 2 status and hand-off
 
 **Read this first, update it last.** Every session appends a line to the session log below and refreshes the
-sections above it. Last updated: 2026-11-13 (session 3, continued).
+sections above it. Last updated: 2026-11-14 (session 3, continued; R58 scored).
 
 ## State in one paragraph
+
+**As of 2026-11-14 evening (R52 to R58, *device*):** the paragraph below is the state before the device rounds. Best measured state: OLMoE 19.70 tok/s median (21.03 when resident before the run), Granite-Mi 17.19, both cool, both without a numerics change (R58). Speed is decided by page residency and heat, not by kernels (R55 to R58).
 
 Campaign 2 asks whether 25 tok/s is reachable on the Snapdragon 888 phone with a frozen 7B-class model and a
 +5 % perplexity budget. **The first measurements exist (R50, *host*): one served file is frozen for OLMoE and
@@ -50,6 +52,23 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 (CAMPAIGN.md, decisions 9 and 10); the contact e-mail and the private path were removed from campaign-1 files.
 
 ## Next actions, in order
+
+**Latest (R58, kit r21, 2026-11-14 evening, *device*):** cool phone, `Cached` 2.4 to 3.2 GB (the "high" state;
+the low state did not occur). No numerics change on either model. Knob-off medians: **OLMoE 19.70 tok/s**
+(resident-before runs 21.03, best 22.28, fault-free tokens about 42 ms), **Granite-Mi 17.19** (tokens 53 to
+57 ms, no skip and no head2). `GGML_PREFILL_COLD`: Granite +0.09 ± 0.50, OLMoE +0.93 ± 2.74 tok/s, unresolved
+on both; **the lever is closed by R58's kill rule** (read bytes were not measurable, `/proc/self/io` is
+unreadable in the app). Slow runs are those after a 45 to 91 s gate wait that loses file pages. Next, in order:
+1. **R59 (to pre-register):** carry the c2 skip rule (`VOLLIE_SKIP_MASS`, model-generic) and the untied
+   two-stage head from `patches/llama.cpp-c2/0001`, `0009` onto campaign 1's runtime as new patches in
+   `patches/llama.cpp-c1-olmoe/`; host identity and PPL at `-b 512` and `-ub 1` for OLMoE (`MASS=900`) and for
+   Granite-Mi (campaign 1's skip 117 and head2 must be re-screened on this file; its budget is 9.6879); then a
+   two-model ABBA kit. *Estimated* OLMoE: 42 ms to about 36 to 38 ms per token when resident.
+2. **Keep the pages through the gate wait** (kit or runtime side, measured on both models in the same kit):
+   R56's keep-warm was tested only in a low-cache state; here the cache is there and the wait still drops pages.
+3. Add a way to read I/O in the app (the report's `read_bytes` is -1); major faults per phase are the fallback.
+4. LFM2.5 as third device subject: propose storage (about 10 GB for three files) and run time to the owner.
+5. Open check: the two host builds' different OLMoE `-ub 1` values (8.9550 and 8.8302, 4 chunks).
 
 **Owner, 2026-11-14 (after memo-18):** agreed to solve residency on campaign 1's base first. And: campaign 2 has
 two purposes, speed and trust through many models. OLMoE is not demoted to a control; every lever is measured
@@ -197,3 +216,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-14 | 3 (continued) | R57: the owner ran campaign 1's kit as a same-day control: Granite 11.46 tok/s at the claim positions (20.51 on 2026-11-08), OLMoE 11.25 the same day. The gap to campaign 1's number is the phone's page cache on the day; residency is the problem for both models. |
 | 2026-11-14 | 3 (continued) | Memo-18: corrected working sets (Granite 1.97 to 1.99 GB, OLMoE 2.67 GB), page-cache simulator, first residency lever chosen (`GGML_PREFILL_COLD`). Owner: agreed; campaign 2 is also about trust through many models (all models stay full subjects); gate for batch-dependent numerics agreed. Kit r21 (two models in one session) in progress. |
 | 2026-11-14 | 3 (continued) | `GGML_PREFILL_COLD` patch (identical on both models, *host*) and kit r21 (model table, two models in one session, report saved as a file); R58 pre-registered; APK handed to the owner. Open: the two host builds give different `-ub 1` values for OLMoE (8.9550 and 8.8302, 4 chunks); a build-option difference Tom has not pinned down. |
+| 2026-11-14 | 3 (continued) | R58 scored (kit r21, two models, cool, high cache): OLMoE 19.70 and Granite-Mi 17.19 tok/s with no numerics change; `GGML_PREFILL_COLD` unresolved on both and closed by the kill rule; OLMoE level prediction missed on the fast side. Residency before the run decides speed; gate waits lose pages. Next: R59, skip and head on campaign 1's runtime for both models. |

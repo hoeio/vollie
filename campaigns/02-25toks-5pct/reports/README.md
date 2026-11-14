@@ -410,6 +410,66 @@ the same on 2026-11-14 because Granite's run had less page cache; at equal page 
 0.7 GB less in total and about 1.0 GB less for the decode tokens alone, so it becomes fault-free at a cache
 size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
 
+### R58 `GGML_PREFILL_COLD` on Granite and OLMoE in one session (kit r21)
+
+- **Date:** 2026-11-14, 21:40 to 22:10 local. **Label:** *device*. Pre-registration:
+  [prereg/R58-prefill-cold-two-models-device.md](../prereg/R58-prefill-cold-two-models-device.md) (commit `f942602`).
+- **Source:** [device/r21_2026-11-14_summary.json](device/r21_2026-11-14_summary.json), a summary the lead
+  transcribed from the report the owner pasted (32 scored runs and 8 profiled runs); the raw file is not in the
+  repository.
+- **Build and files:** kit r21, app 1.21.0+21, campaign 1's runtime (`patches/llama.cpp/0001` to `0003`) plus
+  `patches/llama.cpp-c1-olmoe/0001`, `0002`. `granite-Mi.gguf` and `olmoe-Mi.gguf`, hashes as in the cards. **No
+  numerics change on either model** (no skip, no two-stage head); one reply text per model across both arms.
+- **Phone state:** cool, 2,112 / 2,035 MHz at the end of every scored run; three gate timeouts (headroom 0.65 to
+  0.71). `Cached` before the runs 2,493 to 2,886 MB (Granite) and 2,425 to 3,200 MB (OLMoE): the pre-registered
+  **"high" state throughout; the "low" state (1.8 to 2.3 GB) the lever was designed for did not occur.**
+- **Void checks:** `MADV_COLD` accepted (errno 0); texts equal; hashes equal; 8 scored runs per arm and model.
+  Not void.
+
+| model | arm | median tok/s (8 runs) | range | TTFT median |
+|---|---|---|---|---|
+| Granite-Mi | knob off | **17.19** | 14.4 to 17.9 | 5,294 ms |
+| Granite-Mi | `GGML_PREFILL_COLD=8` | 17.27 | 15.7 to 17.6 | 5,196 ms |
+| OLMoE-Mi | knob off | **19.70** | 11.1 to 22.3 | 4,844 ms |
+| OLMoE-Mi | `GGML_PREFILL_COLD=8` | 20.06 | 11.5 to 21.4 | 4,661 ms |
+
+- **Effect (mean of the within-block on minus off, four ABBA quads per model, with SE):** Granite
+  **+0.09 ± 0.50 tok/s (+0.5 %)**; OLMoE **+0.93 ± 2.74 tok/s (+5.1 %)**. Both are below 2 × SE: **unresolved**.
+- **Scoring, as written:**
+  - Knob-off level, high state: Granite predicted 17 to 21, printed 17.19: **hit**. OLMoE predicted 11 to 15,
+    printed 19.70: **miss** (the model was too slow by a third; memo-18's OLMoE floor and re-read terms).
+  - Effect bands: Granite +0 to +10 % in the high state: +0.5 %, inside the band but unresolved. OLMoE +5 to
+    +25 %: +5.1 %, unresolved. Neither counts as a pass (the pass rule needs a resolved gain).
+  - Prediction 1 (decode read bytes lower): **not scorable**; `/proc/self/io` is not readable in the app
+    (`read_bytes=-1`).
+  - Prediction 2 (TTFT shorter by 0.6 to 2.0 s): 0.10 s and 0.18 s: **miss**.
+  - Prediction 3 (marked bytes): OLMoE 653.9 MB against 645: **hit**; Granite 677.0 MB against 740: about 9 %
+    low (the prompt rendered to 177 tokens).
+  - Prediction 4 (helps both, Granite more; at equal cache Granite faster with the knob off): **miss** on both
+    parts. With no numerics change OLMoE is the faster model when resident (19.70 against 17.19).
+  - **Kill rule: "no resolved tok/s gain on either model" is met. The lever is closed as written.** What the
+    data do and do not show: in the high-cache state the lever does nothing measurable, as its own high-state
+    band said; the low-cache state was not tested and the read-byte rule could not be tested at all. Reopening
+    it would need a new pre-registration and a kit that can produce the low state.
+- **What decides a run's speed (not pre-registered, a reading):** the pages resident before the run. OLMoE runs
+  that started with at least 2,500 MB of the file resident: median **21.03** (n = 8); the others 16.27 (n = 8;
+  783 MB resident gave 11.15, 1,359 MB gave 11.53). Granite: at least 1,950 MB resident 17.36 (n = 11), others
+  16.94 (n = 5; 1,232 MB gave 14.42). The slow runs are those that follow a gate wait of 45 to 91 s, during
+  which the phone took file pages away although `Cached` stayed above 2.4 GB. After a run OLMoE reached
+  2,672 MB resident, which is its whole working set (memo-18: 2,673 MB).
+- **Fault-free tokens (profiled runs):** OLMoE all 32 tokens 41.6 to 48.2 ms in the best run (expert op
+  27.8 ms, dense 9.6 ms, head 3.5 ms; 22.16 tok/s printed); Granite-Mi 53 to 57 ms. Granite here runs without
+  campaign 1's skip and two-stage head, so its 17.2 is not comparable with R49's 20.51.
+- **What generalised and what did not:** on both models the knob did nothing resolvable in a high-cache state,
+  and on both the resident pages before the run decide the speed. Not general: memo-18's ranking of the two
+  models; OLMoE's exposure to a wait is much larger (range 11.1 to 22.3 against 14.4 to 17.9) because its
+  working set is 0.7 GB bigger.
+- **What it means for the goal (*estimated*, not a claim):** OLMoE resident and cool is at about 42 ms per
+  token with no numerics spent. The skip rule `MASS=900` (R51: 13.4 % of expert bytes, +3.32 %) and the untied
+  head (R53: +0.016 %) exist only in the stock-base series; carried onto campaign 1's runtime they would take
+  roughly 3.7 ms and 2 ms off, giving about 36 to 38 ms, which is the neighbourhood of 25 tok/s. That is the
+  next round to pre-register, on both models, together with keeping the pages through the gate wait.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
 [memo-05, why skip was inert on Q4_0 experts: repack](memo-05-q4-experts-repack.md);
