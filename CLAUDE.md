@@ -28,6 +28,12 @@ Vollie runs a sparse (mixture-of-experts) LLM on a 2021 phone CPU (Samsung Galax
 
 ## Rules you must keep (short form; the full text is in the files above)
 
+- **Start from Vollie 1 (owner, 2026-11-14).** Campaign 2 is a follow-up of campaign 1. Every kit, lever and
+  prediction begins with campaign 1's shipped state (its runtime patch, its app, kit r16's run protocol and gate,
+  the R-log's lessons on residency, heat and clock) and is expressed as a change to it; new numbers are compared
+  with campaign 1's reports under the same phone state before any conclusion. Copy from the sibling `vollie`
+  folder, never modify it. (Session 3 first rebuilt things from a stock base and paid for it: memo-16.)
+
 - **The served model file is frozen.** Speed comes from the runtime. A different file or model is proposed to the
   owner first.
 - **Budgets are written before results and never move afterwards.** Campaign 2: PPL ≤ stock served PPL × 1.05,

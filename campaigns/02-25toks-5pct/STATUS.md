@@ -51,6 +51,14 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
+**Read first: the owner's standing instruction of 2026-11-14, "start from Vollie 1"** (CLAUDE.md, rules). Memo-16
+shows why: campaign 1's own first run in r19's thermal state was 12.27 tok/s; its 20.5 came after the phone had
+cooled and the cache had filled, with runs back to back. Kit r19 waited 90 s before every run on a phone that
+could not cool, which emptied the cache each time. **Next kit (r20): kit r16's protocol reproduced on OLMoE with
+campaign 1's runtime as the baseline row, runs back to back after a warm-up when the gate cannot be met, a
+keep-warm lever, mincore; new levers (c2 skip rule, untied head) only as deltas on campaign 1's runtime.** The
+earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the state campaign 1 was measured in.
+
 00. **R52 is in (R-log): OLMoE on the stock runtime printed a median of 3.34 tok/s (*device*), void by hygiene
    and a factor of four below the band.** Cause (memo-13): the benchmark needs about 2.73 GB of the file resident
    (Granite: 2.57 GB, *host* traces) and the phone had 1.6 to 2.35 GB of page cache with no free swap; thermal
