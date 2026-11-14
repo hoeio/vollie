@@ -360,6 +360,47 @@ had 1,001 to 2,579 major faults.
   most 2.39 GB; the tokens generated next find part of their experts evicted. Granite ran fault-free with
   about 2.0 GB of file pages resident in r16. The shortfall for OLMoE is about 0.35 to 0.5 GB.
 
+### R57 Same-day control: campaign 1's own kit on Granite (2026-11-14)
+
+- **Date:** 2026-11-14, 18:47 to 19:02 local, the same day as R56 (16:28). **Label:** *device*.
+- **What it is:** the owner ran campaign 1's unchanged app and kit (app 2.3.0+45, kit r16, Granite d6-e6, the
+  configuration of R49). No pre-registration file: it is a control the lead asked for, and its reading was
+  written beforehand in [memo-16](memo-16-why-far-from-campaign-1.md) §4: "If Granite also stays near 12 tok/s, the
+  day's state explains the gap; if it reaches 20, reason 5 carries more weight."
+- **Data:** [device/r16-control_2026-11-14_summary.json](device/r16-control_2026-11-14_summary.json), transcribed by
+  the lead from the pasted report; the raw report is not stored as a file.
+- **State:** cool, as on 2026-11-08: headroom 0.62 to 0.65 at the gate, 2,112 / 2,035 MHz. But less memory:
+  `Cached` 1.81 to 2.26 GB before runs (2026-11-08: 2.24 to 2.98 GB), the app's resident file pages at most
+  1.63 GB (2026-11-08: 2.02 GB), free swap 0 for most runs.
+
+| | Granite, campaign 1's kit, 2026-11-08 (R49) | Granite, the same kit, 2026-11-14 | OLMoE, kit r20 part A, 2026-11-14 (R56) |
+|---|---|---|---|
+| median of the ten claim positions | 20.51 | **11.46** | 11.25 |
+| the ten values | 14.09 to 20.95 | 7.80 to 15.04 | 7.52 to 15.02 |
+| prefill of the prompt | about 3.6 s | 5.2 to 7.2 s | 5.6 to 7.9 s |
+| major faults per official run | 4 to 73,524; fast runs 4 to 40 | 1,947 to 12,199 | 1,001 to 33,288 |
+| clock | 2,112 MHz | 2,112 MHz | 2,112 MHz |
+| `Cached` before runs | 2.24 to 2.98 GB | 1.81 to 2.26 GB | 2.1 to 2.8 GB |
+
+- **Reading, as written beforehand:** Granite stayed near 12 tok/s, so the day's state explains the gap. On this
+  day **campaign 1's own configuration does not reproduce 20.51; it prints 11.46**, and OLMoE under the same
+  protocol prints 11.25. The two models are equal within the spread of the runs.
+- **Dated correction to R56 (2026-11-14):** R56 scored "OLMoE does not match Vollie 1" against the 2026-11-08
+  report, as its rule said. With this control the comparison at equal state is 11.25 against 11.46. The scoring
+  of R56 stands as written; its reading "the shortfall is specific to OLMoE" does not. Granite is not resident
+  on this phone today either.
+- **Not equal in every respect:** the two runs were 2.3 hours apart and the Granite run had less page cache
+  (1.8 to 2.3 GB) than the OLMoE run (2.1 to 2.8 GB); Granite's app also holds about 0.7 GB of anonymous memory
+  for its repacked copy against about 0.23 GB for OLMoE. The data do not rank the two models more finely than
+  "about the same".
+- **Fault-free tokens:** Granite's late tokens in the profiled runs take about 46 to 53 ms (dense matmuls about
+  22 ms, experts about 14 to 19 ms; 1,775 nodes, 666 barriers); OLMoE's about 43 to 51 ms (dense about 9.6 ms,
+  experts about 28 to 30 ms; 533 nodes, 305 barriers). The arithmetic of both is where campaign 1 left it.
+- **What it means for the campaign:** the number campaign 1 claimed depends on how much page cache the phone
+  gives the app, and that changed between 2026-11-08 and 2026-11-14 by about 0.5 to 0.7 GB for reasons the
+  reports do not show. Residency under about 2 GB of page cache is the problem to solve for both models, and it
+  comes before any kernel work.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
 [memo-05, why skip was inert on Q4_0 experts: repack](memo-05-q4-experts-repack.md);

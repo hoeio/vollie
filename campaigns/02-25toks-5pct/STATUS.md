@@ -51,6 +51,15 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
+**Latest (R57, same-day control, 2026-11-14):** campaign 1's own app and kit, unchanged, printed a median of
+**11.46 tok/s** on Granite at the claim positions today (20.51 on 2026-11-08), on a cool phone at 2,112 MHz.
+OLMoE the same day: 11.25. So OLMoE equals Vollie 1 at equal state, and **Vollie 1's 20.51 is not reproduced
+today**: the phone gave the app 1.8 to 2.3 GB of page cache instead of 2.2 to 3.0 GB. The campaign's first
+problem is therefore residency under about 2 GB of page cache, for both models; R56's reading that the
+shortfall is specific to OLMoE is corrected in the R57 entry. Next: price the ways to shrink or order the
+resident set (host traces first), starting from what campaign 1 learned in R9, R12, R23, R29 and R49's cold
+runs, and keep measuring both models in one session so the day cancels out.
+
 **Latest (R56, kit r20, 2026-11-14):** with campaign 1's protocol and runtime, on a cool phone at 2,112 MHz, OLMoE
 printed a median of 11.25 tok/s at the ten claim positions (campaign 1's Granite: 20.51). Fault-free OLMoE
 tokens take about 43 to 51 ms (Granite: about 46), but the first ten tokens of every run fault, because the
@@ -168,3 +177,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-14 | 3 (continued) | Memo-16 (r16 against r19: campaign 1's first run in r19's state was 12.27 tok/s). Owner's standing rule "start from Vollie 1" recorded in CLAUDE.md. Kit r20 built from r16's protocol (memo-17), keep-warm patch on campaign 1's runtime, R56 pre-registered, APK handed to the owner. Open check: Tom saw a different `-ub 1` value on today's base build than memo-07 recorded (8.8302 against 8.9550, *host*, 4 chunks); find out which build flag differs before the next host identity claim. |
 | 2026-11-14 | 3 (continued) | R53 scored (host): untied head K=1024 passes (+0.016 % alone, +3.335 % with skip MASS=900); both identity rows reproduced R50 and R51 on the full nine-patch series. |
 | 2026-11-14 | 3 (continued) | R56 scored from kit r20 (cool phone): OLMoE 11.25 tok/s at campaign 1's claim positions against Granite's 20.51; fault-free tokens 43 to 51 ms; never resident (max 2.39 of 2.73 GB); keep-warm closed. The gap to Vollie 1 is residency after the prefill. |
+| 2026-11-14 | 3 (continued) | R57: the owner ran campaign 1's kit as a same-day control: Granite 11.46 tok/s at the claim positions (20.51 on 2026-11-08), OLMoE 11.25 the same day. The gap to campaign 1's number is the phone's page cache on the day; residency is the problem for both models. |
