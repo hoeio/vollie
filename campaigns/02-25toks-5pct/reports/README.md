@@ -211,6 +211,40 @@ logs; all numbers *host*.
   ([R54 amendment 1](../prereg/R54-amendment-1.md)). The next kit fixes the gate, reports residency, and runs
   campaign 1's runtime beside the c2 series at the owner's instruction.
 
+### R53 Untied two-stage head on OLMoE (host)
+
+- **Date:** 2026-11-14. **Label:** *host*. Entered after R55 because the sweep finished later; the numbering
+  follows the pre-registrations.
+- **Pre-registration:** [R53](../prereg/R53-olmoe-head2-host.md), commit `45ce55d`, pushed before the sweep started.
+- **Build and run:** as pre-registered: llama.cpp `620d2225c` + `patches/llama.cpp-c2/0001` to `0009`, repack on,
+  `tools/c2_head2_sweep.sh`, 8 threads, 560 chunks and `n_seq=1` in all six logs. File `olmoe-Mi.gguf`.
+- **Identity rows, both passed:** `stock` 11.7146 ± 0.09601 and `MASS=900` 12.1031 ± 0.10045, the digits of R50
+  and R51. The nine-patch series with every knob unset is therefore identical to the base on the full set, and
+  its skip equals the one-patch build's.
+
+| setting | PPL | % over stock | expert bytes skipped | exact head rows per token |
+|---|---|---|---|---|
+| stock | 11.7146 ± 0.0960 | 0 | 0 | all 50,304 |
+| K=1024 | 11.7165 ± 0.0961 | +0.016 | 0 | 6,953 |
+| K=2048 | 11.7157 ± 0.0960 | +0.009 | 0 | 12,818 |
+| MASS=900 | 12.1031 ± 0.1005 | +3.316 | 13.39 % | all |
+| K=1024 + MASS=900 | 12.1053 ± 0.1005 | +3.335 | 13.39 % | 6,936 |
+| K=2048 + MASS=900 | 12.1041 ± 0.1005 | +3.325 | 13.39 % | 12,785 |
+
+- **Predictions:** alone within ± 0.10 % of stock: **hit** (+0.016 %, +0.009 %). With skip +3.32 % ± 0.12 points:
+  **hit** (+3.335 %, +3.325 %); the two changes add without interaction.
+- **Pass rule:** both K pass (alone ≤ +0.15 %, with `MASS=900` ≤ 12.3003). The smaller one, **K=1024**, is the
+  head setting to use; with skip it leaves 0.195 of PPL (1.66 points) of the budget.
+- **What it is worth:** little. With repack on, K=1024 still computes about 6,950 rows exactly per token; memo-11
+  put the saving at about 15 MB of head bytes, about 0.6 ms on the phone (*estimated*).
+- **Hygiene:** head rows carry the `c2-head:` counter line and skip rows the `c2-skip:` line. Deviation, as in
+  R51 amendment 2: the rule asked for a `CPU_REPACK` buffer line and this log level prints no buffer lines;
+  repack on is shown indirectly by the stock value 11.7146 (the no-repack value is 11.7135).
+- **Standing:** these patches sit on a stock base. Under the owner's rule of 2026-11-14 ("start from Vollie 1")
+  the head and the skip rule are to be carried onto campaign 1's runtime before they are used on the phone.
+
+R54: withdrawn before any run, see prereg/R54-amendment-1.md
+
 ### R55 OLMoE on campaign 1's runtime, residency measured (kit r19)
 
 - **Date:** 2026-11-14, 12:39 to 13:22 local. **Label:** *device* unless marked.
