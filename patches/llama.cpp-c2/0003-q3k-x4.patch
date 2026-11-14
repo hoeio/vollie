@@ -1,0 +1,686 @@
+diff --git a/ggml/src/ggml-cpu/arch/arm/quants.c b/ggml/src/ggml-cpu/arch/arm/quants.c
+--- a/ggml/src/ggml-cpu/arch/arm/quants.c
++++ b/ggml/src/ggml-cpu/arch/arm/quants.c
+@@ -2311,6 +2311,627 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
+ 
+ }
+ 
++// ---- Vollie c2 (patches/llama.cpp-c2/0003): 4-row Q3_K dot for the un-repacked MUL_MAT_ID path. Ported from campaign 1
++// (patches/llama.cpp/0001-cpu-runtime.patch: GGML_Q3K_X4 + GGML_Q3K_ILP, GGML_Q3K_KERN), knob VOLLIE_Q3K_X4 (read in
++// ggml-cpu.c; 0 = off). Four Q3_K rows (stride bx) against one Q8_K row: every row's integer block sum is exact and its
++// float step is the stock one (d = y.d * fp16(x.d); sum += d * isum, block by block in order), so s[r] equals
++// ggml_vec_dot_q3_K_q8_K's result for that row to the bit.
++#if defined(__ARM_NEON)
++// Campaign 1 GGML_Q3K_ILP pieces. One block's 16 6-bit scales, unpacked with vector shifts
++// (same bytes as the scalar utmp code, minus 32), and lane group k (0..3) widened to int32.
++static inline int8x16_t ggml_q3k_scales_vec(const uint8_t * GGML_RESTRICT sc) {
++    uint32_t aux[3];
++    memcpy(aux, sc, 12);
++    const uint32x2_t a01 = vld1_u32(aux);
++    const uint32x4_t lo  = vcombine_u32(a01, a01);    // aux0 aux1 aux0 aux1
++    const uint32x4_t hi  = vdupq_n_u32(aux[2]);
++    const int32x4_t  shl = { 0, 0, -4, -4 };          // right shifts of lo, per utmp word
++    const int32x4_t  shh = { 0, -2, -4, -6 };         // right shifts of aux2
++    const uint32x4_t u = vorrq_u32(vandq_u32(vshlq_u32(lo, shl), vdupq_n_u32(0x0f0f0f0f)),
++                                   vshlq_n_u32(vandq_u32(vshlq_u32(hi, shh), vdupq_n_u32(0x03030303)), 4));
++    return vsubq_s8(vreinterpretq_s8_u32(u), vdupq_n_s8(32));
++}
++
++static inline int32x4_t ggml_q3k_sc(int8x16_t s, int k) {
++    const int16x8_t h = k < 2 ? vmovl_s8(vget_low_s8(s)) : vmovl_s8(vget_high_s8(s));
++    return k & 1 ? vmovl_s16(vget_high_s16(h)) : vmovl_s16(vget_low_s16(h));
++}
++
++// ggml_q3k_half with its two 64-weight groups in independent accumulators (no visum chain).
++// Integer sums, so the block sum is the same in any order.
++static inline int32x4_t ggml_q3k_half_ilp(const uint8_t * GGML_RESTRICT q3, ggml_uint8x16x2_t qhbits,
++        ggml_int8x16x4_t q8a, ggml_int8x16x4_t q8b, int8x16_t vs8, int si) {
++    const uint8x16_t m3b = vdupq_n_u8(0x3);
++    const int32x4_t  vzero = vdupq_n_s32(0);
++    const uint8x16_t m0 = vdupq_n_u8(1);
++    const uint8x16_t m1 = vshlq_n_u8(m0, 1);
++    const uint8x16_t m2 = vshlq_n_u8(m0, 2);
++    const uint8x16_t m3 = vshlq_n_u8(m0, 3);
++    const ggml_uint8x16x2_t q3bits = ggml_vld1q_u8_x2(q3);
++
++    const int8x16_t a0 = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(q3bits.val[0], m3b)),
++                                  vreinterpretq_s8_u8(vshlq_n_u8(vbicq_u8(m0, qhbits.val[0]), 2)));
++    const int8x16_t a1 = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(q3bits.val[1], m3b)),
++                                  vreinterpretq_s8_u8(vshlq_n_u8(vbicq_u8(m0, qhbits.val[1]), 2)));
++    const int8x16_t a2 = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(q3bits.val[0], 2), m3b)),
++                                  vreinterpretq_s8_u8(vshlq_n_u8(vbicq_u8(m1, qhbits.val[0]), 1)));
++    const int8x16_t a3 = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(q3bits.val[1], 2), m3b)),
++                                  vreinterpretq_s8_u8(vshlq_n_u8(vbicq_u8(m1, qhbits.val[1]), 1)));
++    const int8x16_t b0 = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(q3bits.val[0], 4), m3b)),
++                                  vreinterpretq_s8_u8(vbicq_u8(m2, qhbits.val[0])));
++    const int8x16_t b1 = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(q3bits.val[1], 4), m3b)),
++                                  vreinterpretq_s8_u8(vbicq_u8(m2, qhbits.val[1])));
++    const int8x16_t b2 = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(q3bits.val[0], 6), m3b)),
++                                  vreinterpretq_s8_u8(vshrq_n_u8(vbicq_u8(m3, qhbits.val[0]), 1)));
++    const int8x16_t b3 = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(q3bits.val[1], 6), m3b)),
++                                  vreinterpretq_s8_u8(vshrq_n_u8(vbicq_u8(m3, qhbits.val[1]), 1)));
++
++    const int32x4_t pa = vpaddq_s32(vpaddq_s32(ggml_vdotq_s32(vzero, a0, q8a.val[0]), ggml_vdotq_s32(vzero, a1, q8a.val[1])),
++                                    vpaddq_s32(ggml_vdotq_s32(vzero, a2, q8a.val[2]), ggml_vdotq_s32(vzero, a3, q8a.val[3])));
++    const int32x4_t pb = vpaddq_s32(vpaddq_s32(ggml_vdotq_s32(vzero, b0, q8b.val[0]), ggml_vdotq_s32(vzero, b1, q8b.val[1])),
++                                    vpaddq_s32(ggml_vdotq_s32(vzero, b2, q8b.val[2]), ggml_vdotq_s32(vzero, b3, q8b.val[3])));
++    return vaddq_s32(vmulq_s32(pa, ggml_q3k_sc(vs8, si)), vmulq_s32(pb, ggml_q3k_sc(vs8, si + 1)));
++}
++
++static void ggml_vec_dot_q3_K_q8_K_x4_ilp(int nb, float * GGML_RESTRICT s, const block_q3_K * GGML_RESTRICT const x[4],
++                                          const block_q8_K * GGML_RESTRICT y) {
++    float sum[4] = { 0, 0, 0, 0 };
++    for (int i = 0; i < nb; ++i) {
++        const int8_t * GGML_RESTRICT q8 = y[i].qs;
++        const ggml_int8x16x4_t q8a_1 = ggml_vld1q_s8_x4(q8);
++        const ggml_int8x16x4_t q8b_1 = ggml_vld1q_s8_x4(q8 + 64);
++        const ggml_int8x16x4_t q8a_2 = ggml_vld1q_s8_x4(q8 + 128);
++        const ggml_int8x16x4_t q8b_2 = ggml_vld1q_s8_x4(q8 + 192);
++        int8x16_t vs8[4];
++        ggml_uint8x16x2_t qh[4];
++        int32x4_t acc[4];
++        for (int r = 0; r < 4; ++r) {
++            vs8[r] = ggml_q3k_scales_vec(x[r][i].scales);
++            qh[r]  = ggml_vld1q_u8_x2(x[r][i].hmask);
++        }
++        for (int r = 0; r < 4; ++r) {
++            acc[r] = ggml_q3k_half_ilp(x[r][i].qs, qh[r], q8a_1, q8b_1, vs8[r], 0);
++        }
++        for (int r = 0; r < 4; ++r) {
++            qh[r].val[0] = vshrq_n_u8(qh[r].val[0], 4);
++            qh[r].val[1] = vshrq_n_u8(qh[r].val[1], 4);
++            acc[r] = vaddq_s32(acc[r], ggml_q3k_half_ilp(x[r][i].qs + 32, qh[r], q8a_2, q8b_2, vs8[r], 2));
++        }
++        for (int r = 0; r < 4; ++r) {
++            const float d = y[i].d * GGML_CPU_FP16_TO_FP32(x[r][i].d);
++            sum[r] += d * vaddvq_s32(acc[r]);
++        }
++    }
++    for (int r = 0; r < 4; ++r) {
++        s[r] = sum[r];
++    }
++}
++#endif
++
++// Mode 2 (campaign 1 GGML_Q3K_KERN, device R35/R47): the x4 dot as an in-register 4-row kernel. Per Q3_K block the 4 rows' qs/hmask are word-transposed (lane = row),
++// each 16-weight group is 4 by-element sdots into an accumulator seeded at -(4 << p) * bsum[g] (value byte =
++// (q2 + 4h) << p, p = 0/2/4/0 for planes 0-3, built in place: shift+and the hmask bit, bit/sri the qs plane),
++// and its int32 scale is pre-shifted by 4 - p, so one accumulator holds 16 x the integer block sum (exact,
++// |sum| < 2^27); the float step is the stock one (d = y.d * fp16(x.d), sum = fma(d, isum, sum), as the x4 code
++// compiles on both clangs). Hand-scheduled asm (lab/logs/r34/gen_kern.py): no movi, no spills, 377 NEON ops
++// per 4-row block on the NDK build vs 562 for the ILP path.
++#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
++#pragma GCC diagnostic ignored "-Woverlength-strings" // Vollie: the asm bodies below are one string each
++// registers: v0-3 hmask (lane = row), v4-7 qs, v8-11 int32 scales of the 4 groups, v12-15 the 4 rows' 6-bit scales
++// (utmp words), v16 isum, v17 activation, v18 group sum, v19-21 temps, v22 d per row, v23 sum per row, v24-31 constants
++static void ggml_vec_dot_q3_K_q8_K_x4_kern(int nb, float * GGML_RESTRICT s, const block_q3_K * GGML_RESTRICT const x[4],
++                                           const block_q8_K * GGML_RESTRICT y) {
++    static const uint8_t ix[32] = { 0, 4, 8, 12, 2, 6, 10, 14, 16, 20, 24, 28, 18, 22, 26, 30,   // scale bytes [k][row], c = 0
++                                    1, 5, 9, 13, 3, 7, 11, 15, 17, 21, 25, 29, 19, 23, 27, 31 }; // c = 1
++    const block_q3_K * x0 = x[0], * x1 = x[1], * x2 = x[2], * x3 = x[3];
++    static_assert(sizeof(block_q3_K) == 110 && sizeof(block_q8_K) == 292, "Q3_K / Q8_K layout");
++    __asm__ volatile(
++        "movi v23.4s, #0\n"
++        "movi v24.16b, #32\n" "movi v25.16b, #0x0f\n" "movi v26.16b, #0x03\n" "movi v27.16b, #0x0c\n"
++        "movi v28.16b, #0x30\n" "movi v29.16b, #0x04\n" "movi v30.16b, #0x10\n" "movi v31.16b, #0x40\n"
++        "1:\n"
++        "ldur q0, [%[x0], #94]\n"
++        "ldur q1, [%[x1], #94]\n"
++        "ldur q2, [%[x2], #94]\n"
++        "ldur q3, [%[x3], #94]\n"
++        "ext v0.16b, v0.16b, v0.16b, #2\n"
++        "ext v1.16b, v1.16b, v1.16b, #2\n"
++        "ext v2.16b, v2.16b, v2.16b, #2\n"
++        "ext v3.16b, v3.16b, v3.16b, #2\n"
++        "trn1 v4.4s, v0.4s, v1.4s\n"
++        "trn2 v5.4s, v0.4s, v1.4s\n"
++        "trn1 v6.4s, v2.4s, v3.4s\n"
++        "trn2 v7.4s, v2.4s, v3.4s\n"
++        "trn1 v0.2d, v4.2d, v6.2d\n"
++        "trn1 v1.2d, v5.2d, v7.2d\n"
++        "trn2 v2.2d, v4.2d, v6.2d\n"
++        "trn2 v3.2d, v5.2d, v7.2d\n"
++        "ldr s17, [%[y]]\n"
++        "xtn v3.4h, v3.4s\n"
++        "fcvtl v22.4s, v3.4h\n"
++        "fmul v22.4s, v22.4s, v17.s[0]\n"
++        "and v12.16b, v0.16b, v25.16b\n"
++        "shl v4.16b, v2.16b, #4\n"
++        "bit v12.16b, v4.16b, v28.16b\n"
++        "and v13.16b, v1.16b, v25.16b\n"
++        "shl v5.16b, v2.16b, #2\n"
++        "bit v13.16b, v5.16b, v28.16b\n"
++        "ushr v14.16b, v0.16b, #4\n"
++        "bit v14.16b, v2.16b, v28.16b\n"
++        "ushr v15.16b, v1.16b, #4\n"
++        "ushr v6.16b, v2.16b, #2\n"
++        "bit v15.16b, v6.16b, v28.16b\n"
++        "ldr q4, [%[x0], #0]\n"
++        "ldr q5, [%[x1], #0]\n"
++        "ldr q6, [%[x2], #0]\n"
++        "ldr q7, [%[x3], #0]\n"
++        "trn1 v8.4s, v4.4s, v5.4s\n"
++        "trn2 v9.4s, v4.4s, v5.4s\n"
++        "trn1 v10.4s, v6.4s, v7.4s\n"
++        "trn2 v11.4s, v6.4s, v7.4s\n"
++        "trn1 v0.2d, v8.2d, v10.2d\n"
++        "trn1 v1.2d, v9.2d, v11.2d\n"
++        "trn2 v2.2d, v8.2d, v10.2d\n"
++        "trn2 v3.2d, v9.2d, v11.2d\n"
++        "ldr q4, [%[x0], #32]\n"
++        "ldr q5, [%[x1], #32]\n"
++        "ldr q6, [%[x2], #32]\n"
++        "ldr q7, [%[x3], #32]\n"
++        "trn1 v8.4s, v4.4s, v5.4s\n"
++        "trn2 v9.4s, v4.4s, v5.4s\n"
++        "trn1 v10.4s, v6.4s, v7.4s\n"
++        "trn2 v11.4s, v6.4s, v7.4s\n"
++        "trn1 v4.2d, v8.2d, v10.2d\n"
++        "trn1 v5.2d, v9.2d, v11.2d\n"
++        "trn2 v6.2d, v8.2d, v10.2d\n"
++        "trn2 v7.2d, v9.2d, v11.2d\n"
++        "ldr q19, [%[ix], #0]\n"
++        "tbl v8.16b, { v12.16b, v13.16b }, v19.16b\n"
++        "ssubl v9.8h, v8.8b, v24.8b\n"
++        "ssubl2 v10.8h, v8.16b, v24.16b\n"
++        "sshll v8.4s, v9.4h, #4\n"
++        "sshll2 v9.4s, v9.8h, #2\n"
++        "sshll2 v11.4s, v10.8h, #4\n"
++        "sshll v10.4s, v10.4h, #0\n"
++        "ldr q17, [%[y], #4]\n"
++        "ldrsh w9, [%[y], #260]\n"
++        "neg w9, w9, lsl #2\n"
++        "dup v18.4s, w9\n"
++        "shl v19.16b, v0.16b, #2\n"
++        "and v19.16b, v19.16b, v29.16b\n"
++        "bit v19.16b, v4.16b, v26.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "shl v20.16b, v1.16b, #2\n"
++        "and v20.16b, v20.16b, v29.16b\n"
++        "bit v20.16b, v5.16b, v26.16b\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "shl v21.16b, v2.16b, #2\n"
++        "and v21.16b, v21.16b, v29.16b\n"
++        "bit v21.16b, v6.16b, v26.16b\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "shl v19.16b, v3.16b, #2\n"
++        "and v19.16b, v19.16b, v29.16b\n"
++        "bit v19.16b, v7.16b, v26.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mul v16.4s, v18.4s, v8.4s\n"
++        "ldr q17, [%[y], #36]\n"
++        "ldrsh w9, [%[y], #264]\n"
++        "neg w9, w9, lsl #4\n"
++        "dup v18.4s, w9\n"
++        "shl v19.16b, v0.16b, #3\n"
++        "and v19.16b, v19.16b, v30.16b\n"
++        "bit v19.16b, v4.16b, v27.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "shl v20.16b, v1.16b, #3\n"
++        "and v20.16b, v20.16b, v30.16b\n"
++        "bit v20.16b, v5.16b, v27.16b\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "shl v21.16b, v2.16b, #3\n"
++        "and v21.16b, v21.16b, v30.16b\n"
++        "bit v21.16b, v6.16b, v27.16b\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "shl v19.16b, v3.16b, #3\n"
++        "and v19.16b, v19.16b, v30.16b\n"
++        "bit v19.16b, v7.16b, v27.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v9.4s\n"
++        "ldr q17, [%[y], #68]\n"
++        "ldrsh w9, [%[y], #268]\n"
++        "neg w9, w9, lsl #6\n"
++        "dup v18.4s, w9\n"
++        "shl v19.16b, v0.16b, #4\n"
++        "and v19.16b, v19.16b, v31.16b\n"
++        "bit v19.16b, v4.16b, v28.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "shl v20.16b, v1.16b, #4\n"
++        "and v20.16b, v20.16b, v31.16b\n"
++        "bit v20.16b, v5.16b, v28.16b\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "shl v21.16b, v2.16b, #4\n"
++        "and v21.16b, v21.16b, v31.16b\n"
++        "bit v21.16b, v6.16b, v28.16b\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "shl v19.16b, v3.16b, #4\n"
++        "and v19.16b, v19.16b, v31.16b\n"
++        "bit v19.16b, v7.16b, v28.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v10.4s\n"
++        "ldr q17, [%[y], #100]\n"
++        "ldrsh w9, [%[y], #272]\n"
++        "neg w9, w9, lsl #2\n"
++        "dup v18.4s, w9\n"
++        "ushr v19.16b, v0.16b, #1\n"
++        "and v19.16b, v19.16b, v29.16b\n"
++        "sri v19.16b, v4.16b, #6\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "ushr v20.16b, v1.16b, #1\n"
++        "and v20.16b, v20.16b, v29.16b\n"
++        "sri v20.16b, v5.16b, #6\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "ushr v21.16b, v2.16b, #1\n"
++        "and v21.16b, v21.16b, v29.16b\n"
++        "sri v21.16b, v6.16b, #6\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "ushr v19.16b, v3.16b, #1\n"
++        "and v19.16b, v19.16b, v29.16b\n"
++        "sri v19.16b, v7.16b, #6\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v11.4s\n"
++        "ldr q4, [%[x0], #64]\n"
++        "ldr q5, [%[x1], #64]\n"
++        "ldr q6, [%[x2], #64]\n"
++        "ldr q7, [%[x3], #64]\n"
++        "trn1 v8.4s, v4.4s, v5.4s\n"
++        "trn2 v9.4s, v4.4s, v5.4s\n"
++        "trn1 v10.4s, v6.4s, v7.4s\n"
++        "trn2 v11.4s, v6.4s, v7.4s\n"
++        "trn1 v4.2d, v8.2d, v10.2d\n"
++        "trn1 v5.2d, v9.2d, v11.2d\n"
++        "trn2 v6.2d, v8.2d, v10.2d\n"
++        "trn2 v7.2d, v9.2d, v11.2d\n"
++        "ldr q19, [%[ix], #0]\n"
++        "tbl v8.16b, { v14.16b, v15.16b }, v19.16b\n"
++        "ssubl v9.8h, v8.8b, v24.8b\n"
++        "ssubl2 v10.8h, v8.16b, v24.16b\n"
++        "sshll v8.4s, v9.4h, #4\n"
++        "sshll2 v9.4s, v9.8h, #2\n"
++        "sshll2 v11.4s, v10.8h, #4\n"
++        "sshll v10.4s, v10.4h, #0\n"
++        "ldr q17, [%[y], #132]\n"
++        "ldrsh w9, [%[y], #276]\n"
++        "neg w9, w9, lsl #2\n"
++        "dup v18.4s, w9\n"
++        "ushr v19.16b, v0.16b, #2\n"
++        "and v19.16b, v19.16b, v29.16b\n"
++        "bit v19.16b, v4.16b, v26.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "ushr v20.16b, v1.16b, #2\n"
++        "and v20.16b, v20.16b, v29.16b\n"
++        "bit v20.16b, v5.16b, v26.16b\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "ushr v21.16b, v2.16b, #2\n"
++        "and v21.16b, v21.16b, v29.16b\n"
++        "bit v21.16b, v6.16b, v26.16b\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "ushr v19.16b, v3.16b, #2\n"
++        "and v19.16b, v19.16b, v29.16b\n"
++        "bit v19.16b, v7.16b, v26.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v8.4s\n"
++        "ldr q17, [%[y], #164]\n"
++        "ldrsh w9, [%[y], #280]\n"
++        "neg w9, w9, lsl #4\n"
++        "dup v18.4s, w9\n"
++        "ushr v19.16b, v0.16b, #1\n"
++        "and v19.16b, v19.16b, v30.16b\n"
++        "bit v19.16b, v4.16b, v27.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "ushr v20.16b, v1.16b, #1\n"
++        "and v20.16b, v20.16b, v30.16b\n"
++        "bit v20.16b, v5.16b, v27.16b\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "ushr v21.16b, v2.16b, #1\n"
++        "and v21.16b, v21.16b, v30.16b\n"
++        "bit v21.16b, v6.16b, v27.16b\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "ushr v19.16b, v3.16b, #1\n"
++        "and v19.16b, v19.16b, v30.16b\n"
++        "bit v19.16b, v7.16b, v27.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v9.4s\n"
++        "ldr q17, [%[y], #196]\n"
++        "ldrsh w9, [%[y], #284]\n"
++        "neg w9, w9, lsl #6\n"
++        "dup v18.4s, w9\n"
++        "and v19.16b, v0.16b, v31.16b\n"
++        "bit v19.16b, v4.16b, v28.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "and v20.16b, v1.16b, v31.16b\n"
++        "bit v20.16b, v5.16b, v28.16b\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "and v21.16b, v2.16b, v31.16b\n"
++        "bit v21.16b, v6.16b, v28.16b\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "and v19.16b, v3.16b, v31.16b\n"
++        "bit v19.16b, v7.16b, v28.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v10.4s\n"
++        "ldr q17, [%[y], #228]\n"
++        "ldrsh w9, [%[y], #288]\n"
++        "neg w9, w9, lsl #2\n"
++        "dup v18.4s, w9\n"
++        "ushr v19.16b, v0.16b, #5\n"
++        "sri v19.16b, v4.16b, #6\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "ushr v20.16b, v1.16b, #5\n"
++        "sri v20.16b, v5.16b, #6\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "ushr v21.16b, v2.16b, #5\n"
++        "sri v21.16b, v6.16b, #6\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "ushr v19.16b, v3.16b, #5\n"
++        "sri v19.16b, v7.16b, #6\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v11.4s\n"
++        "ldr q4, [%[x0], #16]\n"
++        "ldr q5, [%[x1], #16]\n"
++        "ldr q6, [%[x2], #16]\n"
++        "ldr q7, [%[x3], #16]\n"
++        "trn1 v8.4s, v4.4s, v5.4s\n"
++        "trn2 v9.4s, v4.4s, v5.4s\n"
++        "trn1 v10.4s, v6.4s, v7.4s\n"
++        "trn2 v11.4s, v6.4s, v7.4s\n"
++        "trn1 v0.2d, v8.2d, v10.2d\n"
++        "trn1 v1.2d, v9.2d, v11.2d\n"
++        "trn2 v2.2d, v8.2d, v10.2d\n"
++        "trn2 v3.2d, v9.2d, v11.2d\n"
++        "ldr q4, [%[x0], #48]\n"
++        "ldr q5, [%[x1], #48]\n"
++        "ldr q6, [%[x2], #48]\n"
++        "ldr q7, [%[x3], #48]\n"
++        "trn1 v8.4s, v4.4s, v5.4s\n"
++        "trn2 v9.4s, v4.4s, v5.4s\n"
++        "trn1 v10.4s, v6.4s, v7.4s\n"
++        "trn2 v11.4s, v6.4s, v7.4s\n"
++        "trn1 v4.2d, v8.2d, v10.2d\n"
++        "trn1 v5.2d, v9.2d, v11.2d\n"
++        "trn2 v6.2d, v8.2d, v10.2d\n"
++        "trn2 v7.2d, v9.2d, v11.2d\n"
++        "ldr q19, [%[ix], #16]\n"
++        "tbl v8.16b, { v12.16b, v13.16b }, v19.16b\n"
++        "ssubl v9.8h, v8.8b, v24.8b\n"
++        "ssubl2 v10.8h, v8.16b, v24.16b\n"
++        "sshll v8.4s, v9.4h, #4\n"
++        "sshll2 v9.4s, v9.8h, #2\n"
++        "sshll2 v11.4s, v10.8h, #4\n"
++        "sshll v10.4s, v10.4h, #0\n"
++        "ldr q17, [%[y], #20]\n"
++        "ldrsh w9, [%[y], #262]\n"
++        "neg w9, w9, lsl #2\n"
++        "dup v18.4s, w9\n"
++        "shl v19.16b, v0.16b, #2\n"
++        "and v19.16b, v19.16b, v29.16b\n"
++        "bit v19.16b, v4.16b, v26.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "shl v20.16b, v1.16b, #2\n"
++        "and v20.16b, v20.16b, v29.16b\n"
++        "bit v20.16b, v5.16b, v26.16b\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "shl v21.16b, v2.16b, #2\n"
++        "and v21.16b, v21.16b, v29.16b\n"
++        "bit v21.16b, v6.16b, v26.16b\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "shl v19.16b, v3.16b, #2\n"
++        "and v19.16b, v19.16b, v29.16b\n"
++        "bit v19.16b, v7.16b, v26.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v8.4s\n"
++        "ldr q17, [%[y], #52]\n"
++        "ldrsh w9, [%[y], #266]\n"
++        "neg w9, w9, lsl #4\n"
++        "dup v18.4s, w9\n"
++        "shl v19.16b, v0.16b, #3\n"
++        "and v19.16b, v19.16b, v30.16b\n"
++        "bit v19.16b, v4.16b, v27.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "shl v20.16b, v1.16b, #3\n"
++        "and v20.16b, v20.16b, v30.16b\n"
++        "bit v20.16b, v5.16b, v27.16b\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "shl v21.16b, v2.16b, #3\n"
++        "and v21.16b, v21.16b, v30.16b\n"
++        "bit v21.16b, v6.16b, v27.16b\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "shl v19.16b, v3.16b, #3\n"
++        "and v19.16b, v19.16b, v30.16b\n"
++        "bit v19.16b, v7.16b, v27.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v9.4s\n"
++        "ldr q17, [%[y], #84]\n"
++        "ldrsh w9, [%[y], #270]\n"
++        "neg w9, w9, lsl #6\n"
++        "dup v18.4s, w9\n"
++        "shl v19.16b, v0.16b, #4\n"
++        "and v19.16b, v19.16b, v31.16b\n"
++        "bit v19.16b, v4.16b, v28.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "shl v20.16b, v1.16b, #4\n"
++        "and v20.16b, v20.16b, v31.16b\n"
++        "bit v20.16b, v5.16b, v28.16b\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "shl v21.16b, v2.16b, #4\n"
++        "and v21.16b, v21.16b, v31.16b\n"
++        "bit v21.16b, v6.16b, v28.16b\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "shl v19.16b, v3.16b, #4\n"
++        "and v19.16b, v19.16b, v31.16b\n"
++        "bit v19.16b, v7.16b, v28.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v10.4s\n"
++        "ldr q17, [%[y], #116]\n"
++        "ldrsh w9, [%[y], #274]\n"
++        "neg w9, w9, lsl #2\n"
++        "dup v18.4s, w9\n"
++        "ushr v19.16b, v0.16b, #1\n"
++        "and v19.16b, v19.16b, v29.16b\n"
++        "sri v19.16b, v4.16b, #6\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "ushr v20.16b, v1.16b, #1\n"
++        "and v20.16b, v20.16b, v29.16b\n"
++        "sri v20.16b, v5.16b, #6\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "ushr v21.16b, v2.16b, #1\n"
++        "and v21.16b, v21.16b, v29.16b\n"
++        "sri v21.16b, v6.16b, #6\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "ushr v19.16b, v3.16b, #1\n"
++        "and v19.16b, v19.16b, v29.16b\n"
++        "sri v19.16b, v7.16b, #6\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v11.4s\n"
++        "ldr q4, [%[x0], #80]\n"
++        "ldr q5, [%[x1], #80]\n"
++        "ldr q6, [%[x2], #80]\n"
++        "ldr q7, [%[x3], #80]\n"
++        "trn1 v8.4s, v4.4s, v5.4s\n"
++        "trn2 v9.4s, v4.4s, v5.4s\n"
++        "trn1 v10.4s, v6.4s, v7.4s\n"
++        "trn2 v11.4s, v6.4s, v7.4s\n"
++        "trn1 v4.2d, v8.2d, v10.2d\n"
++        "trn1 v5.2d, v9.2d, v11.2d\n"
++        "trn2 v6.2d, v8.2d, v10.2d\n"
++        "trn2 v7.2d, v9.2d, v11.2d\n"
++        "ldr q19, [%[ix], #16]\n"
++        "tbl v8.16b, { v14.16b, v15.16b }, v19.16b\n"
++        "ssubl v9.8h, v8.8b, v24.8b\n"
++        "ssubl2 v10.8h, v8.16b, v24.16b\n"
++        "sshll v8.4s, v9.4h, #4\n"
++        "sshll2 v9.4s, v9.8h, #2\n"
++        "sshll2 v11.4s, v10.8h, #4\n"
++        "sshll v10.4s, v10.4h, #0\n"
++        "ldr q17, [%[y], #148]\n"
++        "ldrsh w9, [%[y], #278]\n"
++        "neg w9, w9, lsl #2\n"
++        "dup v18.4s, w9\n"
++        "ushr v19.16b, v0.16b, #2\n"
++        "and v19.16b, v19.16b, v29.16b\n"
++        "bit v19.16b, v4.16b, v26.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "ushr v20.16b, v1.16b, #2\n"
++        "and v20.16b, v20.16b, v29.16b\n"
++        "bit v20.16b, v5.16b, v26.16b\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "ushr v21.16b, v2.16b, #2\n"
++        "and v21.16b, v21.16b, v29.16b\n"
++        "bit v21.16b, v6.16b, v26.16b\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "ushr v19.16b, v3.16b, #2\n"
++        "and v19.16b, v19.16b, v29.16b\n"
++        "bit v19.16b, v7.16b, v26.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v8.4s\n"
++        "ldr q17, [%[y], #180]\n"
++        "ldrsh w9, [%[y], #282]\n"
++        "neg w9, w9, lsl #4\n"
++        "dup v18.4s, w9\n"
++        "ushr v19.16b, v0.16b, #1\n"
++        "and v19.16b, v19.16b, v30.16b\n"
++        "bit v19.16b, v4.16b, v27.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "ushr v20.16b, v1.16b, #1\n"
++        "and v20.16b, v20.16b, v30.16b\n"
++        "bit v20.16b, v5.16b, v27.16b\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "ushr v21.16b, v2.16b, #1\n"
++        "and v21.16b, v21.16b, v30.16b\n"
++        "bit v21.16b, v6.16b, v27.16b\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "ushr v19.16b, v3.16b, #1\n"
++        "and v19.16b, v19.16b, v30.16b\n"
++        "bit v19.16b, v7.16b, v27.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v9.4s\n"
++        "ldr q17, [%[y], #212]\n"
++        "ldrsh w9, [%[y], #286]\n"
++        "neg w9, w9, lsl #6\n"
++        "dup v18.4s, w9\n"
++        "and v19.16b, v0.16b, v31.16b\n"
++        "bit v19.16b, v4.16b, v28.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "and v20.16b, v1.16b, v31.16b\n"
++        "bit v20.16b, v5.16b, v28.16b\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "and v21.16b, v2.16b, v31.16b\n"
++        "bit v21.16b, v6.16b, v28.16b\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "and v19.16b, v3.16b, v31.16b\n"
++        "bit v19.16b, v7.16b, v28.16b\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v10.4s\n"
++        "ldr q17, [%[y], #244]\n"
++        "ldrsh w9, [%[y], #290]\n"
++        "neg w9, w9, lsl #2\n"
++        "dup v18.4s, w9\n"
++        "ushr v19.16b, v0.16b, #5\n"
++        "sri v19.16b, v4.16b, #6\n"
++        "sdot v18.4s, v19.16b, v17.4b[0]\n"
++        "ushr v20.16b, v1.16b, #5\n"
++        "sri v20.16b, v5.16b, #6\n"
++        "sdot v18.4s, v20.16b, v17.4b[1]\n"
++        "ushr v21.16b, v2.16b, #5\n"
++        "sri v21.16b, v6.16b, #6\n"
++        "sdot v18.4s, v21.16b, v17.4b[2]\n"
++        "ushr v19.16b, v3.16b, #5\n"
++        "sri v19.16b, v7.16b, #6\n"
++        "sdot v18.4s, v19.16b, v17.4b[3]\n"
++        "mla v16.4s, v18.4s, v11.4s\n"
++        "sshr v16.4s, v16.4s, #4\n"
++        "scvtf v16.4s, v16.4s\n"
++        "fmla v23.4s, v16.4s, v22.4s\n"
++        "add %[x0], %[x0], #110\n"
++        "add %[x1], %[x1], #110\n"
++        "add %[x2], %[x2], #110\n"
++        "add %[x3], %[x3], #110\n"
++        "add %[y], %[y], #292\n"
++        "subs %w[nb], %w[nb], #1\n"
++        "b.ne 1b\n"
++        "str q23, [%[s]]\n"
++        : [x0] "+r"(x0), [x1] "+r"(x1), [x2] "+r"(x2), [x3] "+r"(x3), [y] "+r"(y), [nb] "+r"(nb)
++        : [s] "r"(s), [ix] "r"(ix)
++        : "x9", "memory", "cc", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15",
++          "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23", "v24", "v25", "v26", "v27", "v28", "v29", "v30", "v31");
++}
++#endif
++
++// mode 1: the intrinsics 4-row dot (campaign 1's ILP path), mode 2: the hand-scheduled in-register kernel (KERN)
++void ggml_vec_dot_q3_K_q8_K_x4(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, int mode) {
++    assert(n % QK_K == 0);
++#if defined(__ARM_NEON)
++    const int nb = n / QK_K;
++    const block_q3_K * GGML_RESTRICT x[4] = {
++        (const block_q3_K *) vx,
++        (const block_q3_K *) ((const char *) vx + bx),
++        (const block_q3_K *) ((const char *) vx + 2*bx),
++        (const block_q3_K *) ((const char *) vx + 3*bx),
++    };
++    const block_q8_K * GGML_RESTRICT y = vy;
++#if defined(__ARM_FEATURE_DOTPROD)
++    if (mode == 2) {
++        ggml_vec_dot_q3_K_q8_K_x4_kern(nb, s, x, y);
++        return;
++    }
++#endif
++    GGML_UNUSED(mode);
++    ggml_vec_dot_q3_K_q8_K_x4_ilp(nb, s, x, y);
++#else
++    GGML_UNUSED(mode);
++    for (int r = 0; r < 4; ++r) {
++        ggml_vec_dot_q3_K_q8_K(n, s + r, 0, (const char *) vx + r*bx, 0, vy, 0, 1);
++    }
++#endif
++}
++
++
+ #ifdef __ARM_FEATURE_SVE
+ static inline svuint32_t ggml_decode_q4scales_and_mins_for_mmla(const uint32_t * vx_scales) {
+     const svbool_t pg_all   = svptrue_pat_b32(SV_VL4);
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1488,6 +1488,11 @@ struct mmid_row_mapping {
+     int32_t i2;
+ };
+ 
++// Vollie c2 (0003): env VOLLIE_Q3K_X4 (unset / 0 = off; 1 = 4-row intrinsics dot, 2 = 4-row in-register asm kernel):
++// Q3_K expert rows in fours on the generic MUL_MAT_ID path (the path the phone takes: Q3_K is never repacked). Each
++// row's result equals the stock vec_dot's to the bit (arch/arm/quants.c). Read per graph by ggml_graph_compute.
++static int ggml_c2_q3k_x4 = 0;
++
+ static void ggml_compute_forward_mul_mat_id_one_chunk(
+     struct ggml_tensor * dst,
+     const struct ggml_tensor * src0,
+@@ -1541,7 +1546,15 @@ static void ggml_compute_forward_mul_mat_id_one_chunk(
+ 
+                 float * dst_col = (float *) ((char *) dst->data + (i1*nb1 + i2*nb2));
+ 
+-                for (int64_t ir0 = iir0; ir0 < iir0 + blck_0 && ir0 < ir0_end; ++ir0) {
++                int64_t ir0 = iir0;
++#if defined(__aarch64__) && defined(__ARM_NEON)
++                if (type == GGML_TYPE_Q3_K && ggml_c2_q3k_x4) { // Vollie c2 (0003)
++                    for (; ir0 + 4 <= iir0 + blck_0 && ir0 + 4 <= ir0_end; ir0 += 4) {
++                        ggml_vec_dot_q3_K_q8_K_x4(ne00, &tmp[ir0 - iir0], src0_cur + ir0*nb01, nb01, src1_col, ggml_c2_q3k_x4);
++                    }
++                }
++#endif
++                for (; ir0 < iir0 + blck_0 && ir0 < ir0_end; ++ir0) {
+                     vec_dot(ne00, &tmp[ir0 - iir0], 0, src0_cur + ir0*nb01, 0, src1_col, 0, 1);
+                 }
+ 
+@@ -3640,6 +3653,10 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+         ggml_c2_g_cur_ops = ggml_c2_g_cur_tiny = ggml_c2_g_cur_barriers = 0;
+         atomic_store_explicit(&ggml_c2_g_cur_syncs, 0, memory_order_relaxed);
+     }
++    {   // Vollie c2 (0003)
++        const char * q = getenv("VOLLIE_Q3K_X4");
++        ggml_c2_q3k_x4 = q && (atoi(q) == 1 || atoi(q) == 2) ? atoi(q) : 0;
++    }
+ 
+     bool disposable_threadpool = false;
+ 
+diff --git a/ggml/src/ggml-cpu/quants.h b/ggml/src/ggml-cpu/quants.h
+--- a/ggml/src/ggml-cpu/quants.h
++++ b/ggml/src/ggml-cpu/quants.h
+@@ -51,6 +51,8 @@ void ggml_vec_dot_nvfp4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
+ 
+ void ggml_vec_dot_q2_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
++// Vollie c2 (0003): four consecutive Q3_K rows (stride bx bytes) against one Q8_K row; s[0..3]; mode 1 intrinsics, 2 asm. arch/arm only.
++void ggml_vec_dot_q3_K_q8_K_x4(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, int mode);
+ void ggml_vec_dot_q4_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+ void ggml_vec_dot_q5_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+ void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);

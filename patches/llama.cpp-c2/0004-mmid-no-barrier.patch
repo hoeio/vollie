@@ -1,0 +1,227 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1605,8 +1605,10 @@ static void ggml_c2_skip_report(void) {
+ 
+ // thread 0 only, after the stock row map is built; rebuilds it without the skipped pairs
+ // ponytail: env read once per process on first use, unsynchronised; fine for one context at a time
++// primary (Vollie c2 0004): this call also zeroes the skipped dst rows and counts; the no-barrier one-token path builds
++// the map on every thread and passes primary only on thread 0
+ static void ggml_c2_skip_map(struct ggml_tensor * dst, const struct ggml_tensor * ids, int64_t n_as,
+-                             int64_t * matrix_row_counts, struct mmid_row_mapping * matrix_rows) {
++                             int64_t * matrix_row_counts, struct mmid_row_mapping * matrix_rows, bool primary) {
+     const struct ggml_tensor * src0 = dst->src[0];
+     const struct ggml_tensor * w    = dst->src[3];
+     const int     n_ids = ids->ne[0];
+@@ -1614,17 +1616,21 @@ static void ggml_c2_skip_map(struct ggml_tensor * dst, const struct ggml_tensor
+     if (w->type != GGML_TYPE_F32 || w->ne[0] != 1 || w->ne[1] != n_ids || w->ne[2] != n_tok || n_ids > 64 || n_as > 512) {
+         return; // unexpected layout: keep the stock map
+     }
+-    static bool init = false;
+-    if (!init) {
+-        init = true;
+-        ggml_c2_skip_sum  = ggml_c2_env("VOLLIE_SKIP_SUM");
+-        ggml_c2_skip_max  = ggml_c2_env("VOLLIE_SKIP_MAX");
+-        ggml_c2_skip_mass = ggml_c2_env("VOLLIE_SKIP_MASS");
+-        const char * mk = getenv("VOLLIE_SKIP_MINK");
+-        ggml_c2_skip_mink = mk && atoi(mk) > 1 ? atoi(mk) : 1; // the top slot is always kept
+-        if (ggml_c2_env("VOLLIE_SKIP_STATS") > 0) {
+-            atexit(ggml_c2_skip_report);
++    static atomic_bool init = false; // c2 0004: every thread may get here at once, so the read is done under a lock
++    if (!atomic_load_explicit(&init, memory_order_acquire)) {
++        ggml_critical_section_start();
++        if (!atomic_load_explicit(&init, memory_order_relaxed)) {
++            ggml_c2_skip_sum  = ggml_c2_env("VOLLIE_SKIP_SUM");
++            ggml_c2_skip_max  = ggml_c2_env("VOLLIE_SKIP_MAX");
++            ggml_c2_skip_mass = ggml_c2_env("VOLLIE_SKIP_MASS");
++            const char * mk = getenv("VOLLIE_SKIP_MINK");
++            ggml_c2_skip_mink = mk && atoi(mk) > 1 ? atoi(mk) : 1; // the top slot is always kept
++            if (ggml_c2_env("VOLLIE_SKIP_STATS") > 0) {
++                atexit(ggml_c2_skip_report);
++            }
++            atomic_store_explicit(&init, true, memory_order_release);
+         }
++        ggml_critical_section_end();
+     }
+     const float t_sum = ggml_c2_skip_sum/1000.0f, t_max = ggml_c2_skip_max/1000.0f, p_mass = ggml_c2_skip_mass/1000.0f;
+ 
+@@ -1654,7 +1660,9 @@ static void ggml_c2_skip_map(struct ggml_tensor * dst, const struct ggml_tensor
+         }
+         for (int id = 0; id < n_ids; ++id) { // same order as the stock loop
+             if (skip[id]) {
+-                memset((char *) dst->data + id*dst->nb[1] + iid1*dst->nb[2], 0, dst->ne[0]*sizeof(float));
++                if (primary) {
++                    memset((char *) dst->data + id*dst->nb[1] + iid1*dst->nb[2], 0, dst->ne[0]*sizeof(float));
++                }
+                 n_skip++;
+                 continue;
+             }
+@@ -1664,6 +1672,9 @@ static void ggml_c2_skip_map(struct ggml_tensor * dst, const struct ggml_tensor
+         }
+     }
+ 
++    if (!primary) {
++        return;
++    }
+     if (!ggml_c2_st_first) {
+         ggml_c2_st_first = src0;
+     }
+@@ -1685,6 +1696,94 @@ static void ggml_c2_skip_map(struct ggml_tensor * dst, const struct ggml_tensor
+     }
+ }
+ 
++// ---- Vollie c2 (patches/llama.cpp-c2/0004): env VOLLIE_MMID_NB=1 (unset / 0 = off): a one-token MUL_MAT_ID (gate and
++// up in decode; down has one row per slot and keeps the stock path) without its internal barrier. Every thread
++// quantizes the whole activation row into its own slot of wdata (the stock op quantizes 256-blocks of the same row
++// split across threads; Q8_K is per block, so the bytes are the same) and builds the same row map from ids itself;
++// rows are claimed in 32-row chunks from one counter per expert that thread 0 resets before the barrier in front of
++// the op (two banks by op parity, so a thread still in the previous MUL_MAT_ID never sees the next op's counters).
++// Each output row is the same vec_dot on the same bytes as in the stock op. Campaign 1: GGML_MMID=3 (device R18).
++#define GGML_C2_MMID_MAX_AS 512
++#define GGML_C2_MMID_MAX_ROWS 4096
++static int ggml_c2_mmid_nb = 0;                  // read per graph by ggml_graph_compute
++static _Thread_local int ggml_c2_mmid_seq_tl = 0; // MUL_MAT_IDs this thread has run in this graph
++static struct { atomic_int v; char pad[60]; } ggml_c2_mmid_ctr[2][GGML_C2_MMID_MAX_AS];
++
++static size_t ggml_c2_mmid_row_pad(const struct ggml_tensor * dst) {
++    const enum ggml_type vec_dot_type = type_traits_cpu[dst->src[0]->type].vec_dot_type;
++    return GGML_PAD(ggml_row_size(vec_dot_type, dst->src[1]->ne[0]), 64);
++}
++
++static bool ggml_c2_mmid_fast_ok(const struct ggml_tensor * dst, int nth, size_t wsize) {
++    const struct ggml_tensor * src0 = dst->src[0];
++    const struct ggml_tensor * src1 = dst->src[1];
++    const struct ggml_tensor * ids  = dst->src[2];
++    const enum ggml_type vec_dot_type = type_traits_cpu[src0->type].vec_dot_type;
++    return ggml_c2_mmid_nb && nth > 1 && dst->op == GGML_OP_MUL_MAT_ID &&
++           ids->ne[1] == 1 && src1->ne[1] == 1 && src1->ne[2] == 1 && src1->ne[3] == 1 &&
++           src0->ne[2] <= GGML_C2_MMID_MAX_AS && src0->ne[2]*ids->ne[0] <= GGML_C2_MMID_MAX_ROWS &&
++           src1->type == GGML_TYPE_F32 && src1->type != vec_dot_type && ggml_is_contiguous(src1) &&
++           wsize >= (size_t) nth*ggml_c2_mmid_row_pad(dst);
++}
++
++// Thread 0, before the barrier in front of MUL_MAT_ID `next`: reset the counters of the bank that op uses.
++static void ggml_c2_mmid_prepare(const struct ggml_tensor * next, int nth, size_t wsize) {
++    if (ggml_c2_mmid_fast_ok(next, nth, wsize)) {
++        const int bank = ggml_c2_mmid_seq_tl & 1; // thread 0 has run seq ops; the next one is op seq
++        for (int64_t a = 0; a < next->src[0]->ne[2]; a++) {
++            atomic_store_explicit(&ggml_c2_mmid_ctr[bank][a].v, 0, memory_order_relaxed);
++        }
++    }
++}
++
++// The stock grouping loop on local arrays (every thread alike), then 0001's skip if libllama wired the weights.
++static void ggml_c2_mmid_map(struct ggml_tensor * dst, const struct ggml_tensor * ids, int64_t n_as, int64_t * matrix_row_counts,
++                             struct mmid_row_mapping * matrix_rows, bool primary) {
++    memset(matrix_row_counts, 0, n_as*sizeof(int64_t));
++    for (int id = 0; id < ids->ne[0]; ++id) {
++        const int32_t i02 = *(const int32_t *) ((const char *) ids->data + id*ids->nb[0]);
++        assert(i02 >= 0 && i02 < n_as);
++        MMID_MATRIX_ROW(i02, matrix_row_counts[i02]) = (struct mmid_row_mapping) {id, 0};
++        matrix_row_counts[i02] += 1;
++    }
++    if (dst->src[3]) {
++        ggml_c2_skip_map(dst, ids, n_as, matrix_row_counts, matrix_rows, primary);
++    }
++}
++
++static void ggml_c2_mmid_decode(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
++    const struct ggml_tensor * src0 = dst->src[0];
++    const struct ggml_tensor * src1 = dst->src[1];
++    const struct ggml_tensor * ids  = dst->src[2];
++    const int ith = params->ith;
++    const enum ggml_type vec_dot_type = type_traits_cpu[src0->type].vec_dot_type;
++    const int64_t ne00 = src0->ne[0], ne01 = src0->ne[1], n_as = src0->ne[2];
++    const size_t  row_size = ggml_row_size(vec_dot_type, ne00);
++
++    char * my_q = (char *) params->wdata + ith*ggml_c2_mmid_row_pad(dst);
++    type_traits_cpu[vec_dot_type].from_float((const float *) src1->data, my_q, ne00);
++
++    int64_t counts[GGML_C2_MMID_MAX_AS];
++    struct mmid_row_mapping matrix_rows[GGML_C2_MMID_MAX_ROWS];
++    ggml_c2_mmid_map(dst, ids, n_as, counts, matrix_rows, ith == 0);
++
++    const int     bank   = ggml_c2_mmid_seq_tl & 1;
++    const int64_t chunk  = 32;
++    const int64_t nchunk = (ne01 + chunk - 1)/chunk;
++    for (int64_t cur_a = 0; cur_a < n_as; ++cur_a) {
++        if (counts[cur_a] == 0) {
++            continue;
++        }
++        const char * src0_cur = (const char *) src0->data + cur_a*src0->nb[2];
++        atomic_int * ctr = &ggml_c2_mmid_ctr[bank][cur_a].v;
++        for (int64_t c = atomic_fetch_add_explicit(ctr, 1, memory_order_relaxed); c < nchunk;
++                     c = atomic_fetch_add_explicit(ctr, 1, memory_order_relaxed)) {
++            ggml_compute_forward_mul_mat_id_one_chunk(dst, src0, src1, ids, cur_a, c*chunk, MIN((c + 1)*chunk, ne01), 0, counts[cur_a],
++                                                      src0_cur, matrix_rows, row_size, true, my_q);
++        }
++    }
++}
++
+ static void ggml_compute_forward_mul_mat_id(
+         const struct ggml_compute_params * params,
+               struct ggml_tensor * dst) {
+@@ -1705,6 +1804,11 @@ static void ggml_compute_forward_mul_mat_id(
+     enum ggml_type    const vec_dot_type    = type_traits_cpu[type].vec_dot_type;
+     ggml_from_float_t const from_float      = type_traits_cpu[vec_dot_type].from_float;
+ 
++    if (ggml_c2_mmid_fast_ok(dst, nth, params->wsize)) { // Vollie c2 (0004)
++        ggml_c2_mmid_decode(params, dst);
++        return;
++    }
++
+     // we don't support permuted src0 or src1
+     GGML_ASSERT(nb00 == ggml_type_size(type));
+     GGML_ASSERT(nb10 == ggml_type_size(src1->type));
+@@ -1794,7 +1898,7 @@ static void ggml_compute_forward_mul_mat_id(
+         }
+ 
+         if (dst->src[3]) {
+-            ggml_c2_skip_map(dst, ids, n_as, matrix_row_counts, matrix_rows);
++            ggml_c2_skip_map(dst, ids, n_as, matrix_row_counts, matrix_rows, true);
+         }
+     }
+ 
+@@ -3350,6 +3454,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+ #else
+     GGML_PRINT_DEBUG("thread #%d compute-start cplan %p last-graph %d\n", state->ith, (const void *)cplan, state->last_graph);
+ #endif
++    ggml_c2_mmid_seq_tl = 0; // Vollie c2 (0004)
+ 
+     for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
+         struct ggml_tensor * node = cgraph->nodes[node_n];
+@@ -3396,7 +3501,23 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+             ggml_c2_g_cur_tiny     += tiny;
+             ggml_c2_g_cur_barriers += barrier;
+         }
++        if (node->op == GGML_OP_MUL_MAT_ID) {
++            ggml_c2_mmid_seq_tl++; // Vollie c2 (0004): every thread runs every MUL_MAT_ID, so all count alike
++        }
+         if (barrier) {
++            if (state->ith == 0 && ggml_c2_mmid_nb) {
++                // Vollie c2 (0004): the next node that runs, if a one-token MUL_MAT_ID, gets its counters reset here
++                for (int j = node_n + 1; j < cgraph->n_nodes; j++) {
++                    const struct ggml_tensor * next = cgraph->nodes[j];
++                    if (ggml_op_is_empty(next->op) || (next->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
++                        continue;
++                    }
++                    if (next->op == GGML_OP_MUL_MAT_ID) {
++                        ggml_c2_mmid_prepare(next, params.nth, cplan->work_size);
++                    }
++                    break;
++                }
++            }
+             ggml_barrier(state->threadpool);
+         }
+     }
+@@ -3657,6 +3778,10 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+         const char * q = getenv("VOLLIE_Q3K_X4");
+         ggml_c2_q3k_x4 = q && (atoi(q) == 1 || atoi(q) == 2) ? atoi(q) : 0;
+     }
++    {   // Vollie c2 (0004)
++        const char * m = getenv("VOLLIE_MMID_NB");
++        ggml_c2_mmid_nb = m && atoi(m) == 1;
++    }
+ 
+     bool disposable_threadpool = false;
+ 

@@ -1,0 +1,95 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -197,6 +197,7 @@ typedef void * thread_ret_t;
+ 
+ #include <sys/types.h>
+ #include <sys/stat.h>
++#include <sys/mman.h> // Vollie c2 (0006): madvise
+ #include <unistd.h>
+ 
+ #endif
+@@ -1876,6 +1877,64 @@ static void ggml_c2_mmid_decode_fused(const struct ggml_compute_params * params,
+     }
+ }
+ 
++// ---- Vollie c2 (patches/llama.cpp-c2/0006): env VOLLIE_EXPERT_IO=1 (unset / 0 = off): expert read-ahead. Before the
++// first MUL_MAT_ID of a layer (the first node within 32 that uses this ids tensor) thread 0 asks the kernel to read the
++// routed experts' slices of every sibling MUL_MAT_ID (same ids, the next 32 nodes) with madvise(MADV_WILLNEED), so
++// mmapped experts are requested together instead of faulting in page by page on the compute threads. In a one-token
++// graph experts that 0001's skip leaves without a row are not advised. Advice only: no data or result changes.
++// Campaign 1: GGML_EXPERT_IO bit 1 (device R18, R26).
++static int ggml_c2_expert_io = 0; // read per graph by ggml_graph_compute
++
++static void ggml_c2_expert_prefetch(const struct ggml_cgraph * cgraph, int node_n) {
++#if !defined(_WIN32)
++    struct ggml_tensor * node = cgraph->nodes[node_n];
++    const struct ggml_tensor * ids = node->src[2];
++    for (int j = node_n - 1; j >= 0 && j >= node_n - 32; j--) {
++        if (cgraph->nodes[j]->op == GGML_OP_MUL_MAT_ID && cgraph->nodes[j]->src[2] == ids) {
++            return; // an earlier sibling already covered this layer
++        }
++    }
++    const int64_t n_as = node->src[0]->ne[2];
++    if (n_as > GGML_C2_MMID_MAX_AS || ids->type != GGML_TYPE_I32 || n_as*ids->ne[0] > GGML_C2_MMID_MAX_ROWS) {
++        return;
++    }
++    int64_t need[GGML_C2_MMID_MAX_AS] = { 0 };
++    if (ids->ne[1] == 1) {
++        struct mmid_row_mapping matrix_rows[GGML_C2_MMID_MAX_ROWS];
++        ggml_c2_mmid_map(node, ids, n_as, need, matrix_rows, false); // the op's own map, 0001's skip applied; writes nothing
++    } else {
++        for (int64_t t = 0; t < ids->ne[1]; t++) {
++            for (int64_t k = 0; k < ids->ne[0]; k++) {
++                const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + k*ids->nb[0]);
++                if (e >= 0 && e < n_as) {
++                    need[e] = 1;
++                }
++            }
++        }
++    }
++    static uintptr_t page = 0;
++    if (!page) {
++        page = (uintptr_t) sysconf(_SC_PAGESIZE);
++    }
++    for (int j = node_n; j < cgraph->n_nodes && j < node_n + 32; j++) {
++        const struct ggml_tensor * n = cgraph->nodes[j];
++        if (n->op != GGML_OP_MUL_MAT_ID || n->src[2] != ids || n->src[0]->data == NULL) {
++            continue;
++        }
++        const struct ggml_tensor * w = n->src[0];
++        for (int64_t e = 0; e < n_as && e < w->ne[2]; e++) {
++            if (need[e]) {
++                const uintptr_t b = ((uintptr_t) w->data + e*w->nb[2]) & ~(page - 1);
++                const uintptr_t x = ((uintptr_t) w->data + (e + 1)*w->nb[2] + page - 1) & ~(page - 1);
++                madvise((void *) b, x - b, MADV_WILLNEED);
++            }
++        }
++    }
++#else
++    GGML_UNUSED(cgraph); GGML_UNUSED(node_n);
++#endif
++}
++
+ static void ggml_compute_forward_mul_mat_id(
+         const struct ggml_compute_params * params,
+               struct ggml_tensor * dst) {
+@@ -3574,6 +3633,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+             if (tiny) {
+                 p.nth = 1;
+             }
++            if (node->op == GGML_OP_MUL_MAT_ID && ggml_c2_expert_io && state->ith == 0) {
++                ggml_c2_expert_prefetch(cgraph, node_n); // Vollie c2 (0006)
++            }
+             if (node->op == GGML_OP_MUL_MAT_ID && ggml_c2_mmid_fuse_ok(cgraph, node_n, cplan, params.nth)) {
+                 ggml_c2_mmid_decode_fused(&p, node, cgraph->nodes[node_n + 2]); // Vollie c2 (0005): counts as one MUL_MAT_ID
+                 n_fused = 2;
+@@ -3880,6 +3942,8 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+         ggml_c2_mmid_nb = m && atoi(m) == 1;
+         const char * f = getenv("VOLLIE_MMID_FUSE"); // Vollie c2 (0005)
+         ggml_c2_mmid_fuse = f && atoi(f) == 1;
++        const char * io = getenv("VOLLIE_EXPERT_IO"); // Vollie c2 (0006)
++        ggml_c2_expert_io = io && atoi(io) == 1;
+     }
+ 
+     bool disposable_threadpool = false;

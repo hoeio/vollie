@@ -1,0 +1,129 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1784,6 +1784,98 @@ static void ggml_c2_mmid_decode(const struct ggml_compute_params * params, struc
+     }
+ }
+ 
++// ---- Vollie c2 (patches/llama.cpp-c2/0005): env VOLLIE_MMID_FUSE=1 (unset / 0 = off; works only with VOLLIE_MMID_NB=1):
++// nodes j, j+1 = the one-token up and gate MUL_MAT_IDs of one expert layer (same activation, ids, weight type and shape,
++// both on the 0004 path; either order) and j+2 = their SWIGLU (split form: src[0] gate, src[1] up), which alone reads
++// them, run as one op: one activation quantize, one map, one counter per expert. Per claimed 32-row chunk the gate and up
++// rows are written into their own tensors exactly as the two ops write them, then ggml_vec_swiglu_f32 runs over that
++// chunk of each routed slot's row. Bit-identical: same vec_dot per row, and every chunk boundary is a multiple of 16
++// floats with ne01 % 16 == 0, so swiglu takes the same SIMD path per element as on the whole row. With 0001's skip
++// (src[3] wired) thread 0 zeroes the skipped gate and up rows as each op would and runs the same swiglu on those rows.
++// MUL_MAT_ID 3 -> 2 and GLU 1 -> 0 per layer. Campaign 1: GGML_MMID_FUSE (device R47/R48).
++static int ggml_c2_mmid_fuse = 0; // read per graph by ggml_graph_compute
++static bool ggml_cpu_disable_fusion; // defined below
++
++static bool ggml_c2_mmid_fuse_ok(const struct ggml_cgraph * cgraph, int j, const struct ggml_cplan * cplan, int nth) {
++    if (!ggml_c2_mmid_fuse || !ggml_c2_mmid_nb || ggml_cpu_disable_fusion || cplan->use_ref || j + 2 >= cgraph->n_nodes) {
++        return false;
++    }
++    const struct ggml_tensor * a = cgraph->nodes[j], * b = cgraph->nodes[j + 1], * g = cgraph->nodes[j + 2];
++    const enum ggml_op ops[] = { GGML_OP_MUL_MAT_ID, GGML_OP_MUL_MAT_ID, GGML_OP_GLU };
++    const int outs[] = { j + 2 };
++    if (a->op != GGML_OP_MUL_MAT_ID || b->op != GGML_OP_MUL_MAT_ID || g->op != GGML_OP_GLU ||
++        ggml_get_glu_op(g) != GGML_GLU_OP_SWIGLU || !((g->src[0] == a && g->src[1] == b) || (g->src[0] == b && g->src[1] == a)) ||
++        !ggml_can_fuse_subgraph(cgraph, j, 3, ops, outs, 1)) {
++        return false;
++    }
++    const int64_t ne01 = a->src[0]->ne[1];
++    return a->src[1] == b->src[1] && a->src[2] == b->src[2] && a->src[3] == b->src[3] && a->src[0]->type == b->src[0]->type &&
++           ggml_are_same_shape(a->src[0], b->src[0]) && ggml_are_same_stride(a->src[0], b->src[0]) &&
++           ggml_are_same_shape(a, b) && ggml_are_same_shape(a, g) && ggml_are_same_stride(a, b) && ggml_are_same_stride(a, g) &&
++           a->type == GGML_TYPE_F32 && b->type == GGML_TYPE_F32 && g->type == GGML_TYPE_F32 &&
++           a->nb[0] == sizeof(float) && a->ne[0] == ne01 && ne01 % 16 == 0 &&
++           ggml_c2_mmid_fast_ok(a, nth, cplan->work_size) && ggml_c2_mmid_fast_ok(b, nth, cplan->work_size);
++}
++
++// first = nodes[j] (its map call comes first, as in the graph), glu = nodes[j + 2]
++static void ggml_c2_mmid_decode_fused(const struct ggml_compute_params * params, struct ggml_tensor * first, struct ggml_tensor * glu) {
++    struct ggml_tensor * gate = glu->src[0], * up = glu->src[1];
++    struct ggml_tensor * second = first == gate ? up : gate;
++    const struct ggml_tensor * src1 = gate->src[1], * ids = gate->src[2];
++    const struct ggml_tensor * w_g = gate->src[0], * w_u = up->src[0];
++    const int ith = params->ith;
++    const enum ggml_type vec_dot_type = type_traits_cpu[w_g->type].vec_dot_type;
++    const int64_t ne00 = w_g->ne[0], ne01 = w_g->ne[1], n_as = w_g->ne[2];
++    const size_t  row_size = ggml_row_size(vec_dot_type, ne00);
++
++    char * my_q = (char *) params->wdata + ith*ggml_c2_mmid_row_pad(gate);
++    type_traits_cpu[vec_dot_type].from_float((const float *) src1->data, my_q, ne00);
++
++    int64_t counts[GGML_C2_MMID_MAX_AS];
++    struct mmid_row_mapping matrix_rows[GGML_C2_MMID_MAX_ROWS];
++    ggml_c2_mmid_map(first, ids, n_as, counts, matrix_rows, ith == 0);
++    if (ith == 0 && first->src[3]) {
++        ggml_c2_mmid_map(second, ids, n_as, counts, matrix_rows, true); // the same map again: zeroes the other op's skipped rows
++        bool kept[GGML_C2_MMID_MAX_ROWS] = { false };
++        for (int64_t a = 0; a < n_as; a++) {
++            for (int64_t r = 0; r < counts[a]; r++) {
++                kept[MMID_MATRIX_ROW(a, r).i1] = true;
++            }
++        }
++        for (int64_t sl = 0; sl < ids->ne[0]; sl++) {
++            if (!kept[sl]) {
++                const size_t o = sl*glu->nb[1];
++                ggml_vec_swiglu_f32((int) ne01, (float *) ((char *) glu->data + o), (const float *) ((const char *) gate->data + o),
++                                    (const float *) ((const char *) up->data + o));
++            }
++        }
++    }
++
++    const int     bank   = ggml_c2_mmid_seq_tl & 1;
++    const int64_t chunk  = 32;
++    const int64_t nchunk = (ne01 + chunk - 1)/chunk;
++    for (int64_t cur_a = 0; cur_a < n_as; ++cur_a) {
++        if (counts[cur_a] == 0) {
++            continue;
++        }
++        const char * g_cur = (const char *) w_g->data + cur_a*w_g->nb[2];
++        const char * u_cur = (const char *) w_u->data + cur_a*w_u->nb[2];
++        atomic_int * ctr = &ggml_c2_mmid_ctr[bank][cur_a].v;
++        for (int64_t c = atomic_fetch_add_explicit(ctr, 1, memory_order_relaxed); c < nchunk;
++                     c = atomic_fetch_add_explicit(ctr, 1, memory_order_relaxed)) {
++            const int64_t r0 = c*chunk, r1 = MIN((c + 1)*chunk, ne01);
++            ggml_compute_forward_mul_mat_id_one_chunk(gate, w_g, src1, ids, cur_a, r0, r1, 0, counts[cur_a], g_cur, matrix_rows, row_size, true, my_q);
++            ggml_compute_forward_mul_mat_id_one_chunk(up,   w_u, src1, ids, cur_a, r0, r1, 0, counts[cur_a], u_cur, matrix_rows, row_size, true, my_q);
++            for (int64_t ir1 = 0; ir1 < counts[cur_a]; ir1++) {
++                const struct mmid_row_mapping m = MMID_MATRIX_ROW(cur_a, ir1);
++                const size_t o = m.i1*glu->nb[1] + m.i2*glu->nb[2] + r0*sizeof(float);
++                ggml_vec_swiglu_f32((int) (r1 - r0), (float *) ((char *) glu->data + o), (const float *) ((const char *) gate->data + o),
++                                    (const float *) ((const char *) up->data + o));
++            }
++        }
++    }
++}
++
+ static void ggml_compute_forward_mul_mat_id(
+         const struct ggml_compute_params * params,
+               struct ggml_tensor * dst) {
+@@ -3482,9 +3574,14 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+             if (tiny) {
+                 p.nth = 1;
+             }
+-            n_fused = ggml_cpu_try_fuse_ops(cgraph, node_n, &p, cplan);
+-            if (n_fused == 0) {
+-                ggml_compute_forward(&p, node);
++            if (node->op == GGML_OP_MUL_MAT_ID && ggml_c2_mmid_fuse_ok(cgraph, node_n, cplan, params.nth)) {
++                ggml_c2_mmid_decode_fused(&p, node, cgraph->nodes[node_n + 2]); // Vollie c2 (0005): counts as one MUL_MAT_ID
++                n_fused = 2;
++            } else {
++                n_fused = ggml_cpu_try_fuse_ops(cgraph, node_n, &p, cplan);
++                if (n_fused == 0) {
++                    ggml_compute_forward(&p, node);
++                }
+             }
+         }
+         node_n += n_fused;
+@@ -3781,6 +3878,8 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+     {   // Vollie c2 (0004)
+         const char * m = getenv("VOLLIE_MMID_NB");
+         ggml_c2_mmid_nb = m && atoi(m) == 1;
++        const char * f = getenv("VOLLIE_MMID_FUSE"); // Vollie c2 (0005)
++        ggml_c2_mmid_fuse = f && atoi(f) == 1;
+     }
+ 
+     bool disposable_threadpool = false;
