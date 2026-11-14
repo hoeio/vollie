@@ -42,6 +42,25 @@ an update over r17 and keeps the downloaded model. Design, run list and report s
 - Reports over 300,000 characters are copied to the clipboard as `c2gz:` + base64(gzip(JSON)); the file is plain JSON.
 - `test/kit_lines_test.dart`: line parsing (`flutter test test/kit_lines_test.dart`).
 
+## 0003-kit-r19.patch (on top of 0002)
+
+Kit r19 (version 1.19.0+19), campaign 1's runtime on OLMoE. Same package and debug key: it installs as an update over
+r17/r18 and keeps the model. Native side: llama.cpp 620d2225c + `patches/llama.cpp/0001-0003` (campaign 1's series as
+r16 shipped it), built with `tools/c2_build_kit.sh <tree> lab/app-c2 patches/llama.cpp`. Design, rows, schema:
+`campaigns/02-25toks-5pct/reports/memo-14-kit-r19.md`.
+
+- Run list: `cold`, then rows `c1_off` / `c1_ship` / `c1_ship_io` (official 32) in two passes (3 reps, then 2 reps
+  plus one profiled run per row), all on the same CPU module, repack on.
+- Cool-down gate rewritten: thermal reads are spaced at least 1.1 s apart (`DeviceProfile.thermal`), a null reading
+  is read again and never counts as cool, the wait is 10 min before the kit's first timed run and 90 s otherwise, and
+  every row keeps the headroom series.
+- `GGML_REPACK_RELEASE=1` is set for the kit's own model load (forced once at the start), then unset.
+- Residency per run: page-cache bytes of the model file (mincore over the app's own read-only mapping), split into the
+  routed-expert tensors and the rest, before and after; clock caps (`scaling_max_freq` of policies 4 and 7).
+- Campaign 1's per-token line (`cpu-prof ab= tok=`, r16 format) is kept as a compact tuple (`tok_format` `c1`,
+  `tok_fields_c1`); profiled runs keep the full lines.
+- `test/kit_lines_test.dart`: campaign 1's line, including a host line with `mhz=-1/-1`.
+
 ## Rebuild
 
 ```sh

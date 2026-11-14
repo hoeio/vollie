@@ -14,3 +14,4 @@ see [../../README.md](../../README.md).
 - [R52 amendment 1](R52-amendment-1.md): the baseline may be taken from kit r18.
 - [R54](R54-olmoe-lever-kit-device.md): OLMoE levers on the phone, kit r18.
 - [R54 amendment 1](R54-amendment-1.md): kit r18 withdrawn before any run.
+- [R55](R55-olmoe-c1-runtime-residency-device.md): OLMoE on campaign 1's runtime with residency measured, kit r19.

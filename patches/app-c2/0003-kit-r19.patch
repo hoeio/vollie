@@ -1,0 +1,425 @@
+diff --git a/lib/device.dart b/lib/device.dart
+index 7cd1545..7f50ef5 100644
+--- a/lib/device.dart
++++ b/lib/device.dart
+@@ -80,7 +80,12 @@ class DeviceProfile {
+   /// getThermalHeadroom's forecast 30 s ahead (1.0 = severe throttling;
+   /// null before Android 11 or when the OS has no reading), plus the
+   /// headroom this phone calls THERMAL_STATUS_MODERATE (Android 15+, else null).
++  /// Kit r19: calls are spaced at least [_thermalGap] apart, because getThermalHeadroom returns NaN (null here) when
++  /// polled more than once a second; r17/r18's gate read that null as "cool" (memo-13 §4).
+   static Future<({int status, double? headroom, double? moderateAt})> thermal() async {
++    final since = _lastThermal == null ? null : DateTime.now().difference(_lastThermal!);
++    if (since != null && since < _thermalGap) await Future<void>.delayed(_thermalGap - since);
++    _lastThermal = DateTime.now();
+     try {
+       final m = await _channel.invokeMapMethod<String, Object?>('thermal') ?? const {};
+       return (
+@@ -93,6 +98,60 @@ class DeviceProfile {
+     }
+   }
+ 
++  static DateTime? _lastThermal;
++  static const _thermalGap = Duration(milliseconds: 1100);
++
++  /// Kit r19: bytes of [path] in the page cache (mincore over a private read-only mapping of the file; mapped or not
++  /// by llama.cpp), in total and inside [ranges] ([start, end) byte pairs, flat). Reads no data. Null off Android or
++  /// on any error. mincore reports file pages only for a file the process owns or may write (the model is the app's).
++  static ({int total, int inRanges, int pages})? pageCacheBytes(String path, List<int> ranges) {
++    final libc = _libc;
++    if (libc == null) return null;
++    final open = libc.lookupFunction<Int32 Function(Pointer<Uint8>, Int32), int Function(Pointer<Uint8>, int)>('open');
++    final close = libc.lookupFunction<Int32 Function(Int32), int Function(int)>('close');
++    final mmap = libc.lookupFunction<Pointer<Void> Function(Pointer<Void>, IntPtr, Int32, Int32, Int32, IntPtr),
++        Pointer<Void> Function(Pointer<Void>, int, int, int, int, int)>('mmap');
++    final munmap = libc.lookupFunction<Int32 Function(Pointer<Void>, IntPtr), int Function(Pointer<Void>, int)>('munmap');
++    final mincore = libc.lookupFunction<Int32 Function(Pointer<Void>, IntPtr, Pointer<Uint8>),
++        int Function(Pointer<Void>, int, Pointer<Uint8>)>('mincore');
++    final pageSize = libc.lookupFunction<Int32 Function(), int Function()>('getpagesize')();
++    final free = libc.lookupFunction<Void Function(Pointer<Uint8>), void Function(Pointer<Uint8>)>('free');
++    final int len;
++    try {
++      len = File(path).lengthSync();
++    } catch (_) {
++      return null;
++    }
++    final name = _cString(path);
++    final fd = open(name, 0 /* O_RDONLY */);
++    free(name);
++    if (fd < 0) return null;
++    final addr = mmap(nullptr, len, 1 /* PROT_READ */, 1 /* MAP_SHARED */, fd, 0);
++    close(fd);
++    if (addr.address == -1 || addr.address == 0) return null;
++    final n = (len + pageSize - 1) ~/ pageSize;
++    final vec = _malloc!(n);
++    try {
++      if (mincore(addr, len, vec) != 0) return null;
++      final v = vec.asTypedList(n);
++      var total = 0;
++      for (var i = 0; i < n; i++) {
++        total += v[i] & 1;
++      }
++      var inR = 0;
++      for (var r = 0; r + 1 < ranges.length; r += 2) {
++        final end = math.min((ranges[r + 1] + pageSize - 1) ~/ pageSize, n);
++        for (var i = ranges[r] ~/ pageSize; i < end; i++) {
++          inR += v[i] & 1;
++        }
++      }
++      return (total: total * pageSize, inRanges: inR * pageSize, pages: n);
++    } finally {
++      free(vec);
++      munmap(addr, len);
++    }
++  }
++
+   /// "8 GB" phones report ~7.3 GB to apps, "6 GB" ones ~5.6 GB.
+   bool get roomyRam => totalRam >= 7000000000;
+   bool get lowRam => totalRam > 0 && totalRam < 5000000000;
+diff --git a/lib/research.dart b/lib/research.dart
+index b64480c..e2d3e42 100644
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -1,68 +1,97 @@
+ part of 'assistant.dart';
+ 
+-/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-12-kit-r18.md).
++/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-14-kit-r19.md).
+ /// kind: 'official32' = the benchmark (_benchPrompt, 32 tokens, greedy, the app's streaming);
+ ///       'profiled32' = the same with one stream chunk per token, every chunk's arrival time kept;
+ ///       'abba'       = story [Research.abTokens] tokens, one chunk per token, the hot-only cool-down gate (r15's
+-///                      rule for A/B stories: both sides share the heat), for an in-run A/B (VOLLIE_AB).
++///                      rule for A/B stories: both sides share the heat), for an in-run A/B.
+ /// env: set before the run, every other known knob unset. repack: weight repack at load (a change reloads the model).
+ /// threads: 0 = the app's pick. reps: repetitions in a row. pause: the kit's idle seconds after the cool-down gate.
++/// A spec id may appear more than once in the list; its runs are numbered on (rep) across the list.
+ typedef RunSpec = ({String id, String group, String kind, Map<String, String> env, bool repack, int threads, int reps, int pause});
+ 
+-/// Research kit r18: the lever kit. Runtime: llama.cpp 620d2225c + patches/llama.cpp-c2/0001-0009 (every knob unset
+-/// unless a spec sets it). One tap, one JSON report (clipboard and a file next to the model).
++/// Research kit r19: campaign 1's runtime on OLMoE. Runtime: llama.cpp 620d2225c + patches/llama.cpp/0001-0003
++/// (campaign 1's series as r16 shipped it; its compiled defaults on unless a row sets them to 0). One tap, one JSON
++/// report (clipboard and a file next to the model).
+ extension Research on Assistant {
+-  static const kit = 'r18';
+-  static const app = '1.18.0+18';
++  static const kit = 'r19';
++  static const app = '1.19.0+19';
+ 
+-  /// Every official run waits for the cool-down gate (headroom < 0.65, at most 90 s), as r15-r17.
++  /// Every official run waits for the cool-down gate: headroom < [Assistant.coolHeadroom] (0.65), at most
++  /// [gateWait] (90 s), before the kit's first timed run at most [firstGateWait] (10 min).
+   static const coolOfficial = true;
++  static const gateWait = Duration(seconds: 90), firstGateWait = Duration(minutes: 10);
+ 
+   /// false: every run re-reads the whole prompt (no reuse of the previous identical prompt's KV cache), as r17.
+   static const reusePrefix = false;
+ 
+   static const _story = 'Write a short story about a lighthouse.';
+ 
+-  /// Tokens per A/B generation: 16 warm-up + 47 blocks of 8 (host: OLMoE writes 400 greedy tokens without stopping).
++  /// Tokens per A/B generation (no A/B in r19).
+   static const abTokens = 400;
+ 
+-  /// The two-stage head's exact rows (R53 may change it: one constant).
+-  static const head2K = '1024';
++  /// Set before the kit's own model load (and every reload), unset again after it: campaign 1's GGML_REPACK_RELEASE
++  /// pages out the repacked tensors' mmapped sources at load. A load-time knob, so it holds for every row (memo-14).
++  static const loadEnv = {'GGML_REPACK_RELEASE': '1'};
+ 
+-  // Building blocks of the run list.
+-  static const _stack = {
+-    'VOLLIE_TINY_OP': '65536',
+-    'VOLLIE_Q3K_X4': '2',
+-    'VOLLIE_MMID_NB': '1',
+-    'VOLLIE_MMID_FUSE': '1',
+-    'VOLLIE_EXPERT_IO': '1',
+-    'VOLLIE_SAMPLER_BYPASS': '1',
++  // Building blocks of the run list (campaign 1's knob names; memo-14 §2).
++  /// (a) Every default-on knob of 0001 off (R25's "vanilla" set): the stock arithmetic and the stock op paths.
++  static const _c1Off = {
++    'GGML_TINY_OP': '0', 'GGML_MMID': '0', 'GGML_Q3K_X4': '0', 'GGML_Q3K_VEC': '0', 'GGML_Q3K_ILP': '0',
++    'GGML_Q3K_KERN': '0', 'GGML_MMID_FUSE': '0', 'GGML_MMID_CHUNK2': '0', 'GGML_SSM_INPLACE': '0', 'GGML_CONV_RING': '0',
++    'GGML_EXPERT_SKIP': '0', 'GGML_EXPERT_IO': '0',
+   };
+-  static const _prof = {'VOLLIE_PROF': '1', 'VOLLIE_GRAPH_STATS': '1'};
+-  static const _ab = {..._prof, 'VOLLIE_AB_WARM': '16', 'VOLLIE_AB_BLOCK': '8'};
+-  static const _skip = {'VOLLIE_SKIP_MASS': '900', 'VOLLIE_SKIP_STATS': '1', 'VOLLIE_SKIP_WIRE': '1'};
+-  static const _skipStats = {'VOLLIE_SKIP_STATS': '1', 'VOLLIE_SKIP_WIRE': '1'};
++  /// (b) r16's shipping settings without Granite's numerics (no GGML_EXPERT_SKIP, no GGML_HEAD2): the compiled
++  /// defaults plus the app's tiny-op 262,144, expert read-ahead 1 and the sampler fast path.
++  static const _c1Ship = {'GGML_TINY_OP': '262144', 'GGML_EXPERT_IO': '1', 'VOLLIE_SAMPLER_BYPASS': '1'};
++  /// (c) (b) plus the next-layer guess (EXPERT_IO 5 = 1 + 4, campaign 1's best: 12.0 vs 10.6 tok/s).
++  static const _c1ShipIo = {'GGML_TINY_OP': '262144', 'GGML_EXPERT_IO': '5', 'VOLLIE_SAMPLER_BYPASS': '1'};
++  /// campaign 1's per-token lines (r16): one `cpu-prof ab= tok=` line per decode token under an A/A label.
++  static const _profOff = {'GGML_CPU_PROF': '1', 'GGML_CPU_AB_TOKEN': '1', 'GGML_CPU_AB': 'knob:MMID_FUSE+CHUNK2:0:0'};
++  static const _profOn = {'GGML_CPU_PROF': '1', 'GGML_CPU_AB_TOKEN': '1', 'GGML_CPU_AB': 'knob:MMID_FUSE+CHUNK2:1:1'};
+ 
+   /// THE RUN LIST, in order. The lead edits only this (from the pre-registration); one line per spec.
++  /// a, b, c, then a, b, c again with the remaining reps, so heat and cache drift hit every row.
+   static const List<RunSpec> runs = [
+-    (id: 'cold', group: 'cold', kind: 'official32', env: {}, repack: true, threads: 0, reps: 1, pause: 0),
+-    (id: 'stock', group: 'stock', kind: 'official32', env: {}, repack: true, threads: 0, reps: 3, pause: 0),
+-    (id: 'stack', group: 'stack', kind: 'official32', env: _stack, repack: true, threads: 0, reps: 5, pause: 0),
+-    (id: 'stack_prof', group: 'stack_prof', kind: 'profiled32', env: {..._stack, ..._prof}, repack: true, threads: 0, reps: 2, pause: 0),
+-    (id: 'ab_tiny', group: 'ab', kind: 'abba', env: {..._stack, ..._ab, 'VOLLIE_AB': 'knob:TINY_OP:0:65536'}, repack: true, threads: 0, reps: 3, pause: 0),
+-    (id: 'ab_x4', group: 'ab', kind: 'abba', env: {..._stack, ..._ab, 'VOLLIE_AB': 'knob:Q3K_X4:0:2'}, repack: true, threads: 0, reps: 3, pause: 0),
+-    (id: 'ab_x4_kernel', group: 'ab', kind: 'abba', env: {..._stack, ..._ab, 'VOLLIE_AB': 'knob:Q3K_X4:1:2'}, repack: true, threads: 0, reps: 3, pause: 0),
+-    (id: 'ab_nb', group: 'ab', kind: 'abba', env: {..._stack, ..._ab, 'VOLLIE_AB': 'knob:MMID_NB:0:1'}, repack: true, threads: 0, reps: 3, pause: 0),
+-    (id: 'ab_fuse', group: 'ab', kind: 'abba', env: {..._stack, ..._ab, 'VOLLIE_AB': 'knob:MMID_FUSE:0:1'}, repack: true, threads: 0, reps: 3, pause: 0),
+-    (id: 'ab_io', group: 'ab', kind: 'abba', env: {..._stack, ..._ab, 'VOLLIE_AB': 'knob:EXPERT_IO:0:1'}, repack: true, threads: 0, reps: 3, pause: 0),
+-    (id: 'ab_sampler', group: 'ab', kind: 'abba', env: {..._stack, ..._ab, 'VOLLIE_AB': 'knob:SAMPLER_BYPASS:0:1'}, repack: true, threads: 0, reps: 3, pause: 0),
+-    (id: 'skip', group: 'skip', kind: 'official32', env: {..._stack, ..._skip}, repack: true, threads: 0, reps: 5, pause: 0),
+-    (id: 'ab_skip', group: 'ab', kind: 'abba', env: {..._stack, ..._skipStats, ..._ab, 'VOLLIE_AB': 'knob:SKIP_MASS:0:900'}, repack: true, threads: 0, reps: 3, pause: 0),
+-    (id: 'ab_head2', group: 'ab', kind: 'abba', env: {..._stack, ..._skip, ..._ab, 'VOLLIE_AB': 'knob:HEAD2:0:$head2K'}, repack: true, threads: 0, reps: 3, pause: 0),
+-    (id: 'package', group: 'package', kind: 'official32', env: {..._stack, ..._skip, 'VOLLIE_HEAD2': head2K}, repack: true, threads: 0, reps: 5, pause: 0),
+-    (id: 'norepack', group: 'norepack', kind: 'official32', env: _stack, repack: false, threads: 0, reps: 2, pause: 0),
++    (id: 'cold', group: 'cold', kind: 'official32', env: _c1Off, repack: true, threads: 0, reps: 1, pause: 0),
++    (id: 'c1_off', group: 'c1_off', kind: 'official32', env: _c1Off, repack: true, threads: 0, reps: 3, pause: 0),
++    (id: 'c1_ship', group: 'c1_ship', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 3, pause: 0),
++    (id: 'c1_ship_io', group: 'c1_ship_io', kind: 'official32', env: _c1ShipIo, repack: true, threads: 0, reps: 3, pause: 0),
++    (id: 'c1_off', group: 'c1_off', kind: 'official32', env: _c1Off, repack: true, threads: 0, reps: 2, pause: 0),
++    (id: 'c1_off_prof', group: 'c1_off_prof', kind: 'profiled32', env: {..._c1Off, ..._profOff}, repack: true, threads: 0, reps: 1, pause: 0),
++    (id: 'c1_ship', group: 'c1_ship', kind: 'official32', env: _c1Ship, repack: true, threads: 0, reps: 2, pause: 0),
++    (id: 'c1_ship_prof', group: 'c1_ship_prof', kind: 'profiled32', env: {..._c1Ship, ..._profOn}, repack: true, threads: 0, reps: 1, pause: 0),
++    (id: 'c1_ship_io', group: 'c1_ship_io', kind: 'official32', env: _c1ShipIo, repack: true, threads: 0, reps: 2, pause: 0),
++    (id: 'c1_ship_io_prof', group: 'c1_ship_io_prof', kind: 'profiled32', env: {..._c1ShipIo, ..._profOn}, repack: true, threads: 0, reps: 1, pause: 0),
+   ];
+ 
++  /// olmoe-Mi.gguf's routed-expert tensors as [start, end) byte ranges (48 tensors in 32 runs; 2,768,240,640 B), from
++  /// the frozen file's tensor table; the residency counter splits the page cache into experts and the rest.
++  static const expertRanges = <int>[
++    153712832, 269056192, 269588672, 327260352, 336722112, 452065472, 452597952, 510269632, 519731392, 635074752,
++    635607232, 693278912, 702740672, 818084032, 818616512, 876288192, 885749952, 1001093312, 1001625792,
++    1059297472, 1068759232, 1184102592, 1184635072, 1242306752, 1251768512, 1367111872, 1367644352, 1425316032,
++    1434777792, 1550121152, 1550653632, 1608325312, 1617787072, 1733130432, 1733662912, 1791334592, 1800796352,
++    1916139712, 1916672192, 1974343872, 1983805632, 2099148992, 2099681472, 2157353152, 2166814912, 2282158272,
++    2282690752, 2340362432, 2349824192, 2465167552, 2465700032, 2523371712, 2532833472, 2648176832, 2648709312,
++    2706380992, 2715842752, 2831186112, 2831718592, 2889390272, 2898852032, 3014195392, 3014727872, 3072399552,
++  ];
++
++  /// Page-cache residency of the model file now, MB (experts / rest / total) and the ms the count took.
++  static Map<String, Object?>? _residency(String path) {
++    final t0 = DateTime.now();
++    final r = DeviceProfile.pageCacheBytes(path, expertRanges);
++    if (r == null) return null;
++    return {
++      'experts_mb': r.inRanges ~/ 1000000, 'rest_mb': (r.total - r.inRanges) ~/ 1000000, 'total_mb': r.total ~/ 1000000,
++      'ms': DateTime.now().difference(t0).inMilliseconds,
++    };
++  }
++
++  /// The big cores' clock caps (scaling_max_freq of policies 4 and 7, MHz): a thermal cap shows here.
++  static String _caps() =>
++      'cap=${[4, 7].map((p) => (int.tryParse(DeviceProfile.sysRead('/sys/devices/system/cpu/cpufreq/policy$p/scaling_max_freq')) ?? 0) ~/ 1000).join('/')}';
++
+   /// Set for every run and every load: the runtime's lines go to stderr (the kit's log file), whatever the native logger.
+   static const _always = {'VOLLIE_LINES': 'stderr'};
+ 
+@@ -124,18 +153,35 @@ extension Research on Assistant {
+     'skipped', 'pairs', 'head', 'router', 'mm', 'mmid', 'attn', 'other', 'wait',
+   ];
+ 
++  // Kit r19: campaign 1's per-token line (0001, GGML_CPU_AB_TOKEN=1; r16's format), unanchored. No run= id: such
++  // lines go to the row being measured.
++  static final _tokC1Re = RegExp(r'cpu-prof ab=([AB]) tok=(\d+) us/token=(\d+) head=(\d+) router=(\d+) majflt=(\d+) '
++      r'minflt=(\d+) mhz=(-?\d+)/(-?\d+) nodes=(\d+) barriers=(\d+) kern=(\d+) fuse=(\d+) chunk2=(\d+) \|');
++
++  /// Names of the compact per-token tuple of campaign 1's line ([_tokC1Re] groups 1-14); rows carry tok_format 'c1'.
++  static const tokFieldsC1 = [
++    'ab', 'tok', 'us', 'head', 'router', 'majflt', 'minflt', 'mhz4', 'mhz7', 'nodes', 'barriers', 'kern', 'fuse', 'chunk2',
++  ];
++
+   /// One log line: null unless it holds a runtime line (`cpu-prof ab=` or `c2-`, anywhere: a logger may prefix it);
+-  /// else the line from its marker on, its `run=` id (null if none) and, for a per-token line, the compact tuple.
+-  static ({String line, String? tag, List<Object>? tok})? parseLine(String l) {
++  /// else the line from its marker on, its `run=` id (null if none) and, for a per-token line, the compact tuple
++  /// ([c1] true for campaign 1's format).
++  static ({String line, String? tag, List<Object>? tok, bool c1})? parseLine(String l) {
+     final i = l.indexOf('cpu-prof ab='), j = l.indexOf('c2-');
+     final k = i >= 0 ? i : j;
+     if (k < 0) return null;
+     final s = l.substring(k);
+     final m = _tokRe.firstMatch(s);
++    final m1 = m == null ? _tokC1Re.firstMatch(s) : null;
+     return (
+       line: s,
+       tag: RegExp(r' run=([A-Za-z0-9._-]+)').firstMatch(s)?.group(1),
+-      tok: m == null ? null : <Object>[m[1]!, for (var g = 2; g <= 23; g++) if (g != 8) int.parse(m[g]!)],
++      tok: m != null
++          ? <Object>[m[1]!, for (var g = 2; g <= 23; g++) if (g != 8) int.parse(m[g]!)]
++          : m1 != null
++              ? <Object>[m1[1]!, for (var g = 2; g <= 14; g++) int.parse(m1[g]!)]
++              : null,
++      c1: m1 != null,
+     );
+   }
+ 
+@@ -188,6 +234,11 @@ extension Research on Assistant {
+       'prompt': Assistant._benchPrompt,
+       'story': Research._story,
+       'tok_fields': Research.tokFields,
++      'tok_fields_c1': Research.tokFieldsC1,
++      'gate': {'below': Assistant.coolHeadroom, 'wait_ms': Research.gateWait.inMilliseconds,
++               'first_wait_ms': Research.firstGateWait.inMilliseconds},
++      'load_env': Research.loadEnv,
++      'read_ahead_kb': {for (final b in ['sda', 'sdb', 'sdc']) b: DeviceProfile.sysRead('/sys/block/$b/queue/read_ahead_kb')},
+       'runs': rows,
+       'notes': notes,
+       'unmatched_lines': unmatched,
+@@ -231,6 +282,7 @@ extension Research on Assistant {
+         }
+         if (p.tok != null) {
+           (row['tok'] as List<List<Object>>).add(p.tok!);
++          if (p.c1) row['tok_format'] = 'c1';
+           if (row['kind'] == 'profiled32') (row['prof'] as List).add(p.line); // full lines, op table included
+         } else {
+           (row['c2'] as List).add(p.line);
+@@ -240,8 +292,10 @@ extension Research on Assistant {
+     }
+ 
+     // Loads with repack [on] (and [threads]) if the loaded model differs; returns the reload's ms, or null.
++    // r19: the kit's first run always reloads, so [Research.loadEnv] (a load-time knob) holds for every row.
++    var kitLoaded = false;
+     Future<int?> ensureLoad(bool on, int threads) async {
+-      if (_loadedAccel == Accel.cpu && _loadedRepack == on) {
++      if (kitLoaded && _loadedAccel == Accel.cpu && _loadedRepack == on) {
+         await _benchOn(Accel.cpu, threads, threads);
+         return null;
+       }
+@@ -249,12 +303,42 @@ extension Research on Assistant {
+       _repack = on;
+       Research.clearKnobs();
+       await _engine.unloadModel(); // frees the context: the last run's per-prompt lines are printed here
+-      await _loadOn(Accel.cpu, threads, threads);
++      Research.loadEnv.forEach(setNativeEnv);
++      try {
++        await _loadOn(Accel.cpu, threads, threads);
++      } finally {
++        Research.loadEnv.keys.forEach(unsetNativeEnv);
++      }
++      kitLoaded = true;
+       await _complete('Hi', 1); // the load's own warm-up
+       return DateTime.now().difference(t0).inMilliseconds;
+     }
+ 
+-    Future<void> measure(RunSpec s, int rep) async {
++    // r19 gate: waits until the headroom is below [below], at most [maxWait]. A null reading (NaN: polled too soon,
++    // or no reading) is "unknown, read again" (DeviceProfile.thermal spaces calls >= 1.1 s), never "cool".
++    Future<({double? heat, bool timeout, bool unknown, List<List<num?>> series})> kitGate(double below, Duration maxWait) async {
++      final t0 = DateTime.now();
++      final series = <List<num?>>[];
++      double? last;
++      while (true) {
++        final h = (await DeviceProfile.thermal()).headroom;
++        final ms = DateTime.now().difference(t0).inMilliseconds;
++        series.add([ms, h == null ? null : (h * 1000).round() / 1000]);
++        if (h != null) {
++          last = h;
++          if (h < below) return (heat: h, timeout: false, unknown: false, series: series);
++          show('cooling: headroom ${(h * 100).round()}% (gate ${(below * 100).round()}%), ${ms ~/ 1000} s of ${maxWait.inSeconds} s');
++        }
++        if (ms >= maxWait.inMilliseconds) return (heat: last, timeout: true, unknown: last == null, series: series);
++        await Future<void>.delayed(h == null ? Duration.zero : const Duration(seconds: 5));
++        if (_stopTest) return (heat: last, timeout: false, unknown: last == null, series: series);
++      }
++    }
++    var firstTimed = true;
++    final repOf = <String, int>{};
++
++    Future<void> measure(RunSpec s, int i) async {
++      final rep = repOf[s.id] = (repOf[s.id] ?? -1) + 1; // numbered across repeated ids
+       final threads = s.threads > 0 ? s.threads : w;
+       final tag = '${s.id}.$rep';
+       final row = <String, Object?>{
+@@ -262,7 +346,7 @@ extension Research on Assistant {
+         'threads': threads, 'tok': <List<Object>>[], 'prof': <String>[], 'c2': <String>[],
+       };
+       byTag[tag] = row;
+-      show('${s.group} · ${s.id} ${rep + 1}/${s.reps}');
++      show('${s.group} · ${s.id} ${i + 1}/${s.reps}');
+       try {
+         final reload = await ensureLoad(s.repack, threads);
+         if (reload != null) row['reload_ms'] = reload;
+@@ -273,24 +357,24 @@ extension Research on Assistant {
+         row['env_set'] = Research._envNow();
+         final official = s.kind != 'abba';
+         final c0 = DateTime.now();
+-        final double? heat;
+-        if (official && !Research.coolOfficial) {
+-          heat = (await DeviceProfile.thermal()).headroom;
+-        } else {
+-          heat = official ? await _coolDown() : await _coolDown(Assistant.hotHeadroom);
+-        }
++        final below = official ? Assistant.coolHeadroom : Assistant.hotHeadroom;
++        final g = await kitGate(below, firstTimed ? Research.firstGateWait : Research.gateWait);
++        row['gate_first'] = firstTimed;
++        firstTimed = false;
+         row['cool_ms'] = DateTime.now().difference(c0).inMilliseconds;
+-        row['gate'] = official ? Assistant.coolHeadroom : Assistant.hotHeadroom;
+-        row['heat'] = heat;
+-        row['gate_timeout'] = (row['cool_ms'] as int) >= Assistant._coolWait.inMilliseconds &&
+-            heat != null &&
+-            heat >= (row['gate'] as double);
++        row['gate'] = below;
++        row['heat'] = g.heat;
++        row['heat_series'] = g.series;
++        row['gate_timeout'] = g.timeout;
++        row['gate_unknown'] = g.unknown;
+         if (s.pause > 0) {
+           show('${s.group} · ${s.id} · idle ${s.pause}s');
+           await Future<void>.delayed(Duration(seconds: s.pause));
+         }
+         row['pause_s'] = s.pause;
+-        show('${s.group} · ${s.id} ${rep + 1}/${s.reps}');
++        show('${s.group} · ${s.id} ${i + 1}/${s.reps}');
++        row['res_before'] = Research._residency(path);
++        row['cap_before'] = Research._caps();
+         final b0 = await DeviceProfile.battery();
+         row['batt_c_before'] = b0.tempC;
+         row['plugged'] = b0.plugged;
+@@ -314,6 +398,8 @@ extension Research on Assistant {
+         final io1 = DeviceProfile.ioReadBytes();
+         row['mhz_after'] = DeviceProfile.cpuMhz();
+         row['mem_after'] = DeviceProfile.memInfo();
++        row['cap_after'] = Research._caps();
++        row['res_after'] = Research._residency(path);
+         row['heat_after'] = (await DeviceProfile.thermal()).headroom;
+         row['batt_c_after'] = (await DeviceProfile.battery()).tempC;
+         final u = c.usage;
+diff --git a/pubspec.yaml b/pubspec.yaml
+index b3052fb..67be3fd 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@ name: vollie
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.18.0+18
++version: 1.19.0+19
+ 
+ environment:
+   sdk: ^3.10.7
+diff --git a/test/kit_lines_test.dart b/test/kit_lines_test.dart
+index 6b09d4c..90216fb 100644
+--- a/test/kit_lines_test.dart
++++ b/test/kit_lines_test.dart
+@@ -22,4 +22,18 @@ void main() {
+     expect(h.tag, null);
+     expect(Research.parseLine('llama_model_loader: loaded'), null);
+   });
++  test('kit r19: campaign 1 per-token line (r16 format)', () {
++    const l = 'cpu-prof ab=A tok=1 us/token=103733 head=41362 router=845 majflt=142 minflt=664 mhz=2112/2035 nodes=1775 '
++        'barriers=666 kern=1 fuse=1 chunk2=1 | MUL_MAT 265:26719+35557 MUL_MAT_ID 80:29334+2721';
++    final p = Research.parseLine('E/x $l')!;
++    expect(p.c1, true);
++    expect(p.tag, null);
++    expect(p.tok, ['A', 1, 103733, 41362, 845, 142, 664, 2112, 2035, 1775, 666, 1, 1, 1]);
++    expect(p.tok!.length, Research.tokFieldsC1.length);
++    expect(Research.parseLine('cpu-prof graphs=32 tokens=32 threads=3 tiny=262144'), null);
++    // host line (no cpufreq: -1), r19 host check output
++    final h = Research.parseLine('cpu-prof ab=B tok=2 us/token=107160 head=1371 router=264 majflt=0 minflt=1359 mhz=-1/-1 '
++        'nodes=565 barriers=564 kern=0 fuse=0 chunk2=0 | MUL_MAT_ID 48:33717+47255 MUL_MAT 145:4058+860 GLU 16:70+4')!;
++    expect(h.tok, ['B', 2, 107160, 1371, 264, 0, 1359, -1, -1, 565, 564, 0, 0, 0]);
++  });
+ }

@@ -61,11 +61,12 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
    lab are to be reused by copying; the sibling folder itself stays unmodified). Campaign 1's 0001 (+ tiny-op)
    builds, loads `olmoe` and is identical to the base on OLMoE with its shipping settings minus the Granite
    numerics (*host*, 4 chunks, memo-13 §7).
-   **Next:** (1) kit r19: fixed gate (and no hashing right before the timed runs), a residency count (mincore),
-   rows for the c2 stock runtime, campaign 1's runtime, and campaign 1's runtime with its read-ahead knobs;
-   pre-register it with bands that state the page cache and clock they assume. (2) A control on the same day:
-   the campaign-1 app's own benchmark (Granite, 20.51 in R49) tells what the phone's state does to a known
-   number. (3) Bonnie: refit the cost model with an I/O term and a clock term from r16 and r17.
+   **Now with the owner: kit r19 / R55** (campaign 1's runtime on OLMoE, three rows, working gate, mincore
+   residency). Memo-15 (*estimated*): OLMoE needs `Cached` ≥ about 2.86 GB to be fault-free; one of 19 recorded
+   sessions had that; expected result "not resident", `c1_off` 3.5 to 4.5, `c1_ship` 7 to 10 tok/s. The goal is
+   therefore conditional on the phone's memory state; the options (state-conditioned claim, a smaller file,
+   private expert memory, or "no") were put to the owner and wait for the r19 numbers. Also asked: one run of the
+   campaign-1 app's own benchmark as a same-day control.
    APKs are hosted under `kits/` in `HoeioUser/vollie2`; every device round is an APK out and a JSON back.
 0. **R51 is scored** (R-log): on `olmoe-Mi` the largest skip inside the budget is **13.39 % of expert bytes**
    (`MASS=900`, PPL 12.1031, +3.32 %, *host*); `SUM=75` (17.48 %) is over by 0.0167. Prediction hit (band 6 to

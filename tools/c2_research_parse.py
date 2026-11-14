@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Campaign 2 research-kit report parser (kits r17, r18; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md
-and memo-12-kit-r18.md). Standard library only.
+"""Campaign 2 research-kit report parser (kits r17, r18, r19; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
+memo-12-kit-r18.md and memo-14-kit-r19.md). Standard library only.
 
 usage: python3 -I tools/c2_research_parse.py <report.json | clipboard text "c2gz:..."> [--min-mhz 1800]
            [--prompt tools/c2_official_prompt.txt] [--sigma 0.4]
@@ -11,7 +11,14 @@ per group (n, median / min / max printed tok/s, steady ms/token, clocks, faults,
 every A/B run id (kind 'abba') B minus A over counted blocks: per-block mean ms/token of the graph (per-token lines)
 and of the wall clock (chunk arrival times), blocks after the warm-up only (blk >= 1), clean blocks only (no major
 fault, big-core clock >= --min-mhz where the clock is readable), sigma = sqrt(sA^2/nA + sB^2/nB). Campaign 1's rule:
-a sub-1 ms effect needs sigma <= 0.4, else it is unresolved. All numbers are the phone's (*device*)."""
+a sub-1 ms effect needs sigma <= 0.4, else it is unresolved. All numbers are the phone's (*device*).
+
+Kit r19 (campaign 1's runtime): per-token lines in campaign 1's r16 format (rows with tok_format 'c1'), page-cache
+residency of the model before and after each run (res_before / res_after: experts / rest / total MB), clock caps, the
+gate's headroom series. Hygiene flags per run: 'throttled' (a big core below --min-mhz at run end), 'fault-bound'
+(> 100 major faults in the decode tokens of a profiled run, or > --fault-run major faults in a plain run, prefill
+included), 'gate timed out' (the headroom stayed at or above the gate for the whole wait), 'gate unknown' (no headroom
+reading at all)."""
 import argparse
 import base64
 import gzip
@@ -35,6 +42,12 @@ CLASSES = ['mmid', 'mm', 'head', 'router', 'attn', 'other', 'wait']
 COUNTS = ['ops', 'barriers', 'syncs', 'skipped', 'pairs']
 SKIP_RE = re.compile(r'c2-skip-run: .*?expert_bytes_skipped=([\d.]+)%')
 HEAD_RE = re.compile(r'c2-head-run: .*?k=(\d+) .*?exact_rows_per_col=([\d.]+)')
+# campaign 1's per-token line (0001, GGML_CPU_AB_TOKEN=1; r16), kit r19
+C1_TOK_RE = re.compile(r'cpu-prof ab=([AB]) tok=(\d+) us/token=(\d+) head=(\d+) router=(\d+) majflt=(\d+) minflt=(\d+) '
+                       r'mhz=(-?\d+)/(-?\d+) nodes=(\d+) barriers=(\d+) kern=(\d+) fuse=(\d+) chunk2=(\d+) \|')
+C1_FIELDS = ['ab', 'tok', 'us', 'head', 'router', 'majflt', 'minflt', 'mhz4', 'mhz7', 'nodes', 'barriers', 'kern', 'fuse',
+             'chunk2']
+C1_OP_RE = re.compile(r' (MUL_MAT_ID|MUL_MAT|GLU|SSM_SCAN) (\d+):(\d+)\+(\d+)')
 GRAPH_RE = re.compile(r'c2-graph-run: .*?ops_run=([\d.]+) ops_tiny=([\d.]+) barriers=([\d.]+) syncs=([\d.]+)')
 
 
@@ -57,8 +70,23 @@ def big_min(s):
 
 
 def tokens(run, fields=TOK_FIELDS):
-    """Per-token records of a run: the compact tuples (r18) or parsed full lines (r17 'prof', r16-style lines)."""
+    """Per-token records of a run: the compact tuples (r18, r19) or parsed full lines (r17 'prof', r16-style lines).
+    Campaign 1's lines (r19) also get the op table: mmid / mm (computing µs) and wait (summed waits) per token."""
+    if run.get('tok_format') == 'c1':
+        fields = C1_FIELDS
     out = [dict(zip(fields, t)) for t in run.get('tok') or []]
+    c1 = [(m, line) for line in run.get('prof') or [] for m in [C1_TOK_RE.search(line)] if m]
+    if c1 and not out:
+        out = [dict(zip(C1_FIELDS, [m.group(1)] + [int(x) for x in m.groups()[1:]])) for m, _ in c1]
+    ops = {}
+    for m, line in c1:
+        o = {}
+        for name, _, comp, wait in C1_OP_RE.findall(line):
+            o[{'MUL_MAT_ID': 'mmid', 'MUL_MAT': 'mm', 'GLU': 'glu', 'SSM_SCAN': 'ssm'}[name]] = int(comp)
+            o['wait'] = o.get('wait', 0) + int(wait)
+        ops[int(m.group(2))] = o
+    for t in out:
+        t.update(ops.get(t['tok'], {}))
     if out:
         return out
     for line in run.get('prof') or []:
@@ -139,7 +167,8 @@ def identity(r):
         if x.get('kind') == 'abba' or x.get('text') is None:
             continue
         e = env_of(x)
-        key = (x.get('repack_loaded', x.get('repack')), e.get('VOLLIE_SKIP_MASS'), e.get('VOLLIE_HEAD2'))
+        key = (x.get('repack_loaded', x.get('repack')), e.get('VOLLIE_SKIP_MASS') or e.get('GGML_EXPERT_SKIP') or None,
+               e.get('VOLLIE_HEAD2') or e.get('GGML_HEAD2') or None)
         cls.setdefault(key, []).append(x)
     for key, rs in cls.items():
         texts = {x['text'] for x in rs}
@@ -152,6 +181,10 @@ def identity(r):
             by_id.setdefault(x.get('id'), set()).add(x['text'])
     if 'stock' in by_id and 'stack' in by_id:
         out.append('stock == stack: ' + ('yes' if by_id['stock'] == by_id['stack'] and len(by_id['stock']) == 1 else 'NO'))
+    c1 = [k for k in ('c1_off', 'c1_ship', 'c1_ship_io', 'c1_off_prof', 'c1_ship_prof', 'c1_ship_io_prof') if k in by_id]
+    if c1:
+        texts = set().union(*(by_id[k] for k in c1))
+        out.append(f"r19 rows {'/'.join(c1)} give one text: " + ('yes' if len(texts) == 1 else f'NO ({len(texts)} texts)'))
     if 'skip' in by_id and 'package' in by_id:
         out.append('skip == package (head2 changes no greedy token): ' + ('yes' if by_id['skip'] == by_id['package'] else 'no'))
     return out
@@ -171,7 +204,20 @@ def counters(rs):
     return '; '.join(s)
 
 
-def groups(r, min_mhz):
+def residency(rs):
+    """Median page-cache residency of the model (MB) before and after the group's runs (r19), and the clock caps."""
+    s = []
+    for k in ('res_before', 'res_after'):
+        v = [x[k] for x in rs if isinstance(x.get(k), dict)]
+        if v:
+            s.append(f"{k[4:]} experts {st.median(d['experts_mb'] for d in v):.0f} rest {st.median(d['rest_mb'] for d in v):.0f} MB")
+    caps = sorted({x.get('cap_after') for x in rs if x.get('cap_after')})
+    if caps:
+        s.append('caps after ' + ','.join(c.replace('cap=', '') for c in caps))
+    return ('resident ' + '; '.join(s)) if s else ''
+
+
+def groups(r, min_mhz, fault_run=1000):
     fields = r.get('tok_fields') or TOK_FIELDS
     runs = r.get('runs', [])
     order, by = [], {}
@@ -197,19 +243,25 @@ def groups(r, min_mhz):
                 why.append('error')
             c = big_min(x.get('mhz_after'))
             if c is not None and c < min_mhz:
-                why.append(f'clock {c}<{min_mhz}')
+                why.append(f'throttled: clock {c}<{min_mhz}')
             dm = decode_majflt(x, fields)
-            if dm:
+            if dm is not None and dm > 100:
+                why.append(f'fault-bound: decode majflt {dm}')
+            elif dm:
                 why.append(f'decode majflt {dm}')
-            if x.get('gate_timeout'):
-                why.append('gate timeout')
+            elif dm is None and (x.get('majflt') or 0) > fault_run:
+                why.append(f"fault-bound: run majflt {x['majflt']}")
+            if x.get('gate_unknown'):
+                why.append('gate unknown')
+            elif x.get('gate_timeout'):
+                why.append(f"gate timed out (heat {fmt(x.get('heat'))})")
             if x.get('cached_prompt_tokens'):
                 why.append(f"cached {x['cached_prompt_tokens']}")
             if x.get('kind', 'official32') != 'abba' and not x.get('env') and ref is not None and x.get('text') != ref:
                 why.append('text differs from the first stock run')
             if why:
                 flags.append(f"{x.get('id')}#{x.get('rep')} (" + ', '.join(why) + ')')
-        cnt = counters(rs)
+        cnt = '; '.join(c for c in (counters(rs), residency(rs)) if c)
         out.append(
             f"{g}: n {len(rs)} printed tok/s median {fmt(st.median(tps) if tps else None)} min {fmt(min(tps) if tps else None)} "
             f"max {fmt(max(tps) if tps else None)} | steady ms/token {fmt(st.median(sm) if sm else None)}"
@@ -299,6 +351,7 @@ def main(argv=None):
     a.add_argument('report', nargs='?')
     a.add_argument('--min-mhz', type=int, default=1800)
     a.add_argument('--sigma', type=float, default=0.4)
+    a.add_argument('--fault-run', type=int, default=1000, help='plain-run major faults above which a run is fault-bound')
     a.add_argument('--prompt', default=os.path.join(HERE, 'c2_official_prompt.txt'))
     a.add_argument('--selftest', action='store_true')
     o = a.parse_args(argv)
@@ -308,7 +361,7 @@ def main(argv=None):
         a.error('report.json required')
     r = load(o.report)
     print(f"kit {r.get('kit')} app {r.get('app')} started {r.get('started')} stopped_early {r.get('stopped_early')}")
-    for part in (checks(r, o.prompt), identity(r), groups(r, o.min_mhz), ab(r, o.min_mhz, o.sigma)):
+    for part in (checks(r, o.prompt), identity(r), groups(r, o.min_mhz, o.fault_run), ab(r, o.min_mhz, o.sigma)):
         if part:
             print('\n'.join(part))
     return 0
@@ -360,7 +413,7 @@ def selftest():
                           'tok': tup, 'chunk_ms': chunks, 'text': 'story', 'decode_tps': 25.0})
     g = groups(r, 1800)
     assert g[0].startswith('stock: n 3 printed tok/s median 22.00 min 20.00 max 24.00'), g[0]
-    assert 'stock#2 (gate timeout)' in g[0] and 'stock#0' not in g[0], g[0]
+    assert 'stock#2 (gate timed out (heat -))' in g[0] and 'stock#0' not in g[0], g[0]
     assert 'steady ms/token 44.00 (prof)' in g[2] and 'decode majflt 3' in g[2], g[2]
     assert 'expert bytes skipped 13.60 %' in g[3], g[3]
     assert 'clock 1555<1800' in g[4], g[4]
@@ -385,6 +438,30 @@ def selftest():
         f.write('c2gz:' + base64.b64encode(gzip.compress(json.dumps(r).encode())).decode())
     assert load(f.name)['kit'] == 'r18'
     os.unlink(f.name)
+    # r19: campaign 1's per-token lines, residency, the three hygiene flags, the r19 text check.
+    c1l = lambda tok, maj, us: (f'cpu-prof ab=A tok={tok} us/token={us} head=900 router=120 majflt={maj} minflt=5 mhz=2112/2035 '
+                                f'nodes=469 barriers=241 kern=1 fuse=1 chunk2=1 | MUL_MAT_ID 32:30000+500 MUL_MAT 120:9000+300')
+    res = {'experts_mb': 1500, 'rest_mb': 40, 'total_mb': 1540, 'ms': 30}
+    r19 = {'kit': 'r19', 'runs': [
+        mk(group='c1_off', id='c1_off', env={'GGML_MMID': '0'}, decode_tps=5.0, majflt=25000, res_before=res, res_after=res,
+           cap_after='cap=1440/1420', mhz_after='mhz=1804,1804,1804,1804,1440,1440,1440,1420', gate_timeout=True, heat=0.97),
+        mk(group='c1_ship', id='c1_ship', env={'GGML_EXPERT_IO': '1'}, decode_tps=6.0, gate_unknown=True, gate_timeout=True),
+        mk(group='c1_ship_prof', id='c1_ship_prof', kind='profiled32', env={'GGML_CPU_PROF': '1'}, tok_format='c1',
+           tok=[['A', 1, 50000, 900, 120, 300, 5, 2112, 2035, 469, 241, 1, 1, 1], ['B', 2, 45000, 900, 120, 2, 5, 2112, 2035, 469, 241, 1, 1, 1]],
+           prof=[c1l(1, 300, 50000), c1l(2, 2, 45000)]),
+        mk(group='c1_ship_io_prof', id='c1_ship_io_prof', kind='profiled32', env={'GGML_CPU_PROF': '1'},
+           prof=[c1l(2, 0, 44000), c1l(3, 1, 46000)])]}
+    t = tokens(r19['runs'][2])
+    assert t[1]['us'] == 45000 and t[1]['mmid'] == 30000 and t[1]['wait'] == 800 and t[0]['majflt'] == 300, t
+    assert steady_ms(r19['runs'][2]) == (45.0, 'prof') and steady_ms(r19['runs'][3]) == (45.0, 'prof')
+    g = groups(r19, 1800)
+    assert 'throttled: clock 1420<1800' in g[0] and 'fault-bound: run majflt 25000' in g[0] and 'gate timed out (heat 0.97)' in g[0], g[0]
+    assert 'resident before experts 1500 rest 40 MB; after experts 1500 rest 40 MB; caps after 1440/1420' in g[0], g[0]
+    assert 'gate unknown' in g[1] and 'gate timed out' not in g[1], g[1]
+    assert 'fault-bound: decode majflt 302' in g[2] and 'decode majflt 1)' in g[3], (g[2], g[3])
+    assert 'r19 rows c1_off/c1_ship/c1_ship_prof/c1_ship_io_prof give one text: yes' in identity(r19), identity(r19)
+    r19['runs'][1]['text'] = 'other'
+    assert any('give one text: NO (2 texts)' in l for l in identity(r19))
     print('selftest OK')
     return 0
 
