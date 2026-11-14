@@ -470,6 +470,44 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   roughly 3.7 ms and 2 ms off, giving about 36 to 38 ms, which is the neighbourhood of 25 tok/s. That is the
   next round to pre-register, on both models, together with keeping the pages through the gate wait.
 
+### R59 Skip rule and untied head carried onto campaign 1's runtime; two-setting gate on both models (host)
+
+- **Date:** 2026-11-14 to 2026-11-15. **Label:** *host* (Apple M4 Pro, `llama-perplexity -c 512 -t 8 -ngl 0`,
+  full wikitext-2 test: OLMoE 560 chunks, Granite 565). Logs: `lab/logs/r59/` (not tracked).
+- **No pre-registration of its own.** The budgets (OLMoE 12.3003, Granite 9.6879) and the two-setting gate
+  (`-b 512` and `-ub 1`, owner 2026-11-14) were written before; the OLMoE setting is R51's and R53's. The
+  Granite thresholds were screened here, so the Granite choice below is a selection made after seeing these
+  numbers, under the rule "the largest screened threshold inside the budget at both settings".
+- **What changed:** new patches [`0003-c2-expert-skip`](../../../patches/llama.cpp-c1-olmoe/0003-c2-expert-skip.patch)
+  and [`0004-c2-head2-untied`](../../../patches/llama.cpp-c1-olmoe/0004-c2-head2-untied.patch) on 620d2225c +
+  campaign 1's `0001` to `0003` + `0001-keep-warm`, `0002-prefill-cold`. The c2 rules write into campaign 1's
+  own skip mask, so they act in the prefill, the one-token path, the fused op and the read-ahead. Off unless
+  `VOLLIE_SKIP_*` / `VOLLIE_HEAD2` is set; campaign 1's `GGML_EXPERT_SKIP` and `GGML_HEAD2` are unchanged.
+- **Identity, knobs unset:** per-chunk values equal to the tree without the two patches at `-b 512`, `-ub 32`
+  and `-ub 1`, 8 chunks, both models. With `MASS=900` and with `VOLLIE_HEAD2=1024` the values equal the
+  stock-base c2 builds (2 to 4 chunks). The skip acts on the phone's path: experts are Q3_K (no repack), and at
+  `-ub 1` the bytes left unread equal the bytes skipped.
+
+| model | setting | `-b 512` | `-ub 1` | budget | expert bytes skipped |
+|---|---|---|---|---|---|
+| OLMoE-Mi | stock | 11.7146 (R50) | 11.7133 | 12.3003 | 0 |
+| OLMoE-Mi | `MASS=900` | 12.1031 (+3.32 %) | 12.0925 (+3.24 %) | inside at both | 13.39 % |
+| OLMoE-Mi | `MASS=900` + `VOLLIE_HEAD2=1024` | **12.1053 (+3.34 %)** | **12.0946 (+3.26 %)** | inside at both | 13.39 % |
+| Granite-Mi | stock | 9.2266 (R50) | 9.2273 | 9.6879 | 0 |
+| Granite-Mi | campaign 1's setting: skip 117 + `GGML_HEAD2=2048` | 9.4010 (+1.89 %) | not run | inside at `-b 512` | 33.33 % |
+| Granite-Mi | skip 130 + head2 | **9.5173 (+3.15 %)** | **9.5076 (+3.04 %)** | inside at both | 42.39 % |
+| Granite-Mi | skip 145 + head2 | 9.6850 (+4.97 %) | 9.6962 (+5.08 %) | **over at `-ub 1` by 0.0083** | 51.74 % |
+| Granite-Mi | skip 160 + head2 | 9.9617 (+7.97 %) | not run | over | 59.50 % |
+
+  Percentages are against the stock value at the same setting. The `-b 512` stock references are R50's runs on
+  the unpatched base; the first 8 chunks on campaign 1's runtime equal them.
+- **Reading:** R51 (12.1031) and R53 (12.1053) reproduce to the digit on campaign 1's runtime. The two-setting
+  gate matters: Granite 145 would have passed on `-b 512` alone (by 0.0029) and fails at `-ub 1`. Settings
+  for the device round: **OLMoE `MASS=900` + head K=1024; Granite skip 130 + head2 2048.** The skip buys three
+  times more bytes on Granite (42 %) than on OLMoE (13 %) inside the same +5 %: OLMoE's routing weights are
+  flatter. Thresholds 131 to 144 were not screened.
+- **Not run:** Granite 117 at `-ub 1`; skip without the head (full set); the Android build of the two patches.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
 [memo-05, why skip was inert on Q4_0 experts: repack](memo-05-q4-experts-repack.md);

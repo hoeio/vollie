@@ -59,7 +59,8 @@ the low state did not occur). No numerics change on either model. Knob-off media
 57 ms, no skip and no head2). `GGML_PREFILL_COLD`: Granite +0.09 ± 0.50, OLMoE +0.93 ± 2.74 tok/s, unresolved
 on both; **the lever is closed by R58's kill rule** (read bytes were not measurable, `/proc/self/io` is
 unreadable in the app). Slow runs are those after a 45 to 91 s gate wait that loses file pages. Next, in order:
-1. **R59 (to pre-register):** carry the c2 skip rule (`VOLLIE_SKIP_MASS`, model-generic) and the untied
+0. **Done 2026-11-15 (R59, *host*):** both levers are on campaign 1's runtime (`patches/llama.cpp-c1-olmoe/0003`, `0004`), identical with knobs unset; inside budget at `-b 512` and `-ub 1`: OLMoE `MASS=900` + head 1024 (12.1053 / 12.0946), Granite skip 130 + head2 (9.5173 / 9.5076); Granite 145 fails at `-ub 1`. Next: the device round (kit r22, R60) with these two settings.
+1. **Superseded by item 0 (was: R59 to pre-register):** carry the c2 skip rule (`VOLLIE_SKIP_MASS`, model-generic) and the untied
    two-stage head from `patches/llama.cpp-c2/0001`, `0009` onto campaign 1's runtime as new patches in
    `patches/llama.cpp-c1-olmoe/`; host identity and PPL at `-b 512` and `-ub 1` for OLMoE (`MASS=900`) and for
    Granite-Mi (campaign 1's skip 117 and head2 must be re-screened on this file; its budget is 9.6879); then a
@@ -217,3 +218,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-14 | 3 (continued) | Memo-18: corrected working sets (Granite 1.97 to 1.99 GB, OLMoE 2.67 GB), page-cache simulator, first residency lever chosen (`GGML_PREFILL_COLD`). Owner: agreed; campaign 2 is also about trust through many models (all models stay full subjects); gate for batch-dependent numerics agreed. Kit r21 (two models in one session) in progress. |
 | 2026-11-14 | 3 (continued) | `GGML_PREFILL_COLD` patch (identical on both models, *host*) and kit r21 (model table, two models in one session, report saved as a file); R58 pre-registered; APK handed to the owner. Open: the two host builds give different `-ub 1` values for OLMoE (8.9550 and 8.8302, 4 chunks); a build-option difference Tom has not pinned down. |
 | 2026-11-14 | 3 (continued) | R58 scored (kit r21, two models, cool, high cache): OLMoE 19.70 and Granite-Mi 17.19 tok/s with no numerics change; `GGML_PREFILL_COLD` unresolved on both and closed by the kill rule; OLMoE level prediction missed on the fast side. Residency before the run decides speed; gate waits lose pages. Next: R59, skip and head on campaign 1's runtime for both models. |
+| 2026-11-15 | 3 (continued) | R59 (*host*): skip rule and untied head ported onto campaign 1's runtime, identity kept; two-setting gate passed by OLMoE `MASS=900` + head 1024 and Granite skip 130 + head2; Granite 145 fails at `-ub 1`. Kit r22 and R60 next. |

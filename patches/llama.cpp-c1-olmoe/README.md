@@ -72,3 +72,57 @@ backend's free flushes the open `c2-io` line). Design, tau and host checks: `cam
   follow-up message would mark its whole routed set. A shipping version needs a floor on the batch size.
 - **Not verified:** anything on Android: whether the phone's kernel has `MADV_COLD` (the reports do not give its version;
   kit r21 records `Platform.operatingSystemVersion`), whether the advice changes what the phone reclaims in a wait.
+
+## 0003-c2-expert-skip.patch (numerics change when on)
+
+`VOLLIE_SKIP_SUM`, `VOLLIE_SKIP_MAX`, `VOLLIE_SKIP_MASS` (permille, unset / 0 = off), `VOLLIE_SKIP_MINK` (default 1),
+`VOLLIE_SKIP_STATS=1`. File: `ggml/src/ggml-cpu/ggml-cpu.c`. The scale-free skip rules of
+`patches/llama.cpp-c2/0001` (same meaning, same float arithmetic; table in `patches/llama.cpp-c2/README.md`), written
+into campaign 1's own skip mask (`ggml_cpu_skip_prepare`) instead of a second mechanism. So they act wherever campaign
+1's `GGML_EXPERT_SKIP` acts: the stock `MUL_MAT_ID` (prefill, `-b 512`), the one-token no-barrier path (`GGML_MMID`), the
+fused gate + up + SwiGLU op (`GGML_MMID_FUSE`, on by default) and the expert read-ahead (`GGML_EXPERT_IO` does not advise
+skipped slices). The mixture weights are found as campaign 1 finds them (`src[1]` of the `ffn_moe_weighted` MUL after the
+op), so libllama is not patched and no architecture name is used. Experts in a repacked (extra-buffer) type still run in
+full; both served files have Q3_K experts, which this module does not repack.
+
+- **Beside campaign 1's knobs.** `GGML_EXPERT_SKIP`, `GGML_EXPERT_TOPP`, `GGML_EXPERT_GAP`, `GGML_EXPERT_MINK` and
+  `GGML_EXPERT_SKIP_RENORM` are unchanged. If knobs of both sets are set, a slot is skipped when **any** rule says so (the
+  rule campaign 1 already used between its own knobs); each set keeps its own MINK. Campaign 1's absolute thresholds and
+  the c2 relative ones agree only where the weights are renormalised (Granite: `GGML_EXPERT_SKIP=t` is
+  `VOLLIE_SKIP_SUM=t` up to float rounding of S); on OLMoE (`norm_w = false`) only the c2 rules are scale-free.
+- **Knobs per graph** (campaign 1's place, the calling thread). A/B: `GGML_CPU_AB=knob:SKIP_MASS:0:900` (also
+  `SKIP_SUM`, `SKIP_MAX`); the per-side skip counts are campaign 1's `cpu-prof` fields.
+- **`VOLLIE_SKIP_STATS=1`:** one `c2-skip:` line at exit on stderr with 0001's fields (plus `c1_skip`, `c1_topp`,
+  `c1_gap`), counting the skips of every rule, campaign 1's included: tokens, pairs, % pairs skipped, % expert bytes
+  skipped, MB per token selected and skipped, % of the bytes a batch would have read that it did not read.
+
+## 0004-c2-head2-untied.patch (numerics change when on)
+
+`VOLLIE_HEAD2=<K>` (unset / 0 = off), `VOLLIE_HEAD2_BATCH=1` (test only), `VOLLIE_HEAD2_CHECK=1` (host test). Files:
+`ggml/src/ggml-cpu/ggml-cpu.c`, `ggml/src/ggml-cpu/repack.cpp`. `patches/llama.cpp-c2/0009`'s two-stage head for an untied
+Q6_K head (`output.weight`, plain rows or this module's `q6_K_8x4` / `q6_K_8x8` repack), unchanged in its arithmetic; the
+Q4_0 screen helpers and the top-K select are campaign 1's (`ggml_cpu_head2_q4_0_*`, `ggml_cpu_head2_topm`), which are the
+same code. Only the three Q6_K helpers are new in `repack.cpp`. Method and knob table: `patches/llama.cpp-c2/README.md`,
+section 0009.
+
+- **Beside campaign 1's `GGML_HEAD2`.** Campaign 1's head keeps the stock path on a repacked untied head (OLMoE with repack
+  on, the kit's setting), so it does nothing for OLMoE there; this patch fills that case. The hook runs before
+  `GGML_HEAD2`'s and takes `output.weight` only: if both knobs are set, `VOLLIE_HEAD2` wins on an untied head and
+  `GGML_HEAD2` keeps a tied head (`token_embd.weight`, Granite), which `VOLLIE_HEAD2` never takes.
+- **Knobs per graph.** A/B: `GGML_CPU_AB=knob:C2_HEAD2:0:1024`; the copy is then made on the first graph. With the knob
+  and the A/B both off, the copy (`copy_mb=58.0` on OLMoE, *host* `c2-head-build:` line) is freed at the next graph (campaign 1's
+  rule for its own copy); the small select scratch stays.
+- **Lines** on stderr: `c2-head-build:` once per copy, `c2-head:` at exit (0009's fields). 0008's per-prompt
+  `c2-head-run:` line is not ported (campaign 1's runtime has no 0008).
+
+## Host checks of 0003 and 0004 (2026-11-14/15, *host*, M4 Pro, `-t 8`, build `armv8.2-a+dotprod+fp16`, repack on)
+
+- **Identity, knobs unset:** per-chunk PPL of 8 chunks equal between the tree with 0001-0002 and the tree with
+  0001-0004 at `-b 512`, `-ub 32` and `-ub 1`, on `olmoe-Mi` and `granite-Mi`; at `-b 512` both also equal the first 8
+  chunks of R50's unpatched-base logs.
+- **Same decisions as the c2 series:** `VOLLIE_SKIP_MASS=900` gives the c2 build's per-chunk values and `c2-skip:`
+  counters (4 chunks `-b 512`, 2 chunks `-ub 1`), and on the full set at `-b 512` R51's 12.1031 ± 0.10045 with 13.39 %
+  of expert bytes skipped. `VOLLIE_HEAD2=1024` (+ `_CHECK`) gives the c2 build's values, the same copy fingerprint and
+  `mismatches=0` (2 chunks, `-b 512` with `_BATCH` and `-ub 1`); with `MASS=900` on the full set at `-b 512` R53's 12.1053.
+- The `-ub 1` runs go through campaign 1's fused one-token expert op, the phone's path; the counters show the skip there
+  (`batch_bytes_unread` equals the bytes skipped, so every skipped expert slice is left unread).

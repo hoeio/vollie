@@ -1,0 +1,175 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -2045,6 +2045,19 @@ static int ggml_cpu_q3k_x4;
+ static int ggml_cpu_expert_skip, ggml_cpu_expert_skip_renorm;
+ static int ggml_cpu_expert_topp, ggml_cpu_expert_gap, ggml_cpu_expert_mink;
+ static int64_t ggml_cpu_skip_cnt[2], ggml_cpu_skip_total[2];
++// Vollie c2 (patches/llama.cpp-c1-olmoe/0003): scale-free expert skip, model-generic, off unless set. Per token, slots ranked
++// by weight v (descending), S = sum of the k selected weights, cum = weight of the higher-ranked slots; never the top
++// VOLLIE_SKIP_MINK slots (default 1):
++//   VOLLIE_SKIP_SUM=t   skip if v < t/1000 * S        (S = 1 on renormalised weights: GGML_EXPERT_SKIP's rule)
++//   VOLLIE_SKIP_MAX=t   skip if v < t/1000 * v_max    (GGML_EXPERT_GAP's rule, with this MINK)
++//   VOLLIE_SKIP_MASS=p  skip once cum >= p/1000 * S   (GGML_EXPERT_TOPP's rule with S instead of 1)
++// The same decisions as patches/llama.cpp-c2/0001 (same float arithmetic). They are added to campaign 1's GGML_EXPERT_SKIP /
++// _TOPP / _GAP in the same mask: a slot is skipped if any rule set says so. VOLLIE_SKIP_STATS=1: one c2-skip: line at exit
++// (any rule, campaign 1's included). Read per graph; A/B names SKIP_SUM, SKIP_MAX, SKIP_MASS.
++static float ggml_c2_skip_sum, ggml_c2_skip_max, ggml_c2_skip_mass;
++static int   ggml_c2_skip_mink = 1;
++static bool  ggml_c2_skip_stats;
++#define GGML_C2_SKIP_ON (ggml_c2_skip_sum > 0.0f || ggml_c2_skip_max > 0.0f || ggml_c2_skip_mass > 0.0f)
+ #define GGML_CPU_SKIP_MAX 4096
+ #define GGML_CPU_MMID_MAX_AS 512
+ 
+@@ -2389,7 +2402,7 @@ static bool ggml_cpu_skip_prepare(const struct ggml_tensor * dst) {
+     const int     n_ids = ids->ne[0];
+     const int64_t n_tok = ids->ne[1];
+     ggml_cpu_skip_on_tl = false;
+-    if (!(ggml_cpu_expert_skip || ggml_cpu_expert_topp || ggml_cpu_expert_gap) || !w || n_ids > 64 || n_ids*n_tok > GGML_CPU_SKIP_MAX ||
++    if (!(ggml_cpu_expert_skip || ggml_cpu_expert_topp || ggml_cpu_expert_gap || GGML_C2_SKIP_ON) || !w || n_ids > 64 || n_ids*n_tok > GGML_CPU_SKIP_MAX ||
+         w->type != GGML_TYPE_F32 || w->ne[0] != 1 || w->ne[1] != n_ids || w->ne[2] != n_tok) {
+         return false;
+     }
+@@ -2397,11 +2410,13 @@ static bool ggml_cpu_skip_prepare(const struct ggml_tensor * dst) {
+     const float p = ggml_cpu_expert_topp ? ggml_cpu_expert_topp / 1000.0f : 2.0f; // 2: never reached
+     const float g = ggml_cpu_expert_gap / 1000.0f;
+     const bool  ranked = ggml_cpu_expert_topp || ggml_cpu_expert_gap;
++    const float c2_sum = ggml_c2_skip_sum/1000.0f, c2_max = ggml_c2_skip_max/1000.0f, c2_mass = ggml_c2_skip_mass/1000.0f; // Vollie c2 (0003)
+     for (int64_t tok = 0; tok < n_tok; tok++) {
+-        float v[64];
++        float v[64], S = 0.0f;
+         int   ord[64]; // slots by weight, descending (insertion sort: stable, same on every thread)
+         for (int s = 0; s < n_ids; s++) {
+             v[s] = *(const float *) ((const char *) w->data + tok*w->nb[2] + s*w->nb[1]);
++            S += v[s];
+             int j = s;
+             for (; j > 0 && v[ord[j - 1]] < v[s]; j--) {
+                 ord[j] = ord[j - 1];
+@@ -2413,7 +2428,9 @@ static bool ggml_cpu_skip_prepare(const struct ggml_tensor * dst) {
+             const int s = ord[r];
+             // SKIP: plain threshold (unchanged); TOPP: past the shortest prefix reaching mass p;
+             // GAP: under g x the top weight. The two ranked rules keep at least MINK slots.
+-            const bool skip = v[s] < t || (ranked && r >= ggml_cpu_expert_mink && (cum >= p || v[s] < g*v[ord[0]]));
++            const bool skip = v[s] < t || (ranked && r >= ggml_cpu_expert_mink && (cum >= p || v[s] < g*v[ord[0]])) ||
++                (r >= ggml_c2_skip_mink && ((c2_sum > 0.0f && v[s] < c2_sum*S) || (c2_max > 0.0f && v[s] < c2_max*v[ord[0]]) ||
++                                            (c2_mass > 0.0f && cum >= c2_mass*S))); // Vollie c2 (0003)
+             cum += v[s];
+             ggml_cpu_skip_mask_tl[tok*n_ids + s] = skip;
+         }
+@@ -4541,6 +4558,64 @@ static void ggml_cpu_budget_print(void) {
+     fprintf(stderr, "\n");
+ }
+ 
++// Vollie c2 (0003): VOLLIE_SKIP_STATS counters (thread 0, after each expert op with a skip mask), the c2-skip: line of
++// patches/llama.cpp-c2/0001 (same fields), counting every rule's skips
++static unsigned long long ggml_c2_st_tok, ggml_c2_st_pairs, ggml_c2_st_pairs_skip;
++static double ggml_c2_st_bytes, ggml_c2_st_bytes_skip, ggml_c2_st_bytes_read, ggml_c2_st_bytes_unread;
++static const void * ggml_c2_st_first;
++
++static void ggml_c2_skip_report(void) {
++    const double tok = ggml_c2_st_tok ? (double) ggml_c2_st_tok : 1.0;
++    fprintf(stderr, "c2-skip: sum=%g max=%g mass=%g mink=%d c1_skip=%d c1_topp=%d c1_gap=%d tokens=%llu pairs=%llu pairs_skipped=%.4f%% "
++            "expert_bytes_skipped=%.4f%% MB_per_token_selected=%.3f MB_per_token_skipped=%.3f batch_bytes_unread=%.4f%%\n",
++            (double) ggml_c2_skip_sum, (double) ggml_c2_skip_max, (double) ggml_c2_skip_mass, ggml_c2_skip_mink, ggml_cpu_expert_skip, ggml_cpu_expert_topp,
++            ggml_cpu_expert_gap, ggml_c2_st_tok, ggml_c2_st_pairs,
++            100.0*ggml_c2_st_pairs_skip/(ggml_c2_st_pairs ? ggml_c2_st_pairs : 1),
++            100.0*ggml_c2_st_bytes_skip/(ggml_c2_st_bytes > 0 ? ggml_c2_st_bytes : 1),
++            ggml_c2_st_bytes/tok/1e6, ggml_c2_st_bytes_skip/tok/1e6,
++            100.0*ggml_c2_st_bytes_unread/(ggml_c2_st_bytes_read > 0 ? ggml_c2_st_bytes_read : 1));
++}
++
++// eb: bytes of one expert of this op (a fused gate + up: both weights); nops: 1, or 2 for a fused op (pairs count per op)
++static void ggml_c2_skip_count(const struct ggml_tensor * node, const struct ggml_tensor * ids, double eb, int nops) {
++    const int n_ids = ids->ne[0];
++    const int64_t n_tok = ids->ne[1], n_as = node->src[0]->ne[2];
++    if (n_as > 512) {
++        return;
++    }
++    uint8_t routed[512] = {0}, kept[512] = {0};
++    unsigned long long n_skip = 0;
++    for (int64_t t = 0; t < n_tok; t++) {
++        for (int s = 0; s < n_ids; s++) {
++            const int32_t a = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + s*ids->nb[0]);
++            const bool sk = ggml_cpu_skip_mask_tl[t*n_ids + s];
++            n_skip += sk;
++            if (a >= 0 && a < n_as) {
++                routed[a] = 1;
++                kept[a] |= !sk;
++            }
++        }
++    }
++    if (!ggml_c2_st_first) {
++        ggml_c2_st_first = node->src[0];
++    }
++    if (node->src[0] == ggml_c2_st_first) {
++        ggml_c2_st_tok += n_tok; // one such op per layer and token: tokens counted on the first one seen
++    }
++    ggml_c2_st_pairs      += (unsigned long long) nops*n_ids*n_tok;
++    ggml_c2_st_pairs_skip += nops*n_skip;
++    ggml_c2_st_bytes      += eb*n_ids*n_tok;
++    ggml_c2_st_bytes_skip += eb*n_skip;
++    for (int64_t a = 0; a < n_as; a++) {
++        if (routed[a]) {
++            ggml_c2_st_bytes_read += eb;
++            if (!kept[a]) {
++                ggml_c2_st_bytes_unread += eb;
++            }
++        }
++    }
++}
++
+ // Vollie: env GGML_SSM_INPLACE (default on since r5, "" = unset = on, 0 = off; bit-identical: the same floats land in the same cache
+ // bytes, only the 1.5 MB/layer bounce through the scan output and back is gone). For a one-token,
+ // one-sequence, no-snapshot SSM_SCAN whose final state is CPY'd straight into the recurrent cache
+@@ -5602,8 +5677,10 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+         const bool mfuse = mmid && ggml_cpu_mmid_fuse_ok(cgraph, node_n, cplan, params.nth); // Vollie: GGML_MMID_FUSE
+         const int64_t t0 = (prof || (ggml_cpu_prof_this && mmid)) ? ggml_time_us() : 0;
+         if (mmid) {
+-            ggml_cpu_skip_weights_tl = ggml_cpu_expert_skip || ggml_cpu_expert_topp || ggml_cpu_expert_gap ? ggml_cpu_moe_weights(cgraph, node_n) : NULL;
++            ggml_cpu_skip_weights_tl = ggml_cpu_expert_skip || ggml_cpu_expert_topp || ggml_cpu_expert_gap || GGML_C2_SKIP_ON ? ggml_cpu_moe_weights(cgraph, node_n) : NULL;
+         }
++        // Vollie c2 (0003): bytes of one expert matrix of this op (a fused gate + up: both), for VOLLIE_SKIP_STATS
++        const double c2_eb = mmid && ggml_c2_skip_stats ? (double) node->src[0]->nb[2] + (mfuse ? (double) cgraph->nodes[node_n + 1]->src[0]->nb[2] : 0.0) : 0.0;
+ #if !defined(_WIN32)
+         if (ggml_cpu_expert_io && state->ith == 0 && mmid) {
+             ggml_cpu_expert_prefetch(cgraph, node_n); // after the weights pointer: it applies the skip mask
+@@ -5639,6 +5716,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+                 for (int64_t i = 0; i < ids->ne[0]*ids->ne[1]; i++) {
+                     cnt += ggml_cpu_skip_mask_tl[i];
+                 }
++                if (c2_eb > 0.0) {
++                    ggml_c2_skip_count(node, ids, c2_eb, mfuse ? 2 : 1);
++                }
+                 if (ggml_cpu_prof_this) { // Vollie: skip share per A/B side, profiled graphs only
+                     ggml_cpu_skip_cnt[ggml_cpu_ab_var]   += cnt;
+                     ggml_cpu_skip_total[ggml_cpu_ab_var] += ids->ne[0]*ids->ne[1];
+@@ -6214,6 +6294,19 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+     ggml_cpu_expert_gap = gap && *gap ? atoi(gap) : 0;
+     const char * mink = getenv("GGML_EXPERT_MINK");
+     ggml_cpu_expert_mink = mink && *mink ? atoi(mink) : 1;
++    { // Vollie c2 (0003): VOLLIE_SKIP_*, per graph
++        const char * e;
++        ggml_c2_skip_sum  = (e = getenv("VOLLIE_SKIP_SUM"))  ? (float) atof(e) : 0.0f;
++        ggml_c2_skip_max  = (e = getenv("VOLLIE_SKIP_MAX"))  ? (float) atof(e) : 0.0f;
++        ggml_c2_skip_mass = (e = getenv("VOLLIE_SKIP_MASS")) ? (float) atof(e) : 0.0f;
++        ggml_c2_skip_mink = (e = getenv("VOLLIE_SKIP_MINK")) && atoi(e) > 1 ? atoi(e) : 1; // the top slot is always kept
++        ggml_c2_skip_stats = (e = getenv("VOLLIE_SKIP_STATS")) && atoi(e) > 0;
++        static bool reg = false;
++        if (ggml_c2_skip_stats && !reg) {
++            reg = true;
++            atexit(ggml_c2_skip_report);
++        }
++    }
+     const char * ilp = getenv("GGML_Q3K_ILP");
+     ggml_cpu_q3k_ilp = ilp && *ilp ? atoi(ilp) != 0 : 1; // Vollie: default on since r4 (bit-identical, R23)
+     const char * pf = getenv("GGML_Q3K_PF");
+@@ -6307,6 +6400,9 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+                 else if (strcmp(name, "Q3K_VEC")     == 0) ggml_cpu_q3k_vec      = v != 0;
+                 else if (strcmp(name, "Q3K_X4")      == 0) ggml_cpu_q3k_x4       = v != 0;
+                 else if (strcmp(name, "EXPERT_SKIP") == 0) ggml_cpu_expert_skip  = (int) v;
++                else if (strcmp(name, "SKIP_SUM")    == 0) ggml_c2_skip_sum      = (float) v; // Vollie c2 (0003)
++                else if (strcmp(name, "SKIP_MAX")    == 0) ggml_c2_skip_max      = (float) v;
++                else if (strcmp(name, "SKIP_MASS")   == 0) ggml_c2_skip_mass     = (float) v;
+                 else if (strcmp(name, "Q3K_ILP")     == 0) ggml_cpu_q3k_ilp      = v != 0;
+                 else if (strcmp(name, "Q3K_PF")      == 0) ggml_cpu_q3k_pf       = v != 0;
+                 else if (strcmp(name, "Q3K_KERN")    == 0) ggml_cpu_q3k_kern     = v != 0;

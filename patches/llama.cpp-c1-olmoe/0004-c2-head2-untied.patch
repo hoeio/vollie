@@ -1,0 +1,444 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -3050,6 +3050,357 @@ static bool ggml_cpu_shexp_forward(const struct ggml_compute_params * params, st
+     return true;
+ }
+ 
++// ---- Vollie c2 (patches/llama.cpp-c1-olmoe/0004, ported from patches/llama.cpp-c2/0009): untied two-stage output head. A DECLARED NUMERICS CHANGE, off unless
++// VOLLIE_HEAD2=<K> (K > 0) is set. The head MUL_MAT (src0 "output.weight", Q6_K, plain or this module's q6_K_8x4 /
++// q6_K_8x8 repack) at one token (VOLLIE_HEAD2_BATCH=1, test only: every column of a batch, so that llama-perplexity at
++// -b 512 runs it) becomes:
++//  1. screen: every row from a Q4_0 copy of the head (dequantised Q6_K requantised without an imatrix), interleaved 4 rows
++//     at a time like the stock Q4_0 weights (block_q4_0x4: 4x4 with dotprod, 4x8 with i8mm; plain Q4_0 rows on CPUs
++//     without either), against a Q8_0 activation. The copy is anonymous memory (malloc) owned by this module, made once
++//     at the first head op (threads split the rows) from the head's own rows (repack on: un-interleaved from the q6_K_8x*
++//     copy in the CPU_REPACK buffer), kept until exit; 50,304 x 2,048 rows = 57.9 MB;
++//  2. the K rows with the largest screen logits (ties: lower id; deterministic for any thread count) are recomputed with
++//     the stock kernel on the stock Q8_K activation: plain rows with vec_dot_q6_K_q8_K row by row (what the stock -nr
++//     decode head runs), repacked rows with the stock q6_K_8x* gemv on each touched 8-row group (all 8 rows of a group
++//     come out exact). Those rows equal the stock head's bit for bit at one token; the other rows keep the screen logit.
++// VOLLIE_HEAD2_CHECK=1 (host test): thread 0 also computes the whole head with the stock kernel per column and counts
++// exact rows that differ (must be 0) and whether the true argmax is among the K screened rows.
++// GGML_CPU_AB=knob:C2_HEAD2:<A>:<B> (0 = stock): the copy is made on the first graph (the prompt), each side then runs its K.
++// Read per graph. With VOLLIE_HEAD2 and the A/B knob both off, the copy is freed at the next graph (campaign 1's rule).
++// Beside campaign 1's GGML_HEAD2: this runs first, on output.weight only. If both are set, VOLLIE_HEAD2 takes an untied
++// head (GGML_HEAD2 never sees it) and GGML_HEAD2 keeps a tied head (token_embd.weight, Granite), which this never takes.
++// Lines go to stderr. ponytail: the untied head only (output.weight); a tied head (token_embd) keeps GGML_HEAD2 or stock.
++int  ggml_c2_head2_q6k_il(const struct ggml_tensor * t);                                     // repack.cpp
++void ggml_c2_head2_q6k_unpack8(const void * grp, int64_t nb, int il, void * rows);           // repack.cpp
++void ggml_c2_head2_q6k_gemv(int il, int n, float * s, const void * vx, const void * vy, int nc);
++// the Q4_0 screen helpers and the top-K select are campaign 1's (ggml_cpu_head2_q4_0_*, ggml_cpu_head2_topm)
++
++static int64_t ggml_c2_h2_k = 0;                 // this graph's K (VOLLIE_HEAD2, or the A/B side's)
++static bool    ggml_c2_h2_on = false;            // K > 0 or the A/B knob is HEAD2 (the copy is made)
++static bool    ggml_c2_h2_batch = false, ggml_c2_h2_check = false, ggml_c2_h2_prep = false;
++static char *  ggml_c2_h2_q = NULL;              // the screen copy
++static const void * ggml_c2_h2_key = NULL;       // the head data it was made from
++static char *  ggml_c2_h2_act = NULL;            // per thread, per column: Q8_K row then Q8_0 row
++static size_t  ggml_c2_h2_act_cap = 0;
++static int32_t * ggml_c2_h2_idx = NULL, * ggml_c2_h2_grp = NULL; // per column: the K row ids; the touched 8-row groups
++static int64_t * ggml_c2_h2_ng = NULL;           // per column: number of touched groups
++static size_t  ggml_c2_h2_idx_cap = 0, ggml_c2_h2_nc_cap = 0;
++static int32_t * ggml_c2_h2_hist = NULL, * ggml_c2_h2_cid = NULL, * ggml_c2_h2_tmp = NULL;
++static float   * ggml_c2_h2_cv = NULL;
++static uint8_t * ggml_c2_h2_mark = NULL;
++static int64_t ggml_c2_h2_sel_rows = 0;
++static int     ggml_c2_h2_sel_nth = 0;
++// counters (thread 0): head ops, columns, exact rows, checked columns, true argmax in the screened set, differing exact
++// rows, copies made; [7] = the last K used
++static int64_t ggml_c2_h2_n[8];
++static double  ggml_c2_h2_build_ms = 0;
++
++static void ggml_c2_head2_report(void) { // exit line on stderr, like 0001's c2-skip:
++    const int64_t * n = ggml_c2_h2_n;
++    fprintf(stderr, "c2-head: k=%lld calls=%lld cols=%lld exact_rows_per_col=%.1f checked=%lld top1_in_set=%.4f%% mismatches=%lld "
++            "copies=%lld build_ms=%.1f\n", (long long) n[7], (long long) n[0], (long long) n[1], n[1] ? (double) n[2]/n[1] : 0.0,
++            (long long) n[3], n[3] ? 100.0*n[4]/n[3] : 0.0, (long long) n[5], (long long) n[6], ggml_c2_h2_build_ms);
++}
++
++static void ggml_c2_head2_knobs(const char * ab) { // per graph, before campaign 1's A/B overrides the K
++    const char * e = getenv("VOLLIE_HEAD2");
++    ggml_c2_h2_k     = e && atoll(e) > 0 ? atoll(e) : 0;
++    ggml_c2_h2_batch = (e = getenv("VOLLIE_HEAD2_BATCH")) && atoi(e) == 1;
++    ggml_c2_h2_check = (e = getenv("VOLLIE_HEAD2_CHECK")) && atoi(e) == 1;
++    ggml_c2_h2_prep  = ab && strncmp(ab, "knob:", 5) == 0 && strstr(ab, "C2_HEAD2:") != NULL;
++    ggml_c2_h2_on    = ggml_c2_h2_k > 0 || ggml_c2_h2_prep;
++    static bool reg = false;
++    if (ggml_c2_h2_on && !reg) {
++        reg = true;
++        atexit(ggml_c2_head2_report);
++    }
++    if (!ggml_c2_h2_on && ggml_c2_h2_q) { // off: the copy does not outlive its run (the small scratch stays)
++        free(ggml_c2_h2_q);
++        ggml_c2_h2_q = NULL;
++        ggml_c2_h2_key = NULL;
++    }
++}
++
++static inline int ggml_c2_h2_bin(float f) { // the top 12 bits of a float's order-preserving key
++    uint32_t u;
++    memcpy(&u, &f, sizeof u);
++    return (int) (((u & 0x80000000u) ? ~u : u | 0x80000000u) >> 20);
++}
++
++#define GGML_C2_REALLOC(p, n) do { free(p); (p) = malloc(n); GGML_ASSERT((p) && "VOLLIE_HEAD2: out of memory"); } while (0)
++
++// false (nothing done, the same on every thread) when the op is not the head, the knob is off or the shape is not handled
++static bool ggml_c2_head2(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
++    const struct ggml_tensor * src0 = dst->src[0], * src1 = dst->src[1];
++    if (strcmp(src0->name, "output.weight") != 0) {
++        return false;
++    }
++    const int64_t K = ggml_c2_h2_k, ne00 = src0->ne[0], nr = src0->ne[1], nc = src1->ne[1];
++    const int eil = ggml_c2_head2_q6k_il(src0);
++    if (eil < 0 || params->use_ref || src1->type != GGML_TYPE_F32 || (nc > 1 && !ggml_c2_h2_batch) ||
++        src1->ne[2]*src1->ne[3] != 1 || src0->ne[2]*src0->ne[3] != 1 || !ggml_is_contiguous(src1) || dst->nb[0] != sizeof(float) ||
++        nr % 8 != 0 || ne00 % QK_K != 0 || K >= nr) {
++        return false;
++    }
++    struct ggml_threadpool * tp = params->threadpool;
++    const int ith = params->ith, nth = params->nth;
++    const int sil = ggml_cpu_head2_q4_0_il();
++    const size_t prow = ggml_row_size(GGML_TYPE_Q6_K, ne00), qrow = ggml_row_size(GGML_TYPE_Q4_0, ne00);
++    const size_t erow = ggml_row_size(GGML_TYPE_Q8_K, ne00), srow = ggml_row_size(GGML_TYPE_Q8_0, ne00), arow = erow + srow;
++    const bool build = ggml_c2_h2_key != src0->data;
++    // every thread sees the same values here: thread 0 changes them only between the two barriers below
++    if (build || ggml_c2_h2_act_cap < (size_t) nth*nc*arow || ggml_c2_h2_idx_cap < (size_t) (nc*MAX(K, 1)) ||
++        ggml_c2_h2_nc_cap < (size_t) nc || ggml_c2_h2_sel_rows < nr || ggml_c2_h2_sel_nth < nth) {
++        ggml_barrier(tp);
++        if (ith == 0) {
++            if (build) {
++                GGML_C2_REALLOC(ggml_c2_h2_q, qrow*nr);
++            }
++            if (ggml_c2_h2_act_cap < (size_t) nth*nc*arow) {
++                ggml_c2_h2_act_cap = nth*nc*arow;
++                GGML_C2_REALLOC(ggml_c2_h2_act, ggml_c2_h2_act_cap);
++            }
++            if (ggml_c2_h2_idx_cap < (size_t) (nc*MAX(K, 1))) {
++                ggml_c2_h2_idx_cap = nc*MAX(K, 1);
++                GGML_C2_REALLOC(ggml_c2_h2_idx, ggml_c2_h2_idx_cap*sizeof(int32_t));
++                GGML_C2_REALLOC(ggml_c2_h2_grp, ggml_c2_h2_idx_cap*sizeof(int32_t));
++            }
++            if (ggml_c2_h2_nc_cap < (size_t) nc) {
++                ggml_c2_h2_nc_cap = nc;
++                GGML_C2_REALLOC(ggml_c2_h2_ng, nc*sizeof(int64_t));
++            }
++            if (ggml_c2_h2_sel_rows < nr || ggml_c2_h2_sel_nth < nth) {
++                ggml_c2_h2_sel_rows = nr;
++                ggml_c2_h2_sel_nth  = nth;
++                GGML_C2_REALLOC(ggml_c2_h2_hist, nth*4096*sizeof(int32_t));
++                GGML_C2_REALLOC(ggml_c2_h2_cv,  nr*sizeof(float));
++                GGML_C2_REALLOC(ggml_c2_h2_cid, nr*sizeof(int32_t));
++                GGML_C2_REALLOC(ggml_c2_h2_tmp, nr*sizeof(int32_t));
++                free(ggml_c2_h2_mark);
++                ggml_c2_h2_mark = calloc(nr/8, 1);
++                GGML_ASSERT(ggml_c2_h2_mark);
++            }
++        }
++        ggml_barrier(tp);
++        if (build) { // the copy: whole 8-row groups per thread, dequantised and requantised to Q4_0, then interleaved
++            const int64_t t0 = ggml_time_us();
++            const int64_t nb6 = ne00/QK_K, nb4 = ne00/QK4_0;
++            char * p8 = malloc(8*prow), * t8 = malloc(8*qrow);
++            float * f = malloc(ne00*sizeof(float));
++            GGML_ASSERT(p8 && t8 && f);
++            for (int64_t g = ith*(nr/8)/nth; g < (ith + 1)*(nr/8)/nth; g++) {
++                const char * rows = (const char *) src0->data + 8*g*src0->nb[1];
++                if (eil) {
++                    ggml_c2_head2_q6k_unpack8(rows, nb6, eil, p8);
++                    rows = p8;
++                }
++                for (int i = 0; i < 8; i++) {
++                    ggml_get_type_traits(GGML_TYPE_Q6_K)->to_float(rows + i*prow, f, ne00);
++                    ggml_quantize_chunk(GGML_TYPE_Q4_0, f, t8 + i*qrow, 0, 1, ne00, NULL);
++                }
++                if (sil) {
++                    ggml_cpu_head2_q4_0_pack4(ggml_c2_h2_q + 8*g*qrow, t8, nb4, sil);
++                    ggml_cpu_head2_q4_0_pack4(ggml_c2_h2_q + (8*g + 4)*qrow, t8 + 4*qrow, nb4, sil);
++                } else {
++                    memcpy(ggml_c2_h2_q + 8*g*qrow, t8, 8*qrow);
++                }
++            }
++            free(p8); free(t8); free(f);
++            ggml_barrier(tp);
++            if (ith == 0) {
++                ggml_c2_h2_key = src0->data;
++                ggml_c2_h2_n[6]++;
++                ggml_c2_h2_build_ms += (ggml_time_us() - t0)/1e3;
++                unsigned long long sum = 0; // a fingerprint of the copy (CHECK only): repack on and off must agree
++                if (ggml_c2_h2_check) {
++                    for (size_t i = 0; i + 8 <= qrow*nr; i += 8) {
++                        uint64_t w;
++                        memcpy(&w, ggml_c2_h2_q + i, 8);
++                        sum += w;
++                    }
++                }
++                fprintf(stderr, "c2-head-build: screen=q4_0%s exact=%s rows=%lld copy_mb=%.1f ms=%.1f threads=%d sum=%016llx\n",
++                             sil == 8 ? "x4x8" : sil == 4 ? "x4x4" : "", eil == 8 ? "q6_K_8x8" : eil == 4 ? "q6_K_8x4" : "q6_K",
++                             (long long) nr, qrow*nr/1e6, (ggml_time_us() - t0)/1e3, nth, sum);
++            }
++        }
++    }
++    if (K <= 0) {
++        return false; // A/B side 0: the stock head
++    }
++    // activations: every thread quantises every column itself (no barrier); the same bytes as the stock from_float
++    char * act = ggml_c2_h2_act + ith*nc*arow;
++    for (int64_t c = 0; c < nc; c++) {
++        const float * x = (const float *) ((const char *) src1->data + c*src1->nb[1]);
++        type_traits_cpu[GGML_TYPE_Q8_K].from_float(x, act + c*arow, ne00);
++        type_traits_cpu[GGML_TYPE_Q8_0].from_float(x, act + c*arow + erow, ne00);
++    }
++    // 1. screen: whole 4-row groups per thread, 64 rows per call
++    const int64_t g4 = nr/4, s0 = 4*(ith*g4/nth), s1 = 4*((ith + 1)*g4/nth);
++    for (int64_t r0 = s0; r0 < s1; r0 += 64) {
++        const int64_t n = MIN(64, s1 - r0);
++        for (int64_t c = 0; c < nc; c++) {
++            float * d = (float *) ((char *) dst->data + c*dst->nb[1]);
++            const char * a = act + c*arow + erow;
++            if (sil) {
++                ggml_cpu_head2_q4_0_gemv(sil, (int) ne00, d + r0, ggml_c2_h2_q + r0*qrow, a, (int) n);
++            } else {
++                for (int64_t r = r0; r < r0 + n; r++) {
++                    type_traits_cpu[GGML_TYPE_Q4_0].vec_dot((int) ne00, d + r, 0, ggml_c2_h2_q + r*qrow, 0, a, 0, 1);
++                }
++            }
++        }
++    }
++    ggml_barrier(tp);
++    // 2. the top K of every column (campaign 1's select): a 4096-bin histogram of the order-preserving float bits over
++    // each thread's rows, the bin b where the count from the top reaches K, rows above b go straight to idx, rows in b
++    // are candidates and thread 0 picks the missing ones among them
++    const int64_t r0 = ith*nr/nth, r1 = (ith + 1)*nr/nth;
++    int32_t * hist = ggml_c2_h2_hist;
++    for (int64_t c = 0; c < nc; c++) {
++        const float * d = (const float *) ((const char *) dst->data + c*dst->nb[1]);
++        int32_t * h = hist + ith*4096;
++        memset(h, 0, 4096*sizeof(int32_t));
++        for (int64_t r = r0; r < r1; r++) {
++            h[ggml_c2_h2_bin(d[r])]++;
++        }
++        ggml_barrier(tp);
++        int64_t above = 0, b = 4095;
++        for (;; b--) {
++            int64_t n = 0;
++            for (int t = 0; t < nth; t++) {
++                n += hist[t*4096 + b];
++            }
++            if (above + n >= K || b == 0) {
++                break;
++            }
++            above += n;
++        }
++        int64_t ka = 0, kb = 0; // this thread's offsets: rows above b and rows in b of the threads before it
++        for (int t = 0; t < ith; t++) {
++            for (int64_t i = b + 1; i < 4096; i++) {
++                ka += hist[t*4096 + i];
++            }
++            kb += hist[t*4096 + b];
++        }
++        int32_t * idx = ggml_c2_h2_idx + c*K;
++        for (int64_t r = r0; r < r1; r++) {
++            const int bin = ggml_c2_h2_bin(d[r]);
++            if (bin > b) {
++                idx[ka++] = (int32_t) r;
++            } else if (bin == b) {
++                ggml_c2_h2_cv[kb] = d[r];
++                ggml_c2_h2_cid[kb++] = (int32_t) r;
++            }
++        }
++        ggml_barrier(tp);
++        if (ith == 0) {
++            int64_t nb = 0;
++            for (int t = 0; t < nth; t++) {
++                nb += hist[t*4096 + b];
++            }
++            const int64_t need = K - above;
++            if (need < nb) {
++                ggml_cpu_head2_topm(ggml_c2_h2_cv, nb, need, ggml_c2_h2_tmp); // ties: lower position = lower id
++                for (int64_t i = 0; i < need; i++) {
++                    idx[above + i] = ggml_c2_h2_cid[ggml_c2_h2_tmp[i]];
++                }
++            } else {
++                memcpy(idx + above, ggml_c2_h2_cid, need*sizeof(int32_t));
++            }
++            int64_t ng = 0; // the touched 8-row groups (repacked rows)
++            if (eil) {
++                int32_t * grp = ggml_c2_h2_grp + c*K;
++                for (int64_t i = 0; i < K; i++) {
++                    const int32_t g = idx[i]/8;
++                    if (!ggml_c2_h2_mark[g]) {
++                        ggml_c2_h2_mark[g] = 1;
++                        grp[ng++] = g;
++                    }
++                }
++                for (int64_t i = 0; i < ng; i++) {
++                    ggml_c2_h2_mark[grp[i]] = 0;
++                }
++            }
++            ggml_c2_h2_ng[c] = ng;
++            ggml_c2_h2_n[2] += eil ? 8*ng : K;
++        }
++        ggml_barrier(tp);
++    }
++    // 3. the exact rows, stock kernel, split evenly across the threads
++    const char * w = (const char *) src0->data;
++    for (int64_t c = 0; c < nc; c++) {
++        float * d = (float *) ((char *) dst->data + c*dst->nb[1]);
++        const char * a = act + c*arow;
++        if (eil) {
++            const int64_t ng = ggml_c2_h2_ng[c];
++            const int32_t * grp = ggml_c2_h2_grp + c*K;
++            for (int64_t j = ith*ng/nth; j < (ith + 1)*ng/nth; j++) {
++                ggml_c2_head2_q6k_gemv(eil, (int) ne00, d + 8*grp[j], w + 8*grp[j]*src0->nb[1], a, 8);
++            }
++        } else {
++            const int32_t * idx = ggml_c2_h2_idx + c*K;
++            for (int64_t j = ith*K/nth; j < (ith + 1)*K/nth; j++) {
++                type_traits_cpu[GGML_TYPE_Q6_K].vec_dot((int) ne00, d + idx[j], 0, w + idx[j]*src0->nb[1], 0, a, 0, 1);
++            }
++        }
++    }
++    if (ith == 0) {
++        ggml_c2_h2_n[0]++;
++        ggml_c2_h2_n[1] += nc;
++        ggml_c2_h2_n[7] = K;
++    }
++    if (ggml_c2_h2_check) { // host test: the whole head with the stock kernel (one call over all rows, as one chunk)
++        ggml_barrier(tp);
++        if (ith == 0) {
++            float * ex = malloc(nr*sizeof(float));
++            uint8_t * in = calloc(nr, 1);
++            GGML_ASSERT(ex && in);
++            for (int64_t c = 0; c < nc; c++) {
++                const float * d = (const float *) ((const char *) dst->data + c*dst->nb[1]);
++                const char * a = act + c*arow;
++                if (eil) {
++                    ggml_c2_head2_q6k_gemv(eil, (int) ne00, ex, w, a, (int) nr);
++                } else {
++                    for (int64_t r = 0; r < nr; r++) {
++                        type_traits_cpu[GGML_TYPE_Q6_K].vec_dot((int) ne00, ex + r, 0, w + r*src0->nb[1], 0, a, 0, 1);
++                    }
++                }
++                int64_t am = 0;
++                for (int64_t r = 1; r < nr; r++) {
++                    am = ex[r] > ex[am] ? r : am;
++                }
++                const int32_t * idx = ggml_c2_h2_idx + c*K;
++                for (int64_t i = 0; i < K; i++) {
++                    in[idx[i]] = 1;
++                }
++                for (int64_t r = 0; r < nr; r++) { // the exact rows: the K picked, and with repack their whole groups
++                    if (in[r] && memcmp(ex + r, d + r, sizeof(float)) != 0) {
++                        ggml_c2_h2_n[5]++;
++                    }
++                }
++                if (eil) { // the other rows of the touched groups are exact too
++                    const int32_t * grp = ggml_c2_h2_grp + c*K;
++                    for (int64_t j = 0; j < ggml_c2_h2_ng[c]; j++) {
++                        for (int64_t r = 8*grp[j]; r < 8*grp[j] + 8; r++) {
++                            if (!in[r] && memcmp(ex + r, d + r, sizeof(float)) != 0) {
++                                ggml_c2_h2_n[5]++;
++                            }
++                        }
++                    }
++                }
++                ggml_c2_h2_n[3]++;
++                ggml_c2_h2_n[4] += in[am];
++                memset(in, 0, nr);
++            }
++            free(ex); free(in);
++        }
++    }
++    return true;
++}
++#undef GGML_C2_REALLOC
++
++
+ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggml_tensor * tensor) {
+     GGML_ASSERT(params);
+ 
+@@ -3058,6 +3409,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
+     }
+ 
+     // Vollie: GGML_HEAD2, the output head only; before the extra buffers, since the head is usually repacked
++    // Vollie c2 (0004): VOLLIE_HEAD2, the untied two-stage head (a declared numerics change; off when unset); before GGML_HEAD2
++    if (ggml_c2_h2_on && tensor->op == GGML_OP_MUL_MAT && ggml_c2_head2(params, tensor)) {
++        return;
++    }
+     if (tensor->op == GGML_OP_MUL_MAT && (ggml_cpu_head2(params, tensor) || ggml_cpu_shexp_forward(params, tensor))) {
+         return;
+     }
+@@ -6352,6 +6707,7 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+         ggml_cpu_bbench_n = bbench_n;
+     }
+     const char * ab = getenv("GGML_CPU_AB");
++    ggml_c2_head2_knobs(ab); // Vollie c2 (0004): VOLLIE_HEAD2
+     // Modes: "q3k", "tiny:<n>", and the generic "knob:<NAME>:<A>:<B>" (NAME = TINY_OP, MMID,
+     // Q3K_VEC, Q3K_X4, Q3K_ILP, Q3K_PF, Q3K_KERN, MMID_TOUCH, MMID_FUSE, MMID_CHUNK2, MMID_FUSE+CHUNK2, EXPERT_SKIP, EXPERT_ANON, SSM_INPLACE, CONV_RING, HEAD2, MM_CHUNK, EXPERT_Q4_LAYERS): ABBA blocks (see
+     // ggml_cpu_ab_warm); q3k and tiny: A on even decode graphs, B on odd ones. EXPERT_ANON keeps one cache of max(A, B) slots, filled on both sides; a side reads it iff
+@@ -6414,6 +6770,7 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+                 else if (strcmp(name, "SSM_INPLACE") == 0) ggml_cpu_ssm_inplace  = v != 0;
+                 else if (strcmp(name, "CONV_RING")   == 0) ggml_cpu_conv_ring    = v != 0;
+                 else if (strcmp(name, "HEAD2")       == 0) ggml_cpu_head2_m      = v;
++                else if (strcmp(name, "C2_HEAD2")    == 0) ggml_c2_h2_k          = v > 0 ? v : 0; // Vollie c2 (0004)
+                 else if (strcmp(name, "MM_CHUNK")    == 0) ggml_cpu_mm_chunk     = ggml_cpu_chunk_rows((int) v);
+                 else if (strcmp(name, "EXPERT_Q4_LAYERS") == 0) {
+                     ggml_cpu_expq4_make = (int) MAX(0, MAX(a, b)); // both sides' copies exist from the prompt graph on
+diff --git a/ggml/src/ggml-cpu/repack.cpp b/ggml/src/ggml-cpu/repack.cpp
+--- a/ggml/src/ggml-cpu/repack.cpp
++++ b/ggml/src/ggml-cpu/repack.cpp
+@@ -5282,3 +5282,52 @@ extern "C" void ggml_cpu_head2_q4_0_gemv(int il, int n, float * s, const void *
+ extern "C" void ggml_cpu_head2_q4_0_gemv(int il, int n, float * s, const void * vx, const void * vy, int nc) {
+     (il == 8 ? ggml_gemv_q4_0_4x8_q8_0 : ggml_gemv_q4_0_4x4_q8_0)(n, s, 0, vx, vy, 1, nc);
+ }
++
++// ---- Vollie c2 (patches/llama.cpp-c1-olmoe/0004, from patches/llama.cpp-c2/0009): Q6_K helpers for ggml_c2_head2 in ggml-cpu.c. Read-only
++// on the weights; nothing here runs unless VOLLIE_HEAD2 is set.
++
++// The layout of a Q6_K head: 0 = plain rows (no extra), 4 / 8 = this module's q6_K_8x4 / q6_K_8x8 repack, -1 = anything
++// else (another extra buffer type): the caller keeps the stock path.
++extern "C" int ggml_c2_head2_q6k_il(const struct ggml_tensor * t);
++extern "C" int ggml_c2_head2_q6k_il(const struct ggml_tensor * t) {
++    if (t->type != GGML_TYPE_Q6_K) {
++        return -1;
++    }
++    if (t->extra == NULL) {
++        return t->buffer && t->buffer->buft == ggml_backend_cpu_repack_buffer_type() ? -1 : 0;
++    }
++    if (!t->buffer || t->buffer->buft != ggml_backend_cpu_repack_buffer_type() || t->extra != ggml_repack_get_optimal_repack_type(t)) {
++        return -1;
++    }
++    // the same choice ggml_repack_get_optimal_repack_type made for Q6_K
++    return ggml_cpu_has_neon() && ggml_cpu_has_matmul_int8() ? 8 : ggml_cpu_has_neon() && ggml_cpu_has_dotprod() ? 4 : -1;
++}
++
++// One 8-row group of a repacked Q6_K tensor (nb block_q6_Kx8) back into 8 plain rows of nb block_q6_K (the inverse of
++// make_block_q6_Kx8).
++extern "C" void ggml_c2_head2_q6k_unpack8(const void * grp, int64_t nb, int il, void * rows);
++extern "C" void ggml_c2_head2_q6k_unpack8(const void * grp, int64_t nb, int il, void * rows) {
++    const block_q6_Kx8 * g = (const block_q6_Kx8 *) grp;
++    block_q6_K * r = (block_q6_K *) rows;
++    const int end_ls = QK_K * 4 / il;
++    for (int64_t x = 0; x < nb; x++) {
++        for (int i = 0; i < 8; i++) {
++            r[i*nb + x].d = g[x].d[i];
++            for (int j = 0; j < QK_K/16; j++) {
++                r[i*nb + x].scales[j] = g[x].scales[j*8 + i];
++            }
++        }
++        for (int i = 0; i < end_ls; i++) {
++            memcpy(&r[(i % 8)*nb + x].ql[(i / 8)*il], &g[x].ql[i*il], il);
++        }
++        for (int i = 0; i < end_ls/2; i++) {
++            memcpy(&r[(i % 8)*nb + x].qh[(i / 8)*il], &g[x].qh[i*il], il);
++        }
++    }
++}
++
++// s[0..nc) = the repacked Q6_K rows at vx (nc % 8 == 0) . vy (one Q8_K row of n): the stock decode kernel
++extern "C" void ggml_c2_head2_q6k_gemv(int il, int n, float * s, const void * vx, const void * vy, int nc);
++extern "C" void ggml_c2_head2_q6k_gemv(int il, int n, float * s, const void * vx, const void * vy, int nc) {
++    (il == 8 ? ggml_gemv_q6_K_8x8_q8_K : ggml_gemv_q6_K_8x4_q8_K)(n, s, 0, vx, vy, 1, nc);
++}
