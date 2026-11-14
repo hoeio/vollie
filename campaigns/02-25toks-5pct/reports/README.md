@@ -181,6 +181,7 @@ Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-0
 [memo-10, kit r17](memo-10-kit-r17.md);
 [memo-12, kit r18 (lever kit)](memo-12-kit-r18.md);
 [memo-13, diagnosis of R52: page cache, heat, gate bug, campaign 1's runtime on OLMoE](memo-13-r52-diagnosis.md);
+[memo-15, cost model refit with I/O and clock terms; residency odds](memo-15-cost-model-refit.md);
 [memo-03, lever pricing](memo-03-lever-pricing.md);
 [memo-04, OLMoE expert-skip](memo-04-olmoe-expert-skip.md);
 [memo-07, campaign-1 exact levers in the c2 series, identity on OLMoE](memo-07-c2-exact-levers.md);
