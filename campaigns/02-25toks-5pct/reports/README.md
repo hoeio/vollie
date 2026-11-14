@@ -130,6 +130,48 @@ c2 patch does not touch. If so it also revives a campaign-1 finding for this fil
 (3.6 GB then) got the app killed on the 8 GB phone (`models/granite-4.0-h-tiny-d6-e6.md`), which is why campaign 1
 put its experts in a type without a repack path. Tom is asked to establish the cause.
 
+### R52 OLMoE on the stock runtime, first device run (kit r17)
+
+- **Date:** 2026-11-14, 11:07 to 11:12 local. **Label:** *device* unless marked. Raw report:
+  [device/r17_2026-11-14.json](device/r17_2026-11-14.json); parse with `tools/c2_research_parse.py`.
+- **Pre-registration:** [R52](../prereg/R52-olmoe-stock-baseline-device.md), commit `7776632`, pushed before the
+  APK was handed over. The owner ran kit r17 itself, so amendment 1 (scoring from r18) does not apply.
+- **Checks that passed:** model sha256 and both library hashes as pre-registered; `repack_loaded` true in `stock`,
+  false in `norepack`; reply text identical in all eight repack-on runs and within the two repack-off runs;
+  prompt 156 tokens; 3 threads.
+
+| group | runs | printed tok/s | ms per token (decode_ms / 32) | major faults per run | big-core MHz at run end |
+|---|---|---|---|---|---|
+| `cold` | 1 | 3.84 | 251 | 16,794 | 1,440 / 1,420 |
+| `stock` | 5 | 3.61, 3.34, 2.70, 3.38, 3.08: **median 3.34** | 267 to 358 | 19,583 to 35,447 | 1,440 falling to 1,075 |
+| per-token runs | 2 | 3.76, 3.30 | median token gap 247 and 258; fastest single tokens 116 and 124 | 20,818 and 27,633 | 1,075 / 960 to 1,075 |
+| `norepack` | 2 | 2.93, 2.33 | 330, 414 | 19,826 and 29,623 | 1,075 to 1,440 / 844 to 960 |
+
+- **Prediction (13.8 tok/s, band 12.1 to 15.0): the measured median is 3.34, a factor of four below the band.**
+- **Verdict as the rule is written: void.** §4 voids the round if fewer than three `stock` runs meet the hygiene
+  of §6, and none does: every run has major faults throughout the decode tokens, and the one run for which the
+  gate waited timed out. The void is recorded together with the plain fact that the prediction would have
+  been missed by a wide margin: the cost model priced bytes at memory speed and assumed a resident model.
+- **Second prediction** (repack off slower by 0 to 5 ms): unresolved; both groups are fault-bound.
+- **Cause ([memo-13](memo-13-r52-diagnosis.md)):** page cache and heat, not arithmetic.
+  - The benchmark touches almost the whole expert file: the 156-token prefill alone reads 968 of 1,024 expert
+    slices, 2,617 MB; with the 32 decode tokens 2,725 MB (*host* trace). The phone held 1.5 to 1.7 GB of the file
+    resident, with at most 2.35 GB of page cache and no free swap. Campaign 1's fast Granite runs (R49) had 2.7
+    to 3.0 GB of page cache; Granite's own working set on this prompt is 2,569 MB (*host* trace), so campaign 1
+    never made the model resident from the runtime: the phone had room on that day.
+  - Thermal headroom was 0.97 to 1.10 for the whole session (the kit's "moderate" threshold is 0.93); the A78
+    clock cap stepped down 1,440, 1,209, 1,075 MHz and did not come back. In r16, runs with 35k to 74k faults
+    still ended at 2,112 MHz, so the low clocks here are thermal.
+  - **Kit bug:** the cool-down gate did not wait. Each run ends by reading the thermal headroom and the next
+    gate reads it again within about 50 ms; Android returns NaN when polled more than once a second, and the kit
+    took that as "cool". Kit r18 has the same bug. The kit had also just downloaded and hashed 3 GB before the
+    first run.
+  - Template: the GGUF carries only the BOS id; llamadart falls back to the text `<s>` (three tokens). No effect
+    on the expert set or on speed (*host*).
+- **What follows (R52 §7, "optimistic miss / find the term first"):** kit r18 is withdrawn before being run
+  ([R54 amendment 1](../prereg/R54-amendment-1.md)). The next kit fixes the gate, reports residency, and runs
+  campaign 1's runtime beside the c2 series at the owner's instruction.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
 [memo-05, why skip was inert on Q4_0 experts: repack](memo-05-q4-experts-repack.md);
@@ -138,6 +180,7 @@ Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-0
 [memo-09, how a research APK is built](memo-09-research-apk-path.md);
 [memo-10, kit r17](memo-10-kit-r17.md);
 [memo-12, kit r18 (lever kit)](memo-12-kit-r18.md);
+[memo-13, diagnosis of R52: page cache, heat, gate bug, campaign 1's runtime on OLMoE](memo-13-r52-diagnosis.md);
 [memo-03, lever pricing](memo-03-lever-pricing.md);
 [memo-04, OLMoE expert-skip](memo-04-olmoe-expert-skip.md);
 [memo-07, campaign-1 exact levers in the c2 series, identity on OLMoE](memo-07-c2-exact-levers.md);

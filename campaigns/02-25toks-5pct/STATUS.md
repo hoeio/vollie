@@ -51,17 +51,22 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
-00. **Waiting for the owner's phone run.** Kit r18 (lever kit, R54) is with the owner and replaces r17 (R52
-   amendment 1: one round instead of two). APKs are hosted under `kits/` in `HoeioUser/vollie2`; the owner cannot
-   attach the phone to the laptop, so every device round is an APK out and a JSON report back. Score with
-   `python3 -I tools/c2_research_parse.py <report.json>` against `prereg/R54-…` (and R52 on its `stock` group).
-   Decision lines (memo-08 §9, *estimated*): steady token of `stack` ≤ 42.95 ms means 25 is reachable;
-   ≥ 49.0 ms with `package` < 23.0 tok/s is the stop line. Central predictions: `stock` 13.8, `stack` 20.0,
-   `skip` 21.8, `package` 22.3 tok/s. Rebuild a kit with `tools/c2_build_kit.sh` (app patches in
-   `patches/app-c2/`, working copy `lab/app-c2/`, runtime tree `lab/llama.cpp-c2-android`).
-   Host, detached: the Q4_0 `-nr` sweep (R51 amendment 2, part 2; part 1 holds: `MASS=900` +3.33 % without
-   repack), then R53 (head screen; its `stock` and `MASS=900` rows are the full-set identity check of the whole
-   series). Granite: proposed "no" (memo-08 §6), still to be written into the R-log.
+00. **R52 is in (R-log): OLMoE on the stock runtime printed a median of 3.34 tok/s (*device*), void by hygiene
+   and a factor of four below the band.** Cause (memo-13): the benchmark needs about 2.73 GB of the file resident
+   (Granite: 2.57 GB, *host* traces) and the phone had 1.6 to 2.35 GB of page cache with no free swap; thermal
+   headroom 0.97 to 1.10 capped the clocks at 1,075 to 1,440 MHz; the kit's cool-down gate did not wait (NaN from
+   a too-early second thermal read was taken as cool; r18 shares the bug). Campaign 1's fast Granite runs had 2.7
+   to 3.0 GB of page cache: it never made the model resident from the runtime. Kit r18 / R54 is withdrawn
+   (R54 amendment 1). **Owner, 2026-11-14: use campaign 1's Vollie as well** (its runtime patch, app code and
+   lab are to be reused by copying; the sibling folder itself stays unmodified). Campaign 1's 0001 (+ tiny-op)
+   builds, loads `olmoe` and is identical to the base on OLMoE with its shipping settings minus the Granite
+   numerics (*host*, 4 chunks, memo-13 §7).
+   **Next:** (1) kit r19: fixed gate (and no hashing right before the timed runs), a residency count (mincore),
+   rows for the c2 stock runtime, campaign 1's runtime, and campaign 1's runtime with its read-ahead knobs;
+   pre-register it with bands that state the page cache and clock they assume. (2) A control on the same day:
+   the campaign-1 app's own benchmark (Granite, 20.51 in R49) tells what the phone's state does to a known
+   number. (3) Bonnie: refit the cost model with an I/O term and a clock term from r16 and r17.
+   APKs are hosted under `kits/` in `HoeioUser/vollie2`; every device round is an APK out and a JSON back.
 0. **R51 is scored** (R-log): on `olmoe-Mi` the largest skip inside the budget is **13.39 % of expert bytes**
    (`MASS=900`, PPL 12.1031, +3.32 %, *host*); `SUM=75` (17.48 %) is over by 0.0167. Prediction hit (band 6 to
    15 %). In ms (*estimated*, memo-03): about 3.9 ms, about 0.8 ms short of 38.0 ms at the central estimate,
@@ -135,3 +140,4 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 | 2026-11-14 | 3 (continued) | R51 scored: f* = 13.39 % of expert bytes inside the budget on `olmoe-Mi` (hit); SUM-against-MASS prediction missed; amendment 1 void (no effect on the Q4_0 file). Next: device baseline pre-registration R52. |
 | 2026-11-14 | 3 (continued) | Memo-05 (repack path), R51 amendment 2 pre-registered and started; memo-08 (device predictions; OLMoE now about 22.5 tok/s at the centre, *estimated*); the owner cannot attach the phone, so memo-09/10 and kit r17 (stock-only APK) were built; R52 pre-registered; APK handed to the owner. |
 | 2026-11-14 | 3 (continued) | c2 series 0002 to 0009 (exact levers, kit interface, untied head) committed; kit r18 built and host-checked; R53 (head, host) and R54 (lever kit, device) pre-registered; R52 amendment 1; r18 handed to the owner. |
+| 2026-11-14 | 3 (continued) | First device result: R52, 3.34 tok/s on the stock runtime, void by hygiene, cause diagnosed (memo-13: page cache, heat, gate bug). Kit r18 withdrawn. Owner: reuse campaign 1's Vollie. |
