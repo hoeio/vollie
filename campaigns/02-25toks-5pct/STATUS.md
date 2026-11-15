@@ -43,7 +43,11 @@ there ([reports/memo-02-lever-applicability.md](reports/memo-02-lever-applicabil
 
 ## Open decisions (need the owner)
 
-None at the moment.
+**2026-11-15: which runtime defines "stock served PPL"?** The phone runs a KleidiAI build; the budgets were
+measured on builds without it. Options: (a) run the full-set stock and num PPL on a KleidiAI host build (laptop,
+about the same run time as R59) and state both references side by side, the budget rule unchanged; (b) build
+the phone module with `KLEIDI=OFF` so that phone and host agree, and measure what that costs in tok/s; (c) both.
+The lead recommends (a) first. No budget value is changed without the owner.
 
 Hosting (2026-11-13): the two mixes are in the public repository `HoeioUser/vollie2` at commit `e893e8a6`
 (server-side sha256 checked); the publisher's Q4_0 is taken from AI2's repository at its pinned commit. Tags: the
@@ -65,6 +69,16 @@ A. **Tom:** why the untied head (`patches/llama.cpp-c1-olmoe/0004`) does not run
    candidate: the Q6_K head's layout in the armv8.2 module is not one of plain / 8x4 / 8x8, so the patch
    declines); fix in a new patch, keep identity with the knob unset, and make the kit print a head line even
    when the head declined (with the reason).
+   **Cause found 2026-11-15 (Tom, *host*, reproduced):** the phone module is built with KleidiAI
+   (`android/build_cpu.sh`, `GGML_CPU_KLEIDIAI=ON`, as in campaign 1); KleidiAI takes OLMoE's Q6_K `output.weight`
+   into its own buffer (int8, one scale per row), so 0004 declines every head op. Granite's tied head is not
+   taken. Every host PPL so far (R50, R51, R53, R59, the budgets) was run on builds **without** KleidiAI, so
+   **the phone's stock numerics have never been measured on the host**: with KleidiAI the per-chunk values of
+   the first 4 chunks move by up to about 0.5 % (OLMoE; Q4_0 attention tensors and the head). Patch
+   `patches/llama.cpp-c1-olmoe/0006-c2-head2-kleidiai.patch` (uncalibrated on the phone): `VOLLIE_HEAD2_REPACK=1`
+   at model load keeps the head out of KleidiAI (this changes the off arm's head numerics back to Q6_K, a
+   declared change), and the head line now reports declines with a reason. Identity with knobs unset on 4
+   chunks at `-b 512`, `-ub 32`, `-ub 1`, with and without KleidiAI. **Open decision for the owner below.**
 B. **Hold, cheaper:** one read-back shortly before the run (or far fewer passes) instead of one per poll;
    target under 1 s CPU. Then hold is part of the protocol in both arms, not a factor.
 C. **Pre-register R61:** num against off on both models with hold on in all quads (the hold quads of R60 are
@@ -244,3 +258,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-15 | 3 (continued) | R59 (*host*): skip rule and untied head ported onto campaign 1's runtime, identity kept; two-setting gate passed by OLMoE `MASS=900` + head 1024 and Granite skip 130 + head2; Granite 145 fails at `-ub 1`. Kit r22 and R60 next. |
 | 2026-11-15 | 3 (continued) | Kit r22 built (num arm per model, fadvise page hold through the gate wait, `0005-kit-lines`, memo-20); R60 pre-registered; APK uploaded for the owner. Nothing of the hold code has run on a phone yet. |
 | 2026-11-15 | 4 | R60 scored from kit r22 (pasted report, summary transcribed): hold passes on both models, cost missed; Granite num unresolved over all quads; OLMoE num void (untied head did not run on the phone); levels missed low, every gate wait timed out. Next: head fix, cheaper hold, R61 with hold on throughout. Agent models this session: lead `claude-fable-5-2` only; no subagents used. |
+| 2026-11-15 | 4 (continued) | Tom (`claude-opus-5-5`): OLMoE head on the phone is declined because KleidiAI owns `output.weight`; reproduced on the host; patch 0006 (load-time knob, decline reason in the kit line). Finding: all host PPL so far is from builds without KleidiAI, the phone has it on. Owner decision opened; no kit built. |

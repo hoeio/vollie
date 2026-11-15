@@ -147,3 +147,27 @@ Everything here runs only with `GGML_C2_IO=1` (0002's counter) and only prints; 
 - **Identity** (*host*, 4 chunks, `-t 8`): per-chunk PPL equal to the 0001-0004 tree at `-b 512`, `-ub 32` and `-ub 1`
   for both models in both kit r22 arms (off: `GGML_TINY_OP=262144 GGML_EXPERT_IO=1 VOLLIE_SAMPLER_BYPASS=1 GGML_C2_IO=1`;
   num: + the model's num env, memo-20 §3).
+
+## 0006-c2-head2-kleidiai.patch (load-time placement knob; numerics change when on in a KleidiAI build)
+
+`VOLLIE_HEAD2_REPACK=1`, read **at model load** (unset = off). Files: `ggml/src/ggml-cpu/kleidiai/kleidiai.cpp`,
+`ggml/src/ggml-cpu/ggml-cpu.c`.
+
+- **Why (R60).** The Android module is built with KleidiAI on (`android/build_cpu.sh`); its extra buffer comes before
+  `CPU_REPACK` and takes Q6_K weights (it requantizes them to int8 per row, `qsi8cx`). So OLMoE's `output.weight` sits in
+  `CPU_KLEIDIAI`, `ggml_c2_head2_q6k_il` returns -1 and 0004 declines every head op. Host checks ran without KleidiAI,
+  where the head is `q6_K_8x4` in `CPU_REPACK`. Reproduced on the host with a KleidiAI build (`GGML_KLEIDIAI_SME=0`).
+- **What it does.** With the knob set at load, KleidiAI's `supports_op` declines a MUL_MAT whose weight is a Q6_K
+  `output.weight`, so the loader puts it in `CPU_REPACK` (`q6_K_8x4` on a dotprod module), the layout 0004 handles. Only
+  that tensor moves. Without KleidiAI in the build the knob does nothing. The app must set it before the model loads (both
+  arms, since the kit loads once per block); it moves the stock head too, so it is a numerics change of the off arm on
+  the phone (from KleidiAI's int8 head back to the Q6_K head the host's budgets were measured with).
+- **Kit line.** `c2-head-run:` is also printed when `VOLLIE_HEAD2` declined in the prompt, with two fields appended:
+  `c2_declined=<head ops declined> c2_why=<code>:<buffer of output.weight>`; codes `type`, `layout`, `ref`, `batch`, `k`,
+  `shape` (the conditions 0004 already had, unchanged). R60's phone runs would have printed `c2_why=layout:CPU_KLEIDIAI`.
+- **Host checks (2026-11-15, *host*, M4 Pro, `-t 8`, 4 chunks, `armv8.2-a+dotprod+fp16`, OpenMP on, Metal/BLAS off).**
+  Knobs unset and kit off env: per-chunk PPL equal to the 0001-0005 tree at `-b 512`, `-ub 32`, `-ub 1`, both without and
+  with KleidiAI. `VOLLIE_HEAD2=1024` (+ `_BATCH`, `_CHECK`, and with `MASS=900`): equal to 0001-0005 at `-b 512` and `-ub 1`
+  (2 chunks). KleidiAI build + `VOLLIE_HEAD2_REPACK=1` + `VOLLIE_HEAD2=1024`: the head runs (`exact=q6_K_8x4`), copy
+  fingerprint `0cb3ff34cab00989` equal to the non-KleidiAI build, `mismatches=0`. Per-chunk values of a KleidiAI build
+  differ from a non-KleidiAI build in any case (its Q4_0 kernels), with or without this patch.

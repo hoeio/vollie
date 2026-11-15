@@ -1,0 +1,97 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -3099,6 +3099,9 @@
+ // counters (thread 0): head ops, columns, exact rows, checked columns, true argmax in the screened set, differing exact
+ // rows, copies made; [7] = the last K used
+ static int64_t ggml_c2_h2_n[8];
++static int64_t ggml_c2_h2_decl = 0;              // Vollie c2 (0006): head ops declined while the knob was on (thread 0)
++static char    ggml_c2_h2_why[64] = "-";         // and the last reason: <code>:<buffer name of output.weight>
++
+ static double  ggml_c2_h2_build_ms = 0;
+ 
+ static void ggml_c2_head2_report(void) { // exit line on stderr, like 0001's c2-skip:
+@@ -3143,9 +3146,16 @@
+     }
+     const int64_t K = ggml_c2_h2_k, ne00 = src0->ne[0], nr = src0->ne[1], nc = src1->ne[1];
+     const int eil = ggml_c2_head2_q6k_il(src0);
+-    if (eil < 0 || params->use_ref || src1->type != GGML_TYPE_F32 || (nc > 1 && !ggml_c2_h2_batch) ||
+-        src1->ne[2]*src1->ne[3] != 1 || src0->ne[2]*src0->ne[3] != 1 || !ggml_is_contiguous(src1) || dst->nb[0] != sizeof(float) ||
+-        nr % 8 != 0 || ne00 % QK_K != 0 || K >= nr) {
++    // Vollie c2 (0006): the same conditions, each with a reason code for the c2-head-run line (counters only)
++    const char * why = src0->type != GGML_TYPE_Q6_K ? "type" : eil < 0 ? "layout" : params->use_ref ? "ref" :
++        (nc > 1 && !ggml_c2_h2_batch) ? "batch" : K >= nr ? "k" :
++        (src1->type != GGML_TYPE_F32 || src1->ne[2]*src1->ne[3] != 1 || src0->ne[2]*src0->ne[3] != 1 || !ggml_is_contiguous(src1) ||
++         dst->nb[0] != sizeof(float) || nr % 8 != 0 || ne00 % QK_K != 0) ? "shape" : NULL;
++    if (why) {
++        if (params->ith == 0) {
++            ggml_c2_h2_decl++;
++            snprintf(ggml_c2_h2_why, sizeof ggml_c2_h2_why, "%s:%s", why, src0->buffer ? ggml_backend_buffer_name(src0->buffer) : "none");
++        }
+         return false;
+     }
+     struct ggml_threadpool * tp = params->threadpool;
+@@ -5717,7 +5727,8 @@
+     char run[64];    // VOLLIE_RUN at the prompt's start ("-" if unset)
+     int64_t s[3][6]; // start, first decode graph, after the last graph: us, read_bytes, rchar, majflt, minflt, inblock (0005)
+     double  k[2][7]; // Vollie c2 (0005): VOLLIE_SKIP_STATS counters at the prompt's start and at its first decode graph
+-    int64_t h[2][6]; // Vollie c2 (0005): VOLLIE_HEAD2 calls, cols, exact rows, copies; GGML_HEAD2 calls, copies; at the start
++    int64_t h[2][7]; // Vollie c2 (0005): VOLLIE_HEAD2 calls, cols, exact rows, copies; GGML_HEAD2 calls, copies; at the start
++                     // [6] (0006): VOLLIE_HEAD2 declines
+ } ggml_cpu_c2io;
+ 
+ // Vollie c2 (patches/llama.cpp-c1-olmoe/0005, counters only): the 0003 skip counters and both heads' counters, sampled
+@@ -5727,7 +5738,7 @@
+     k[3] = ggml_c2_st_bytes; k[4] = ggml_c2_st_bytes_skip; k[5] = ggml_c2_st_bytes_read; k[6] = ggml_c2_st_bytes_unread;
+     if (h) {
+         h[0] = ggml_c2_h2_n[0]; h[1] = ggml_c2_h2_n[1]; h[2] = ggml_c2_h2_n[2]; h[3] = ggml_c2_h2_n[6];
+-        h[4] = ggml_c2_c1h2_n[0]; h[5] = ggml_c2_c1h2_n[2];
++        h[4] = ggml_c2_c1h2_n[0]; h[5] = ggml_c2_c1h2_n[2]; h[6] = ggml_c2_h2_decl;
+     }
+ }
+ 
+@@ -5770,7 +5781,7 @@
+         return;
+     }
+     double kn[7];
+-    int64_t hn[6];
++    int64_t hn[7];
+     ggml_cpu_c2io_counters(kn, hn);
+     if (ggml_cpu_c2io.state == 1) {
+         memcpy(s[1], s[2], sizeof s[1]); // no decode graph: the decode share is empty
+@@ -5795,12 +5806,13 @@
+         fprintf(stderr, "\n");
+     }
+     const int64_t * h0 = ggml_cpu_c2io.h[0];
+-    if (hn[0] > h0[0] || hn[4] > h0[4]) { // a two-stage head ran in this prompt
++    if (hn[0] > h0[0] || hn[4] > h0[4] || hn[6] > h0[6]) { // a two-stage head ran (or, 0006, VOLLIE_HEAD2 declined) in this prompt
+         fprintf(stderr, "c2-head-run: run=%s c2_k=%lld c2_calls=%lld c2_cols=%lld c2_exact_rows_per_col=%.1f c2_copies=%lld "
+-                "c2_copy=%d c1_m=%lld c1_calls=%lld c1_copies=%lld c1_copy=%d\n", ggml_cpu_c2io.run, (long long) ggml_c2_h2_n[7],
++                "c2_copy=%d c1_m=%lld c1_calls=%lld c1_copies=%lld c1_copy=%d c2_declined=%lld c2_why=%s\n", ggml_cpu_c2io.run, (long long) ggml_c2_h2_n[7],
+                 (long long) (hn[0] - h0[0]), (long long) (hn[1] - h0[1]), hn[1] > h0[1] ? (double) (hn[2] - h0[2])/(hn[1] - h0[1]) : 0.0,
+                 (long long) (hn[3] - h0[3]), ggml_c2_h2_q != NULL, (long long) ggml_cpu_head2_m, (long long) (hn[4] - h0[4]),
+-                (long long) (hn[5] - h0[5]), ggml_cpu_head2_q != NULL);
++                (long long) (hn[5] - h0[5]), ggml_cpu_head2_q != NULL, (long long) (hn[6] - h0[6]),
++                hn[6] > h0[6] ? ggml_c2_h2_why : "-");
+     }
+     fflush(stderr);
+     ggml_cpu_c2io.state = 0;
+diff --git a/ggml/src/ggml-cpu/kleidiai/kleidiai.cpp b/ggml/src/ggml-cpu/kleidiai/kleidiai.cpp
+--- a/ggml/src/ggml-cpu/kleidiai/kleidiai.cpp
++++ b/ggml/src/ggml-cpu/kleidiai/kleidiai.cpp
+@@ -1790,6 +1790,15 @@
+         if (op->op != GGML_OP_MUL_MAT) {
+             return false;
+         }
++        // Vollie c2 (patches/llama.cpp-c1-olmoe/0006): VOLLIE_HEAD2_REPACK=1 at model load keeps a Q6_K untied head
++        // (output.weight) out of KleidiAI, so it goes to CPU_REPACK (q6_K_8x4 / 8x8), the layout 0004's VOLLIE_HEAD2 handles.
++        // KleidiAI would requantize it to int8 per row, where 0004 cannot run. Unset: KleidiAI's choice, unchanged.
++        if (op->src[0]->type == GGML_TYPE_Q6_K && strcmp(op->src[0]->name, "output.weight") == 0) {
++            const char * e = getenv("VOLLIE_HEAD2_REPACK");
++            if (e && atoi(e) == 1) {
++                return false;
++            }
++        }
+ 
+         std::array<ggml_kleidiai_kernels *, GGML_KLEIDIAI_MAX_KERNEL_SLOTS> kernel_chain;
+         const int slot_total = kleidiai_collect_kernel_chain(op, kernel_chain);
