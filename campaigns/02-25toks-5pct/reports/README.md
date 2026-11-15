@@ -589,6 +589,10 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   pre-registration scores hold on both arms together (+4.72 ± 1.70), so OLMoE's pass stands as written, but it
   leans on the num-arm runs.
 
+- **Note, 2026-11-15 (owner):** the Toss app was running in the background during this session. That is a
+  candidate cause for the gate never reaching 0.65 and for the larger page loss per wait than in R58; it is not
+  shown by this data. No rerun of kit r22: OLMoE's head would not run in it either.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
 [memo-05, why skip was inert on Q4_0 experts: repack](memo-05-q4-experts-repack.md);

@@ -69,8 +69,9 @@ B. **Hold, cheaper:** one read-back shortly before the run (or far fewer passes)
    target under 1 s CPU. Then hold is part of the protocol in both arms, not a factor.
 C. **Pre-register R61:** num against off on both models with hold on in all quads (the hold quads of R60 are
    the prior: Granite about +2.4 tok/s, OLMoE skip alone about +2.4 ± 1.2), plus the repaired OLMoE head.
-D. Ask the owner: the gate (0.65, 90 s) was not reached once in this session; the phone's state before the
-   session (what ran, charging) would help to read that.
+D. **Answered 2026-11-15 (owner):** Toss was running in the background during R60 (candidate cause of the
+   gate timeouts and page loss, not shown). Kit r22 is not rerun; the next kit (R61) is run with background
+   apps closed, and the phone state before the session is written into the pre-registration's state condition.
 E. Still open from before: LFM2.5 as third device subject (proposal to the owner); the two host builds'
    different OLMoE `-ub 1` values. The raw kit report is stored (`reports/device/r22_2026-11-15.json`);
    the summary matches it and the repository parser reproduces the scoring.
