@@ -593,6 +593,58 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   candidate cause for the gate never reaching 0.65 and for the larger page loss per wait than in R58; it is not
   shown by this data. No rerun of kit r22: OLMoE's head would not run in it either.
 
+### R61 Stock and num perplexity on a host build with KleidiAI, the phone's build option (host)
+
+- **Date:** 2026-11-15, 18:59 to about 23:30 local. **Label:** *host* (Apple M4 Pro, `llama-perplexity -c 512
+  -t 8 -ngl 0`, full wikitext-2 test: OLMoE 560 chunks, Granite 565). Pre-statement:
+  [prereg/R61-kleidiai-host-ppl.md](../prereg/R61-kleidiai-host-ppl.md) (commit `017c452`). Owner's option (a).
+- **Build:** `lab/llama.cpp-c1h6/build-kai`: `620d2225c` + `patches/llama.cpp/0001` to `0003` +
+  `patches/llama.cpp-c1-olmoe/0001` to `0006`, KleidiAI on, `GGML_KLEIDIAI_SME=0`. Logs and the exact command
+  of every job: `lab/logs/r61/` (`queue.txt`; not tracked). All rows ran with the kit's off env
+  (`GGML_TINY_OP=262144 GGML_EXPERT_IO=1 VOLLIE_SAMPLER_BYPASS=1 GGML_C2_IO=1`) as the pre-statement says; R59
+  ran without it (identical per chunk on 4 chunks at three batch settings, not proven on the full set).
+- **Limit:** on the M4 KleidiAI uses its i8mm kernels, the phone its dotprod kernels.
+
+| row | setting | `-b 512` | `-ub 1` | without KleidiAI (R50 / R59) |
+|---|---|---|---|---|
+| 1 | OLMoE-Mi, off env (head in KleidiAI, int8) | 11.7165 | 11.7198 | 11.7146 / 11.7133 |
+| 2 | OLMoE-Mi, off + `VOLLIE_HEAD2_REPACK=1` | 11.7132 | 11.7159 | 11.7146 / 11.7133 |
+| 3 | OLMoE-Mi, row 2 + `MASS=900` + head 1024 | 12.0927 (+3.24 %) | 12.0976 (+3.26 %) | 12.1053 (+3.34 %) / 12.0946 (+3.26 %) |
+| 4 | Granite-Mi, off env | 9.2795 | 9.2732 | 9.2266 / 9.2273 |
+| 5 | Granite-Mi, row 4 + skip 130 + head2 2048 | 9.5056 (+2.44 %) | 9.5120 (+2.58 %) | 9.5173 (+3.15 %) / 9.5076 (+3.04 %) |
+
+  Per cent in rows 3 and 5 is against the same build's stock at the same setting (rows 2 and 4).
+
+- **Two references side by side (the existing budgets are unchanged):**
+
+| model | stock, no KleidiAI | budget (stands) | stock with KleidiAI (`-b 512` / `-ub 1`) | × 1.05 |
+|---|---|---|---|---|
+| OLMoE-Mi | 11.7146 | **12.3003** | 11.7132 / 11.7159 | 12.2989 / 12.3017 |
+| Granite-Mi | 9.2266 | **9.6879** | 9.2795 / 9.2732 | 9.7435 / 9.7369 |
+
+- **Reading as fixed beforehand:** both num settings are **inside on the phone's build** by both readings, at
+  both batch settings: OLMoE 12.0927 / 12.0976 (below 12.2989 / 12.3017 and below 12.3003); Granite 9.5056 /
+  9.5120 (below 9.7435 / 9.7369 and below 9.6879). Row 1: 11.7165 / 11.7198, far below 11.7146 × 1.05; R60's
+  OLMoE off arm with the head in KleidiAI was +0.02 to +0.05 % from the file's own head.
+- **Predictions:**
+  - Stock with KleidiAI within ±0.5 %: OLMoE −0.01 / +0.02 %: **hit**. Granite **+0.57 %** at `-b 512`:
+    **miss**; +0.50 % at `-ub 1`: at the edge, inside.
+  - Row 1 within ±0.7 %: +0.02 / +0.06 %: **hit**.
+  - Both num settings inside: **hit**.
+  - Per-cent increase within ±0.3 points of R59: OLMoE 0.10 and 0.00 points: **hit**. Granite 0.71 and 0.46
+    points lower: **miss** (on the favourable side).
+- **Log checks:** OLMoE's head is in `CPU_KLEIDIAI` in row 1 (242.83 MiB, no `CPU_REPACK`) and in `CPU_REPACK`
+  in rows 2 and 3 (144.00 + 80.60 MiB). Row 3: head ran, `c2_declined=0`, `mismatches=0`, skip 13.386 % of
+  expert bytes at both settings. Row 5 at `-b 512`: `c1_calls=566 c1_copy=1`, skip 42.39 %. **Row 5 at `-ub 1`
+  has no head line in the log** (campaign 1's head prints none without a batch graph; R59's log has the same
+  gap), so that the head ran there is taken from the value differing from skip alone, not from a counter.
+- **What it means:** KleidiAI moves Granite's stock numerics by about half a per cent (it handles 541 MiB of
+  Granite's weights against 243 MiB of OLMoE's) and OLMoE's hardly at all. The phone's Granite therefore serves
+  about 9.28, not 9.23; the skip + head setting ends at nearly the same absolute value on either build, so the
+  absolute budget 9.6879 holds with the same margin (0.176 at `-ub 1`). `VOLLIE_HEAD2_REPACK=1` is safe for
+  OLMoE's off arm (−0.003 to −0.004). Not measured: the phone's dotprod KleidiAI kernels; campaign 1's Granite
+  file (d6-e6) on a KleidiAI build.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-21, unconventional levers priced on both models (owner's list and new directions)](memo-21-unconventional-levers.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);

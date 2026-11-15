@@ -43,11 +43,9 @@ there ([reports/memo-02-lever-applicability.md](reports/memo-02-lever-applicabil
 
 ## Open decisions (need the owner)
 
-**2026-11-15: which runtime defines "stock served PPL"?** The phone runs a KleidiAI build; the budgets were
-measured on builds without it. Options: (a) run the full-set stock and num PPL on a KleidiAI host build (laptop,
-about the same run time as R59) and state both references side by side, the budget rule unchanged; (b) build
-the phone module with `KLEIDI=OFF` so that phone and host agree, and measure what that costs in tok/s; (c) both.
-The lead recommends (a) first. No budget value is changed without the owner.
+None at the moment. (2026-11-15, answered: option (a). R61, *host*: on a KleidiAI build stock is OLMoE
+11.7132 / 11.7159 and Granite 9.2795 / 9.2732 (`-b 512` / `-ub 1`); both num settings are inside the existing
+budgets and inside same-build stock × 1.05. Budgets unchanged: 12.3003 and 9.6879.)
 
 Hosting (2026-11-13): the two mixes are in the public repository `HoeioUser/vollie2` at commit `e893e8a6`
 (server-side sha256 checked); the publisher's Q4_0 is taken from AI2's repository at its pinned commit. Tags: the
@@ -79,6 +77,9 @@ A. **Tom:** why the untied head (`patches/llama.cpp-c1-olmoe/0004`) does not run
    at model load keeps the head out of KleidiAI (this changes the off arm's head numerics back to Q6_K, a
    declared change), and the head line now reports declines with a reason. Identity with knobs unset on 4
    chunks at `-b 512`, `-ub 32`, `-ub 1`, with and without KleidiAI. **Open decision for the owner below.**
+   **R61 done (2026-11-15, *host*):** the settings for the next kit stand: OLMoE `VOLLIE_HEAD2_REPACK=1` at
+   load in both arms + `MASS=900` + head 1024; Granite skip 130 + head2 2048. Still to do for A: the app's load
+   setting for `VOLLIE_HEAD2_REPACK`, declared in the next pre-registration as a change of the off arm.
 B. **Hold, cheaper:** one read-back shortly before the run (or far fewer passes) instead of one per poll;
    target under 1 s CPU. Then hold is part of the protocol in both arms, not a factor.
 C. **Pre-register R61:** num against off on both models with hold on in all quads (the hold quads of R60 are
@@ -269,3 +270,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-15 | 4 | R60 scored from kit r22 (pasted report, summary transcribed): hold passes on both models, cost missed; Granite num unresolved over all quads; OLMoE num void (untied head did not run on the phone); levels missed low, every gate wait timed out. Next: head fix, cheaper hold, R61 with hold on throughout. Agent models this session: lead `claude-fable-5-2` only; no subagents used. |
 | 2026-11-15 | 4 (continued) | Tom (`claude-opus-5-5`): OLMoE head on the phone is declined because KleidiAI owns `output.weight`; reproduced on the host; patch 0006 (load-time knob, decline reason in the kit line). Finding: all host PPL so far is from builds without KleidiAI, the phone has it on. Owner decision opened; no kit built. |
 | 2026-11-15 | 4 (continued) | Owner: R61 option (a) chosen, pre-statement pushed, queue running (Tom). Owner welcomes unconventional methods; Bonnie (`claude-opus-5-5`) wrote memo-21 (priced shortlist, dead list, owner items). |
+| 2026-11-15 | 4 (continued) | R61 scored (*host*, KleidiAI build, 10 full-set runs): both num settings inside by both readings; Granite stock +0.57 / +0.50 % with KleidiAI (prediction missed at `-b 512`), OLMoE unchanged. Next: app load setting, cheaper hold, memo-21 items 1, 2, 5, then kit r23 and its pre-registration. |
