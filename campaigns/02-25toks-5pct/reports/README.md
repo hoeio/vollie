@@ -581,6 +581,14 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   cheap (one read-back near the end of the wait instead of twenty) and keep it on in both arms; (3) rerun num on
   both models with hold on throughout, pre-registered as a new round.
 
+- **Note, 2026-11-15 (later the same day):** the owner supplied the raw report; it is stored as
+  [device/r22_2026-11-15.json](device/r22_2026-11-15.json) (sha256 `883e7288…409b4524`). The transcribed
+  summary equals it in every field of the 32 scored and 8 profiled runs, and `tools/c2_research_parse.py`
+  reproduces the medians, the quad effects and all void checks above. The parser's own hold table uses the off
+  arm alone: Granite +4.34 ± 0.91 tok/s (resolved), **OLMoE +3.99 ± 2.27 (1.8 × SE, not resolved)**. The
+  pre-registration scores hold on both arms together (+4.72 ± 1.70), so OLMoE's pass stands as written, but it
+  leans on the num-arm runs.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
 [memo-05, why skip was inert on Q4_0 experts: repack](memo-05-q4-experts-repack.md);

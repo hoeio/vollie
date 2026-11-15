@@ -72,8 +72,8 @@ C. **Pre-register R61:** num against off on both models with hold on in all quad
 D. Ask the owner: the gate (0.65, 90 s) was not reached once in this session; the phone's state before the
    session (what ran, charging) would help to read that.
 E. Still open from before: LFM2.5 as third device subject (proposal to the owner); the two host builds'
-   different OLMoE `-ub 1` values. The raw kit report: ask the owner for the file itself (the summary in
-   `reports/device/` is a transcription).
+   different OLMoE `-ub 1` values. The raw kit report is stored (`reports/device/r22_2026-11-15.json`);
+   the summary matches it and the repository parser reproduces the scoring.
 
 **Latest (R58, kit r21, 2026-11-14 evening, *device*):** cool phone, `Cached` 2.4 to 3.2 GB (the "high" state;
 the low state did not occur). No numerics change on either model. Knob-off medians: **OLMoE 19.70 tok/s**
