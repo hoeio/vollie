@@ -1,9 +1,11 @@
 # Campaign 2 status and hand-off
 
 **Read this first, update it last.** Every session appends a line to the session log below and refreshes the
-sections above it. Last updated: 2026-11-14 (session 3, continued; R58 scored).
+sections above it. Last updated: 2026-11-15 (session 4; R60 scored).
 
 ## State in one paragraph
+
+**As of 2026-11-15 (R60, *device*):** page hold through the gate wait works on both models (+4.7 tok/s OLMoE, +5.3 Granite, pass) but costs 5 s of CPU per wait; Granite's skip + head is +1.44 ± 1.28 tok/s over all quads (unresolved; +2.4 in both hold quads); OLMoE's num factor is void because the untied head did not run on the phone (skip alone +1.71 ± 0.70). Best state of the round: Granite 18.96, OLMoE 19.25 tok/s (num with hold). Not near 25.
 
 **As of 2026-11-14 evening (R52 to R58, *device*):** the paragraph below is the state before the device rounds. Best measured state: OLMoE 19.70 tok/s median (21.03 when resident before the run), Granite-Mi 17.19, both cool, both without a numerics change (R58). Speed is decided by page residency and heat, not by kernels (R55 to R58).
 
@@ -53,7 +55,25 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
-**Waiting on the owner (2026-11-15):** kit r22 handed over; R60 pre-registered ([prereg](prereg/R60-numerics-and-hold-two-models-device.md)). When the report comes back: `python3 -I tools/c2_research_parse.py <json>`, score as written, store the report under `reports/device/`.
+**Latest (R60, kit r22, 2026-11-15, *device*; [R-log entry](reports/README.md)):** every gate wait ran the full 90 s. Hold: pass on both
+models (resident before the run +842 MB OLMoE, +1,165 MB Granite; tok/s +4.72 ± 1.70 and +5.28 ± 0.98), cost
+predictions missed (5.2 s CPU per wait, 20 repeated read-backs). num: Granite unresolved over four quads
+(+1.44 ± 1.28), +2.3 and +2.5 tok/s in the two hold quads, skip counter 39.6 % as predicted; OLMoE **void**: no
+`c2-head-run` line, head op time unchanged, so `VOLLIE_HEAD2` did not act in the `armv8.2_2` module. Level
+predictions missed low. Next, in order:
+A. **Tom:** why the untied head (`patches/llama.cpp-c1-olmoe/0004`) does not run on the phone build (first
+   candidate: the Q6_K head's layout in the armv8.2 module is not one of plain / 8x4 / 8x8, so the patch
+   declines); fix in a new patch, keep identity with the knob unset, and make the kit print a head line even
+   when the head declined (with the reason).
+B. **Hold, cheaper:** one read-back shortly before the run (or far fewer passes) instead of one per poll;
+   target under 1 s CPU. Then hold is part of the protocol in both arms, not a factor.
+C. **Pre-register R61:** num against off on both models with hold on in all quads (the hold quads of R60 are
+   the prior: Granite about +2.4 tok/s, OLMoE skip alone about +2.4 ± 1.2), plus the repaired OLMoE head.
+D. Ask the owner: the gate (0.65, 90 s) was not reached once in this session; the phone's state before the
+   session (what ran, charging) would help to read that.
+E. Still open from before: LFM2.5 as third device subject (proposal to the owner); the two host builds'
+   different OLMoE `-ub 1` values. The raw kit report: ask the owner for the file itself (the summary in
+   `reports/device/` is a transcription).
 
 **Latest (R58, kit r21, 2026-11-14 evening, *device*):** cool phone, `Cached` 2.4 to 3.2 GB (the "high" state;
 the low state did not occur). No numerics change on either model. Knob-off medians: **OLMoE 19.70 tok/s**
@@ -222,3 +242,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-14 | 3 (continued) | R58 scored (kit r21, two models, cool, high cache): OLMoE 19.70 and Granite-Mi 17.19 tok/s with no numerics change; `GGML_PREFILL_COLD` unresolved on both and closed by the kill rule; OLMoE level prediction missed on the fast side. Residency before the run decides speed; gate waits lose pages. Next: R59, skip and head on campaign 1's runtime for both models. |
 | 2026-11-15 | 3 (continued) | R59 (*host*): skip rule and untied head ported onto campaign 1's runtime, identity kept; two-setting gate passed by OLMoE `MASS=900` + head 1024 and Granite skip 130 + head2; Granite 145 fails at `-ub 1`. Kit r22 and R60 next. |
 | 2026-11-15 | 3 (continued) | Kit r22 built (num arm per model, fadvise page hold through the gate wait, `0005-kit-lines`, memo-20); R60 pre-registered; APK uploaded for the owner. Nothing of the hold code has run on a phone yet. |
+| 2026-11-15 | 4 | R60 scored from kit r22 (pasted report, summary transcribed): hold passes on both models, cost missed; Granite num unresolved over all quads; OLMoE num void (untied head did not run on the phone); levels missed low, every gate wait timed out. Next: head fix, cheaper hold, R61 with hold on throughout. Agent models this session: lead `claude-fable-5-2` only; no subagents used. |

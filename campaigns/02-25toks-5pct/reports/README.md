@@ -508,6 +508,79 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   flatter. Thresholds 131 to 144 were not screened.
 - **Not run:** Granite 117 at `-ub 1`; skip without the head (full set); the Android build of the two patches.
 
+### R60 Skip + two-stage head, and page hold through the gate wait, on Granite and OLMoE (kit r22)
+
+- **Date:** 2026-11-15, 09:48 to 10:58 local. **Label:** *device*. Pre-registration:
+  [prereg/R60-numerics-and-hold-two-models-device.md](../prereg/R60-numerics-and-hold-two-models-device.md) (commit `da1db1e`).
+- **Source:** [device/r22_2026-11-15_summary.json](device/r22_2026-11-15_summary.json), a summary the lead
+  transcribed from the report the owner pasted (32 scored runs, 8 profiled runs with per-token times); the raw
+  file is not in the repository. The statistics below are the lead's arithmetic on that summary (same
+  definitions as `tools/c2_research_parse.py`'s r22 tables); the repository parser was not run on the raw file.
+- **Build and files:** kit r22, app 1.22.0+22; CPU module `5d7c550c…`, `libllama.so` `815f3453…`, model hashes
+  as pre-registered. One reply text per arm and model; off and num texts differ on both models.
+- **Phone state:** clock 2,112 / 2,035 MHz in the profiled runs; **the gate timed out after 90 s before every
+  scored run** (headroom 0.70 to 0.78; R58 mostly reached 0.65). `Cached` before the runs: OLMoE 2,576 to
+  3,144 MB; **Granite 1,824 to 2,848 MB, five of 16 runs below 2.4 GB**, and one Granite run (pos 39) with the
+  cap at 1,555. By §3 the level bands are scored for OLMoE and **not scored for Granite**.
+- **Void checks:** hashes equal; 8 scored runs per arm and model; texts equal within each arm; skip counters
+  non-zero; fadvise fails 0. Granite head line `c1_m=2048 c1_calls=33 c1_copy=1` in every num run. **OLMoE: no
+  `c2-head-run` line in any num run and the head op took 3.8 to 4.2 ms in both arms (medians of the profiled
+  runs): `VOLLIE_HEAD2=1024` was set but the untied head did not run on the phone** (it ran on the host,
+  memo-20: `c2_calls=33`). By the void rule ("its head line shows no active copy") **the num factor is void on
+  OLMoE** (kit, not lever). What OLMoE's num arm measured is the skip rule alone.
+
+| model | arm | median tok/s, 8 runs | with hold (4) | without hold (4) | range |
+|---|---|---|---|---|---|
+| Granite-Mi | off | 14.50 | 16.61 | 11.58 | 10.5 to 17.0 |
+| Granite-Mi | num (skip 130 + head2) | 17.20 | **18.96** | 11.30 | 10.1 to 19.4 |
+| OLMoE-Mi | off | 15.74 | 17.48 | 13.86 | 7.9 to 19.5 |
+| OLMoE-Mi | num (skip only ran) | 17.93 | **19.25** | 13.28 | 9.6 to 22.7 |
+
+- **num minus off (mean of the four ABBA quads ± SE):**
+  - **Granite: +1.44 ± 1.28 tok/s (+10.4 ± 10.2 %): unresolved, "not shown on this model" as written.** Quads:
+    hold +2.29 and +2.47 (+14.3 %, +14.9 %), no hold +3.34 and −2.33. The negative quad's num runs started with
+    492 and 633 MB resident. Decode skip counter 39.62 % (band 38 to 44): **hit**. Per-cent band (+12 to +32):
+    **miss**.
+  - **OLMoE: void (head did not run).** For the record, skip alone: +1.71 ± 0.70 tok/s (+10.6 ± 4.0 %), 2.4 × SE;
+    decode skip counter 13.04 % (band 11.5 to 14.5): **hit**. Not counted as a pass.
+- **Level bands:** OLMoE off 15.74 against 16.0 to 21.5: **miss**; OLMoE num 17.93 against 19.0 to 25.0:
+  **miss** (and void). Granite not scored (state); for the record 14.50 and 17.20 would both be below their
+  bands.
+- **Fault-free tokens, num arm, profiled runs:** Granite 48.2 ms (20 tokens) and 46.4 ms (12 tokens), pooled
+  47.3 ms, against 44 (41 to 48): **inside the band at its upper edge** (off: 52.4 and 54.3 ms). OLMoE (skip
+  only) 40.4 ms (5 tokens) and one token at 47.5; fastest tokens 38.7 to 39.4 ms, against 36.5 (35 to 39):
+  **miss**; the 2 ms assigned to the head are missing.
+- **Hold (all 32 scored runs follow a 90 s wait; both arms together; Welch SE, 8 against 8 per model):**
+  1. Resident MB before the run: **OLMoE +842 ± 173** (medians 2,436 against 1,704; predicted at least 300):
+     **hit**. **Granite +1,165 ± 94** (2,018 against 974; at least 150): **hit**. Lost in the wait, medians:
+     OLMoE 120 MB with hold, 714 without; Granite 49 against 1,025.
+  2. tok/s: **OLMoE +4.72 ± 1.70** (band +1 to +6): **hit**, resolved. **Granite +5.28 ± 0.98** (band 0 to +2):
+     resolved, **miss on the high side**. TTFT: OLMoE −1.4 ± 0.3 s, Granite −3.0 ± 0.5 s.
+  3. Cost: CPU per wait median **5.2 s** (3.9 to 7.2) against "under 1 s": **miss**. Time after the gate: 10 of
+     16 waits 5.05 to 5.34 s against "at most 5 s": **miss** (the 5 s limit plus one poll). The read-back was
+     repeated: 3.4 GB advised per wait (median, summed over about 20 passes) to keep a few hundred MB.
+  - **Pass on both models** ((1) holds, tok/s positive and above 2 × SE). **Kill rule not met:** OLMoE +842 MB;
+    "half of the advised MB came back" cannot be read literally because `advised_mb` counts the same pages on
+    every pass; the hold runs started with 86 to 98 % of the wanted MB resident (OLMoE).
+- **Generalisation, as predicted and as found:** "num helps both, Granite more in per cent": **not shown**
+  (Granite unresolved, OLMoE void). "hold helps both, OLMoE more": **helps both: yes; OLMoE more: no**
+  (Granite gained as much or more; without hold Granite lost about 1 GB per wait in this session).
+- **Readings (not pre-registered):**
+  - Without hold this session was far slower than R58 (OLMoE 13.86 against 19.70, Granite 11.58 against
+    17.19): every wait ran the full 90 s and took 0.7 to 1.0 GB of the file away. Hold restores R58's level, not
+    more: with hold, off prints 17.48 (OLMoE) and 16.61 (Granite).
+  - With hold, Granite's num effect is +2.38 tok/s in both quads (two quads, so no SE worth the name); the
+    token time falls from 52 to 54 ms to 46 to 48 ms (expert op about 21 to about 13 ms, head 5.5 to 3.9 ms).
+  - Even hold runs still take 2,000 to 140,000 major faults per run: pages are back in the cache but have to
+    be mapped again; no run of this session was fault-free.
+- **Neighbourhood (§5, not a claim):** best state of this round, num with hold: Granite 18.96, OLMoE 19.25
+  (skip only). Neither is near 25. §7's condition "num resolved on both, OLMoE num median at 22 or more" is
+  not met; no claim round is pre-registered.
+- **Next:** (1) find why the untied head does not run in the phone's `armv8.2_2` CPU module (candidate: the
+  Q6_K head's layout there is none of the three the patch accepts) and fix it in the runtime; (2) make the hold
+  cheap (one read-back near the end of the wait instead of twenty) and keep it on in both arms; (3) rerun num on
+  both models with hold on throughout, pre-registered as a new round.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
 [memo-05, why skip was inert on Q4_0 experts: repack](memo-05-q4-experts-repack.md);
