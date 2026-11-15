@@ -86,6 +86,15 @@ C. **Pre-register R61:** num against off on both models with hold on in all quad
 D. **Answered 2026-11-15 (owner):** Toss was running in the background during R60 (candidate cause of the
    gate timeouts and page loss, not shown). Kit r22 is not rerun; the next kit (R61) is run with background
    apps closed, and the phone state before the session is written into the pre-registration's state condition.
+F. **Unconventional levers (owner, 2026-11-15: explore such methods freely):**
+   [memo-21](reports/memo-21-unconventional-levers.md), all gains *estimated*. Shortlist: (1) helper threads on
+   the idle cores that take expert row chunks without joining barriers (bit-identical; test: threads 3 against 4
+   per run in the next kit); (2) routing bias toward experts the runtime used in the last N tokens (declared
+   numerics; host trace simulation and PPL first); (3) LUT kernel for the Q3_K experts, exact or lossy (needs a
+   runtime-derived re-laid-out expert file of 2.6 to 2.8 GB: owner decision on storage); (4) helper warming L3
+   for the next dense op; (5) thread pinning, `mlock` (the limit is 64 MiB, not 64 KB), overlap after sampling.
+   Finding: the expert op is Q3_K kernel time (about 2 times the dense byte rate), so kernel work pays only
+   there. Not yet pre-registered; nothing measured.
 E. Still open from before: LFM2.5 as third device subject (proposal to the owner); the two host builds'
    different OLMoE `-ub 1` values. The raw kit report is stored (`reports/device/r22_2026-11-15.json`);
    the summary matches it and the repository parser reproduces the scoring.
@@ -259,3 +268,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-15 | 3 (continued) | Kit r22 built (num arm per model, fadvise page hold through the gate wait, `0005-kit-lines`, memo-20); R60 pre-registered; APK uploaded for the owner. Nothing of the hold code has run on a phone yet. |
 | 2026-11-15 | 4 | R60 scored from kit r22 (pasted report, summary transcribed): hold passes on both models, cost missed; Granite num unresolved over all quads; OLMoE num void (untied head did not run on the phone); levels missed low, every gate wait timed out. Next: head fix, cheaper hold, R61 with hold on throughout. Agent models this session: lead `claude-fable-5-2` only; no subagents used. |
 | 2026-11-15 | 4 (continued) | Tom (`claude-opus-5-5`): OLMoE head on the phone is declined because KleidiAI owns `output.weight`; reproduced on the host; patch 0006 (load-time knob, decline reason in the kit line). Finding: all host PPL so far is from builds without KleidiAI, the phone has it on. Owner decision opened; no kit built. |
+| 2026-11-15 | 4 (continued) | Owner: R61 option (a) chosen, pre-statement pushed, queue running (Tom). Owner welcomes unconventional methods; Bonnie (`claude-opus-5-5`) wrote memo-21 (priced shortlist, dead list, owner items). |
