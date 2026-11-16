@@ -734,6 +734,50 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   file reads (inferred from the counters and the Linux 5.4 source; R63 records `pswpin` to test it). "Resident
   MB" measures the file only and does not see this.
 
+### R64 KV and recurrent clear with MADV_DONTNEED, with R63's gate rule and num, on Granite and OLMoE (kit r25)
+
+- **Date:** 2026-11-16, from 21:00 local. **Label:** *device*. Pre-registration:
+  [prereg/R64-kv-clear-dontneed-two-models-device.md](../prereg/R64-kv-clear-dontneed-two-models-device.md)
+  (commit `00cda7a`). **Source:** [device/r25_2026-11-16.json](device/r25_2026-11-16.json) (sha256
+  `5b31f7a2…5f85`), read with `tools/c2_research_parse.py` (commit `fb781dd`); the Cached and clock checks are
+  the lead's reading of the same file. R63 (kit r24) was not run; its rules are applied here as R64 §1 says.
+- **Checks:** model hashes OK; one library hash per library, equal to the build; 0001-0008 and app 0001-0009 as
+  built; one text per model and arm, **the same with kv on and off** (Granite `afb8490b` / `13584df0`, OLMoE
+  `f8a9fdc4` / `40f6ce50`); no charger; 8 kv and 8 plain scored runs per model, all paired.
+- **kv factor: VOID (kit).** Every kv run printed `c2-kvclear ... released=0 why=map` (32 `kv` and 16 `rs`
+  lines): the runtime check of `/proc/self/maps` declined every buffer and fell back to the full memset, so the
+  lever never ran. Cause, inferred and not yet verified: Android's heap pointers on arm64 carry a tag in the top
+  byte (scudo with top-byte ignore), so the tagged buffer address matches no line of `/proc/self/maps`. Fix
+  (memo to follow): untag the address before the maps check and before `madvise`. The kv-minus-plain figures the
+  parser prints (Granite TTFT −294 ± 528 ms, OLMoE +51 ± 286; decode −4.2 ± 3.6 and −2.2 ± 3.3 ms) compare two
+  identical code paths and are a measure of noise only.
+- **Premise of the lever on this day:** pre-prompt major faults, median of the plain scored runs, were 6
+  (Granite) and 26 (OLMoE); predicted for OLMoE off 20k to 50k: **miss**. Large pre-prompt fault counts still
+  occurred in single runs (OLMoE up to 40,307, Granite up to 53,437), mostly after 90 s waits. `/proc/vmstat`
+  was not readable in any of 48 rows, so the swap reading (R63 §3) is **not scorable**.
+- **Phone state:** `Cached` at least 2.4 GB before all 16 scored runs of each model (2,637 to 3,106 MB); cap
+  2,035 MHz in the profiled runs, below 2,112, so **levels are not scored**. Every r16 wait ran to 91 s (8 of 8
+  per model): the gate factor is **exercised** on both models.
+- **Gate rule, plateau minus r16 (kv pooled, both arms):**
+  - Granite: tok/s −1.18 ± 1.44 (blocks) / ± 1.14 (runs); OLMoE +0.21 ± 2.32 / ± 1.28. Neither beyond 2 × SE:
+    **"shorter session, speed not shown"** on both. Predicted +1.2 (−0.3 to +3.0) and +1.5 (−0.5 to +3.5):
+    Granite **miss** (low), OLMoE **hit**.
+  - Wait −43.6 and −42.8 s (−30 to −45): **hit** on both. File MB lost in the wait −232 and −153 (−100 to
+    −450): **hit**. Headroom at start +0.01 (−0.02 to +0.03): **hit**. `VmSwap` at start, difference of the
+    arm medians about −20 and −10 MB (0 to −150): **hit**. Clock cap no worse with plateau.
+- **num minus off (mean of the four ABBA quads, kv pooled):**
+  - **Granite +2.68 ± 0.71 tok/s: pass** (3.8 × SE); band +1.4 to +3.4: **hit**. Plain runs only +2.79 ± 1.86.
+  - **OLMoE +2.02 ± 1.09 tok/s: not shown** (1.9 × SE); band −1.0 to +3.0: **hit**. Plain only +1.86 ± 2.48.
+    This is the third round without a shown gain (R60 +1.71 ± 0.70 was skip alone; R62 +0.15 ± 1.00). By R63 §4
+    `MASS=900` is not carried into further device rounds until the pre-run memory state is under control, or a
+    host-side reason brings it back.
+  - Under r16 waits num minus off was larger on both (Granite +3.86 ± 0.34, OLMoE +3.45 ± 0.72, 2 quads each)
+    than under plateau waits (+1.49, +0.59): a reading, not pre-registered.
+- **Generalisation:** "plateau helps both by a similar amount": **miss** (neither shown). "num resolved on
+  Granite, not on OLMoE": **hit**. "kv effect on both, scaled by buffer size": **not testable** (void).
+- **Scored runs, tok/s medians (kv pooled; not levels):** Granite off 16.17 / 16.04, num 19.72 / 16.91 (r16 /
+  plateau); OLMoE off 18.47 / 20.91, num 21.88 / 21.06.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-21, unconventional levers priced on both models (owner's list and new directions)](memo-21-unconventional-levers.md);
 [memo-22, kit r23 (head knob at load, cheap hold, threads 3 against 4)](memo-22-kit-r23.md);
