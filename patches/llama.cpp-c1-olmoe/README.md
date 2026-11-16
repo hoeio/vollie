@@ -275,3 +275,15 @@ kit and checks: `campaigns/02-25toks-5pct/reports/memo-26-kit-r25.md`.
 - **Not verified:** anything on Android (bionic, the phone's kernel, zram, THP mode); the `map` decline path (no public
   API makes a `CPU` buffer over shared memory; a `CPU_Mapped` buffer over a shared mapping is declined as `notcpu` and
   zeroed by the `memset`).
+
+## 0009-c2-kv-untag (2026-11-17, fix of 0008; bit-identical, same knob `VOLLIE_KV_DONTNEED=1`)
+
+R64: on the phone every clear printed `why=map` (released 0): Android arm64 heap pointers carry a tag in the top
+byte (scudo, top-byte ignore), and the tagged address matched no line of `/proc/self/maps`. 0009 computes the
+page range, the maps check and the `madvise` on the untagged address (top byte cleared on aarch64; no change
+elsewhere) and memsets the edges through the original pointer. The `c2-kvclear` line gains `tag=0x..` (the top
+byte of the buffer address) so the phone shows the cause directly. Host check (*host*, Ubuntu 24.04 aarch64
+container): `tools/c2_kvclear_tag_test.cpp` tags a 64 MB anonymous mapping with 0xb4: the maps check fails on
+the tagged range and passes on the untagged one, `madvise` succeeds, every byte reads zero, 67,104,768 B
+released; `llama-impl.cpp` compiles on macOS and Linux. Not yet run on the phone; per-chunk identity on the
+full build still to be repeated with the kit tree.

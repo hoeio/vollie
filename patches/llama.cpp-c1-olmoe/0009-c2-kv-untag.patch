@@ -1,0 +1,49 @@
+diff --git a/src/llama-impl.cpp b/src/llama-impl.cpp
+index 448da8897..adb791200 100644
+--- a/src/llama-impl.cpp
++++ b/src/llama-impl.cpp
+@@ -141,11 +141,21 @@ void llama_c2_buffer_clear0(ggml_backend_buffer_t buf, const char * kind) {
+     const size_t size = ggml_backend_buffer_get_size(buf);
+     size_t released = 0;
+     const char * why = on ? "os" : "off";
++    unsigned tag = 0;
+ #if defined(__linux__)
+     if (on) {
+         uint8_t * p = (uint8_t *) ggml_backend_buffer_get_base(buf);
+         const uintptr_t pg = (uintptr_t) sysconf(_SC_PAGESIZE);
+-        const uintptr_t a = ((uintptr_t) p + pg - 1) & ~(pg - 1), b = ((uintptr_t) p + size) & ~(pg - 1);
++        // Android arm64 heap pointers carry a tag in the top byte (scudo, top-byte ignore); /proc/self/maps and the
++        // kernel's VMAs use untagged addresses, so the range is computed on the untagged address (R64: why=map).
++#if defined(__aarch64__)
++        const uintptr_t tagmask = ~((uintptr_t) 0xff << 56);
++#else
++        const uintptr_t tagmask = ~(uintptr_t) 0;
++#endif
++        tag = (unsigned) ((uintptr_t) p >> 56);
++        const uintptr_t u = (uintptr_t) p & tagmask;
++        const uintptr_t a = (u + pg - 1) & ~(pg - 1), b = (u + size) & ~(pg - 1);
+         if (!ggml_backend_buffer_is_host(buf) || strcmp(ggml_backend_buffer_name(buf), "CPU") != 0 || p == nullptr) {
+             why = "notcpu";
+         } else if (b <= a) {
+@@ -155,8 +165,8 @@ void llama_c2_buffer_clear0(ggml_backend_buffer_t buf, const char * kind) {
+         } else if (madvise((void *) a, b - a, MADV_DONTNEED) != 0) {
+             why = "madvise";
+         } else {
+-            memset(p, 0, a - (uintptr_t) p);
+-            memset((void *) b, 0, (uintptr_t) p + size - b);
++            memset(p, 0, a - u);                    // edges through the original (tagged) pointer
++            memset(p + (b - u), 0, u + size - b);
+             released = b - a;
+             why = "ok";
+         }
+@@ -166,8 +176,8 @@ void llama_c2_buffer_clear0(ggml_backend_buffer_t buf, const char * kind) {
+         ggml_backend_buffer_clear(buf, 0);
+     }
+     const char * run = getenv("VOLLIE_RUN");
+-    fprintf(stderr, "c2-kvclear run=%s kind=%s on=%d bytes=%zu released=%zu why=%s us=%lld\n", run && *run ? run : "-",
+-            kind, on ? 1 : 0, size, released, why, (long long) (ggml_time_us() - t0));
++    fprintf(stderr, "c2-kvclear run=%s kind=%s on=%d bytes=%zu released=%zu why=%s us=%lld tag=0x%02x\n", run && *run ? run : "-",
++            kind, on ? 1 : 0, size, released, why, (long long) (ggml_time_us() - t0), tag);
+ }
+ 
+ void replace_all(std::string & s, const std::string & search, const std::string & replace) {
