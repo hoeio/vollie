@@ -1,0 +1,370 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -4982,11 +4982,326 @@
+             ggml_c2_st_bytes_read += eb;
+             if (!kept[a]) {
+                 ggml_c2_st_bytes_unread += eb;
++            }
++        }
++    }
++}
++
++// Vollie c2 (patches/llama.cpp-c1-olmoe/0007): routing prior toward recently used experts. Numerics change when on; off
++// unless VOLLIE_PRIOR is set. Rule, per MoE layer l and token at position p (the KV position: the graph's rope positions,
++// or, without rope, the number of KV cells the token's attention-mask row admits minus 1):
++//   H = union of the experts SELECTED at layer l at positions p-1 .. p-N that this instance evaluated (a per-layer
++//       ring keyed by position with a position tag; an entry counts only if its tag equals the wanted position),
++//   choose the top k of  probs_e * (e in H ? exp(lambda) : 1)  (= logit + lambda for softmax gating), stable order;
++//   the mixing weights stay the unbiased probs (get_rows downstream reads src, not the score), so 0003's skip still
++//   ranks by the true weight. lambda = VOLLIE_PRIOR / 1000, N = VOLLIE_PRIOR_N (default 4). VOLLIE_PRIOR_J=j (default 0):
++//   the top j experts by unbiased probs are boosted as well, so they are always selected (top-J of arXiv 2412.00099).
++// Rows of one graph are decided in row order by thread 0 and each row writes its entry before the next row reads, so a
++// 512-token batch takes the same decisions as 512 one-token graphs given the same probs. A sequence start (p = 0) has
++// no history; a rollback or KV reuse finds the entries written when those positions were last evaluated.
++// VOLLIE_PRIOR set (any value, 0 = counters only, no change) with VOLLIE_SKIP_STATS=1: c2-prior: line at exit, counted on
++// the slots the expert op really kept (after skip). VOLLIE_PRIOR_DUMP=<file>: 32-byte records (pos, layer, sel, kept,
++// base masks) per token and layer. VOLLIE_PRIOR_DUMP_P=<file> (host check): per decided row, pos, layer, the probs and the
++// selection, so that a replay of the rule written out sequentially can be compared with what the op chose.
++// ponytail: single sequence per batch or contiguous sequences; interleaved multi-sequence batches would share entries.
++#define GGML_C2_PRIOR_R 4096
++#define GGML_C2_PRIOR_L 128
++struct ggml_c2_prior_ent { int32_t tag, ktag; uint64_t sel, base, kept; };
++static struct ggml_c2_prior_ent * ggml_c2_prior_ring[GGML_C2_PRIOR_L];
++static bool  ggml_c2_prior_set, ggml_c2_prior_act, ggml_c2_prior_stats;
++static float ggml_c2_prior_mult = 1.0f, ggml_c2_prior_lambda;
++static int   ggml_c2_prior_n = 4, ggml_c2_prior_k, ggml_c2_prior_j;
++static FILE * ggml_c2_prior_dump, * ggml_c2_prior_dump_p;
++static const struct ggml_tensor * ggml_c2_prior_pos, * ggml_c2_prior_outids, * ggml_c2_prior_last_ids;
++static unsigned long long ggml_c2_pr_rec, ggml_c2_pr_tok, ggml_c2_pr_unmapped, ggml_c2_pr_sel, ggml_c2_pr_kept, ggml_c2_pr_forced,
++    ggml_c2_pr_prev_n, ggml_c2_pr_prev_ov, ggml_c2_pr_prev_new, ggml_c2_pr_hist_ov, ggml_c2_pr_ws_n, ggml_c2_pr_ws;
++static unsigned long long ggml_c2_pr_lrec[GGML_C2_PRIOR_L], ggml_c2_pr_lnew[GGML_C2_PRIOR_L];
++
++static struct ggml_c2_prior_ent * ggml_c2_prior_get(int l, int32_t p) {
++    if (l < 0 || l >= GGML_C2_PRIOR_L || p < 0) {
++        return NULL;
++    }
++    if (!ggml_c2_prior_ring[l]) {
++        ggml_c2_prior_ring[l] = calloc(GGML_C2_PRIOR_R, sizeof(struct ggml_c2_prior_ent));
++        for (int i = 0; i < GGML_C2_PRIOR_R; i++) {
++            ggml_c2_prior_ring[l][i].tag = ggml_c2_prior_ring[l][i].ktag = -1;
++        }
++    }
++    return &ggml_c2_prior_ring[l][p & (GGML_C2_PRIOR_R - 1)];
++}
++
++static uint64_t ggml_c2_prior_hist(int l, int32_t p, bool kept) { // union over p-1 .. p-N of valid entries
++    uint64_t h = 0;
++    for (int d = 1; d <= ggml_c2_prior_n && p - d >= 0; d++) {
++        const struct ggml_c2_prior_ent * e = ggml_c2_prior_get(l, p - d);
++        if (kept ? e->ktag == p - d : e->tag == p - d) {
++            h |= kept ? e->kept : e->sel;
++        }
++    }
++    return h;
++}
++
++// position of row r of a MoE op with n rows: all tokens of the graph, or the output rows of a pruned last layer; -1 unknown
++// (copies taken at graph start: the allocator reuses an input's memory after its last reader, the last layer's rope)
++static int32_t * ggml_c2_prior_posv, * ggml_c2_prior_oiv;
++static int64_t   ggml_c2_prior_npos = -1, ggml_c2_prior_noi = -1, ggml_c2_prior_cap;
++
++static int32_t ggml_c2_prior_rowpos(int64_t r, int64_t n) {
++    if (ggml_c2_prior_npos < 0) {
++        return -1;
++    }
++    if (n == ggml_c2_prior_npos) {
++        return ggml_c2_prior_posv[r];
++    }
++    if (n == ggml_c2_prior_noi) {
++        const int32_t j = ggml_c2_prior_oiv[r];
++        return j >= 0 && j < ggml_c2_prior_npos ? ggml_c2_prior_posv[j] : -1;
++    }
++    return -1;
++}
++
++static int ggml_c2_prior_layer(const struct ggml_tensor * t) {
++    int l = -1;
++    return sscanf(t->name, "ffn_moe_argsort-%d", &l) == 1 && l < GGML_C2_PRIOR_L ? l : -1;
++}
++
++// the MoE argsort with the prior (thread 0, all rows in order); false = not applicable, run the stock op
++static bool ggml_c2_prior_argsort(struct ggml_tensor * dst) {
++    const struct ggml_tensor * src = dst->src[0];
++    const int l = ggml_c2_prior_layer(dst);
++    const int64_t ne0 = src->ne[0], nr = ggml_nrows(src);
++    const int k = ggml_c2_prior_k;
++    if (l < 0 || src->type != GGML_TYPE_F32 || ne0 > 64 || k <= 0 || k > ne0 || src->nb[0] != sizeof(float) ||
++        ggml_get_op_params_i32(dst, 0) != GGML_SORT_ORDER_DESC || (nr > 0 && ggml_c2_prior_rowpos(0, nr) < 0)) {
++        return false;
++    }
++    for (int64_t r = 0; r < nr; r++) {
++        const float * x = (const float *) ((const char *) src->data + r*src->nb[1]);
++        int32_t * o = (int32_t *) ((char *) dst->data + r*dst->nb[1]);
++        const int32_t p = ggml_c2_prior_rowpos(r, nr);
++        const uint64_t h = ggml_c2_prior_hist(l, p, false);
++        float sc[64];
++        int   ob[64];
++        for (int j = 0; j < ne0; j++) { // stable insertion sort, descending: unbiased (base)
++            int b = j;
++            for (; b > 0 && x[ob[b - 1]] < x[j]; b--) {
++                ob[b] = ob[b - 1];
+             }
++            ob[b] = j;
+         }
++        uint64_t hj = h, sel = 0, base = 0;
++        for (int s = 0; s < ggml_c2_prior_j && s < ne0; s++) {
++            hj |= 1ull << ob[s]; // the top J unbiased experts are boosted too, so they are always kept (paper's top-J)
++        }
++        for (int j = 0; j < ne0; j++) { // stable insertion sort, descending: biased (output)
++            sc[j] = (hj >> j & 1) ? x[j]*ggml_c2_prior_mult : x[j];
++            int a = j;
++            for (; a > 0 && sc[o[a - 1]] < sc[j]; a--) {
++                o[a] = o[a - 1];
++            }
++            o[a] = j;
++        }
++        for (int s = 0; s < k; s++) {
++            sel  |= 1ull << o[s];
++            base |= 1ull << ob[s];
++        }
++        struct ggml_c2_prior_ent * e = ggml_c2_prior_get(l, p);
++        e->tag = p; e->sel = sel; e->base = base;
++        if (ggml_c2_prior_dump_p) { // host check (VOLLIE_PRIOR_DUMP_P): the probs this row was decided on, for a replay
++            const int32_t hd[4] = { p, l, (int32_t) ne0, 0 };
++            fwrite(hd, sizeof(hd), 1, ggml_c2_prior_dump_p);
++            fwrite(x, sizeof(float), ne0, ggml_c2_prior_dump_p);
++            fwrite(&sel, sizeof(sel), 1, ggml_c2_prior_dump_p);
++        }
+     }
++    return true;
+ }
+ 
++// thread 0, after a MUL_MAT_ID: once per layer and graph, the kept slots (skip mask applied) into the ring, counters, dump
++static void ggml_c2_prior_record(const struct ggml_tensor * node) {
++    const struct ggml_tensor * ids = node->src[2];
++    int l = -1;
++    if (ids == ggml_c2_prior_last_ids || sscanf(node->src[0]->name, "blk.%d.", &l) != 1 || l < 0 || l >= GGML_C2_PRIOR_L ||
++        node->src[0]->ne[2] > 64) {
++        return;
++    }
++    ggml_c2_prior_last_ids = ids;
++    const int n_ids = ids->ne[0];
++    const int64_t n_tok = ids->ne[1];
++    for (int64_t t = 0; t < n_tok; t++) {
++        const int32_t p = ggml_c2_prior_rowpos(t, n_tok);
++        if (p < 0) {
++            ggml_c2_pr_unmapped++;
++            continue;
++        }
++        uint64_t sel = 0, kept = 0;
++        for (int s = 0; s < n_ids; s++) {
++            const int32_t a = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + s*ids->nb[0]);
++            if (a >= 0 && a < 64) {
++                sel |= 1ull << a;
++                if (!(ggml_cpu_skip_on_tl && t*n_ids + s < GGML_CPU_SKIP_MAX && ggml_cpu_skip_mask_tl[t*n_ids + s])) {
++                    kept |= 1ull << a;
++                }
++            }
++        }
++        struct ggml_c2_prior_ent * e = ggml_c2_prior_get(l, p);
++        if (e->tag != p || e->sel != sel) { // the prior did not decide this row (off, or not applicable): stock routing
++            e->tag = p; e->sel = sel; e->base = sel;
++        }
++        const uint64_t hsel = ggml_c2_prior_hist(l, p, false);
++        const struct ggml_c2_prior_ent * pv = ggml_c2_prior_get(l, p - 1);
++        e->ktag = p; e->kept = kept;
++        if (ggml_c2_prior_dump) {
++            struct { int32_t pos; int16_t layer, pad; uint64_t sel, kept, base; } rec = { p, (int16_t) l, 0, sel, kept, e->base };
++            fwrite(&rec, sizeof(rec), 1, ggml_c2_prior_dump);
++        }
++        if (!ggml_c2_prior_stats) {
++            continue;
++        }
++        ggml_c2_pr_rec++;
++        ggml_c2_pr_lrec[l]++;
++        ggml_c2_pr_tok   += l == 0;
++        ggml_c2_pr_sel   += __builtin_popcountll(sel);
++        ggml_c2_pr_kept  += __builtin_popcountll(kept);
++        ggml_c2_pr_forced += __builtin_popcountll(sel & ~e->base);
++        ggml_c2_pr_hist_ov += __builtin_popcountll(sel & hsel);
++        if (pv && pv->ktag == p - 1) {
++            const uint64_t nw = __builtin_popcountll(kept & ~pv->kept);
++            ggml_c2_pr_prev_n++;
++            ggml_c2_pr_prev_ov  += __builtin_popcountll(kept & pv->kept);
++            ggml_c2_pr_prev_new += nw;
++            ggml_c2_pr_lnew[l]  += nw;
++        }
++        if ((p & 31) == 31) { // aligned 32-position window ending here: distinct kept slots, if all 32 were seen
++            uint64_t u = 0;
++            int d = 0;
++            for (; d < 32; d++) {
++                const struct ggml_c2_prior_ent * w = ggml_c2_prior_get(l, p - d);
++                if (!w || w->ktag != p - d) {
++                    break;
++                }
++                u |= w->kept;
++            }
++            if (d == 32) {
++                ggml_c2_pr_ws_n++;
++                ggml_c2_pr_ws += __builtin_popcountll(u);
++            }
++        }
++    }
++}
++
++static void ggml_c2_prior_report(void) {
++    const double rec = ggml_c2_pr_rec ? (double) ggml_c2_pr_rec : 1.0, pn = ggml_c2_pr_prev_n ? (double) ggml_c2_pr_prev_n : 1.0;
++    const double nl = ggml_c2_pr_tok ? (double) ggml_c2_pr_rec / ggml_c2_pr_tok : 0.0; // layers per token
++    fprintf(stderr, "c2-prior: lambda=%g n=%d j=%d k=%d tokens=%llu layer_tokens=%llu unmapped=%llu sel_per_lt=%.4f kept_per_lt=%.4f "
++            "forced_per_lt=%.4f hist_overlap=%.4f prev_overlap_kept=%.4f new_vs_prev_per_lt=%.4f new_vs_prev_per_tok=%.3f "
++            "ws32_per_layer=%.3f ws32_slices=%.2f windows=%llu\n",
++            (double) ggml_c2_prior_lambda, ggml_c2_prior_n, ggml_c2_prior_j, ggml_c2_prior_k, ggml_c2_pr_tok, ggml_c2_pr_rec, ggml_c2_pr_unmapped,
++            ggml_c2_pr_sel/rec, ggml_c2_pr_kept/rec, ggml_c2_pr_forced/rec, ggml_c2_pr_hist_ov/(double) (ggml_c2_pr_sel ? ggml_c2_pr_sel : 1),
++            ggml_c2_pr_prev_ov/(double) (ggml_c2_pr_kept ? ggml_c2_pr_kept : 1), ggml_c2_pr_prev_new/pn, ggml_c2_pr_prev_new/pn*nl,
++            ggml_c2_pr_ws_n ? (double) ggml_c2_pr_ws/ggml_c2_pr_ws_n : 0.0, ggml_c2_pr_ws_n ? (double) ggml_c2_pr_ws/ggml_c2_pr_ws_n*nl : 0.0,
++            ggml_c2_pr_ws_n);
++    fprintf(stderr, "c2-prior-layer: new_vs_prev_per_lt");
++    for (int l = 0; l < GGML_C2_PRIOR_L; l++) {
++        if (ggml_c2_pr_lrec[l]) {
++            fprintf(stderr, " %d:%.3f", l, (double) ggml_c2_pr_lnew[l] / ggml_c2_pr_lrec[l]);
++        }
++    }
++    fprintf(stderr, "\n");
++    if (ggml_c2_prior_dump) {
++        fflush(ggml_c2_prior_dump);
++    }
++    if (ggml_c2_prior_dump_p) {
++        fflush(ggml_c2_prior_dump_p);
++    }
++}
++
++// per graph (calling thread): knobs, and the graph's position / output-row inputs and k
++static void ggml_c2_prior_begin(const struct ggml_cgraph * cgraph) {
++    const char * e = getenv("VOLLIE_PRIOR");
++    ggml_c2_prior_set = e != NULL && *e;
++    ggml_c2_prior_lambda = ggml_c2_prior_set ? (float) atof(e) / 1000.0f : 0.0f;
++    ggml_c2_prior_act = ggml_c2_prior_lambda > 0.0f;
++    ggml_c2_prior_mult = expf(ggml_c2_prior_lambda);
++    ggml_c2_prior_n = (e = getenv("VOLLIE_PRIOR_N")) && atoi(e) > 0 ? atoi(e) : 4;
++    ggml_c2_prior_j = (e = getenv("VOLLIE_PRIOR_J")) && atoi(e) > 0 ? atoi(e) : 0;
++    ggml_c2_prior_last_ids = NULL;
++    ggml_c2_prior_pos = ggml_c2_prior_outids = NULL;
++    if (!ggml_c2_prior_set) {
++        return;
++    }
++    static bool reg = false;
++    if (!reg) {
++        reg = true;
++        ggml_c2_prior_stats = (e = getenv("VOLLIE_SKIP_STATS")) && atoi(e) > 0;
++        if ((e = getenv("VOLLIE_PRIOR_DUMP")) && *e) {
++            ggml_c2_prior_dump = fopen(e, "wb");
++        }
++        if ((e = getenv("VOLLIE_PRIOR_DUMP_P")) && *e) {
++            ggml_c2_prior_dump_p = fopen(e, "wb");
++        }
++        if (ggml_c2_prior_stats || ggml_c2_prior_dump || ggml_c2_prior_dump_p) {
++            atexit(ggml_c2_prior_report);
++        }
++    }
++    const struct ggml_tensor * mask = NULL;
++    int64_t ntok = -1;
++    for (int i = 0; i < cgraph->n_nodes; i++) {
++        const struct ggml_tensor * t = cgraph->nodes[i];
++        if (t->op == GGML_OP_ROPE && t->src[1] && t->src[1]->type == GGML_TYPE_I32 && !ggml_c2_prior_pos) {
++            ggml_c2_prior_pos = t->src[1];
++        } else if (t->op == GGML_OP_GET_ROWS && t->src[1] && !ggml_c2_prior_outids && strcmp(t->src[1]->name, "out_ids") == 0) {
++            ggml_c2_prior_outids = t->src[1];
++        } else if (t->op == GGML_OP_VIEW && t->src[0] && t->src[0]->op == GGML_OP_ARGSORT && ggml_c2_prior_layer(t->src[0]) >= 0) {
++            ggml_c2_prior_k = (int) t->ne[0];
++            if (ntok < 0) {
++                ntok = ggml_nrows(t->src[0]); // the first MoE layer routes every token of the graph
++            }
++        } else if (!mask && ((t->op == GGML_OP_FLASH_ATTN_EXT && t->src[3]) || (t->op == GGML_OP_SOFT_MAX && t->src[1]))) {
++            mask = t->op == GGML_OP_FLASH_ATTN_EXT ? t->src[3] : t->src[1];
++        }
++    }
++    // no rope in the graph (Granite-4.0-H attention is NoPE), or VOLLIE_PRIOR_POS=mask: position of token row t =
++    // (KV cells row t of the attention mask lets it see) - 1, i.e. its position in a single causal sequence
++    const bool use_mask = !ggml_c2_prior_pos || ((e = getenv("VOLLIE_PRIOR_POS")) && strcmp(e, "mask") == 0);
++    const struct ggml_tensor * pt = use_mask ? NULL : ggml_c2_prior_pos, * ot = ggml_c2_prior_outids;
++    ggml_c2_prior_npos = ggml_c2_prior_noi = -1;
++    if (use_mask && (!mask || !mask->data || ntok < 0 || ntok > mask->ne[1] || (mask->type != GGML_TYPE_F16 && mask->type != GGML_TYPE_F32))) {
++        return;
++    }
++    if ((!use_mask && (!pt || !pt->data)) || (ot && !ot->data)) {
++        return;
++    }
++    const int64_t np = use_mask ? ntok : pt->ne[0];
++    const int64_t need = np + (ot ? ot->ne[0] : 0);
++    if (need > ggml_c2_prior_cap) {
++        free(ggml_c2_prior_posv);
++        ggml_c2_prior_posv = malloc(need*sizeof(int32_t));
++        ggml_c2_prior_cap  = ggml_c2_prior_posv ? need : 0;
++        if (!ggml_c2_prior_posv) {
++            return;
++        }
++    }
++    if (use_mask) {
++        for (int64_t r = 0; r < np; r++) {
++            int32_t vis = 0;
++            for (int64_t c = 0; c < mask->ne[0]; c++) {
++                const char * q = (const char *) mask->data + r*mask->nb[1] + c*mask->nb[0];
++                vis += mask->type == GGML_TYPE_F16 ? *(const ggml_fp16_t *) q != 0xFC00 : *(const float *) q != -INFINITY;
++            }
++            ggml_c2_prior_posv[r] = vis - 1;
++        }
++    } else {
++        memcpy(ggml_c2_prior_posv, pt->data, np*sizeof(int32_t));
++    }
++    ggml_c2_prior_npos = np;
++    ggml_c2_prior_oiv = ggml_c2_prior_posv + np;
++    if (ot) {
++        memcpy(ggml_c2_prior_oiv, ot->data, ot->ne[0]*sizeof(int32_t));
++        ggml_c2_prior_noi = ot->ne[0];
++    }
++}
++
+ // Vollie: env GGML_SSM_INPLACE (default on since r5, "" = unset = on, 0 = off; bit-identical: the same floats land in the same cache
+ // bytes, only the 1.5 MB/layer bounce through the scan output and back is gone). For a one-token,
+ // one-sequence, no-snapshot SSM_SCAN whose final state is CPY'd straight into the recurrent cache
+@@ -6117,14 +6432,18 @@
+             ggml_cpu_pcold_node(cgraph, node_n); // Vollie c2: GGML_PREFILL_COLD (batch graphs only)
+         }
+ #endif
+-        if (tiny && state->ith != 0) {
++        // Vollie c2 (0007): the MoE argsort with VOLLIE_PRIOR on is done by thread 0 alone, rows in order
++        const bool c2p = ggml_c2_prior_act && node->op == GGML_OP_ARGSORT && ggml_c2_prior_layer(node) >= 0;
++        if ((tiny || c2p) && state->ith != 0) {
+             // thread 0 does it alone
+         } else {
+             struct ggml_compute_params p = params;
+-            if (tiny) {
++            if (tiny || c2p) {
+                 p.nth = 1;
+             }
+-            if (mfuse) {
++            if (c2p && ggml_c2_prior_argsort(node)) {
++                // done
++            } else if (mfuse) {
+                 ggml_cpu_mmid_decode_fused(&p, cgraph->nodes[node_n + 2]);
+             } else if (n_fused > 0) {
+                 ggml_compute_forward_rms_norm_mul_fused(&p, node, cgraph->nodes[node_n + 1]);
+@@ -6172,6 +6491,9 @@
+                 ggml_cpu_prof_kept[ggml_cpu_ab_var] += kept;
+                 ggml_cpu_prof_ktok[ggml_cpu_ab_var] += ids->ne[1];
+             }
++            if (state->ith == 0 && ggml_c2_prior_set && (ggml_c2_prior_stats || ggml_c2_prior_dump || ggml_c2_prior_act)) {
++                ggml_c2_prior_record(node); // Vollie c2 (0007): kept slots into the ring, counters
++            }
+             ggml_cpu_mmid_seq_tl++;
+         }
+ 
+@@ -6735,6 +7057,7 @@
+             atexit(ggml_c2_skip_report);
+         }
+     }
++    ggml_c2_prior_begin(cgraph); // Vollie c2 (0007): VOLLIE_PRIOR*, per graph
+     const char * ilp = getenv("GGML_Q3K_ILP");
+     ggml_cpu_q3k_ilp = ilp && *ilp ? atoi(ilp) != 0 : 1; // Vollie: default on since r4 (bit-identical, R23)
+     const char * pf = getenv("GGML_Q3K_PF");

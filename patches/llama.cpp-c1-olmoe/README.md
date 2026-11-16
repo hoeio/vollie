@@ -171,3 +171,74 @@ Everything here runs only with `GGML_C2_IO=1` (0002's counter) and only prints; 
   (2 chunks). KleidiAI build + `VOLLIE_HEAD2_REPACK=1` + `VOLLIE_HEAD2=1024`: the head runs (`exact=q6_K_8x4`), copy
   fingerprint `0cb3ff34cab00989` equal to the non-KleidiAI build, `mismatches=0`. Per-chunk values of a KleidiAI build
   differ from a non-KleidiAI build in any case (its Q4_0 kernels), with or without this patch.
+
+## 0007-c2-routing-prior.patch (numerics change when on)
+
+`VOLLIE_PRIOR=<lambda x 1000>` (unset = off; `0` = counters only, no change), `VOLLIE_PRIOR_N=<tokens>` (default 4),
+`VOLLIE_PRIOR_J=<j>` (default 0), with `VOLLIE_SKIP_STATS=1` a `c2-prior:` line at exit; host checks only:
+`VOLLIE_PRIOR_DUMP=<file>`, `VOLLIE_PRIOR_DUMP_P=<file>`, `VOLLIE_PRIOR_POS=mask`. File: `ggml/src/ggml-cpu/ggml-cpu.c`
+(+316 lines, 3 changed). memo-21 item N2 (cache-conditional routing) in the deterministic-history form. Host study: R64 queue in
+`lab/logs/r64-prior/` (untracked), analysis `tools/c2_prior_trace.py`.
+
+- **Rule.** Per MoE layer `l` and token at KV position `p`: `H` = union of the experts **selected** at layer `l` at
+  positions `p-1 .. p-N` that this instance evaluated; the top k is taken over `probs_e * exp(lambda)` for `e` in `H`
+  (plus the top `J` experts by unbiased probs, which are thereby always kept) and `probs_e` otherwise. For softmax gating
+  (OLMoE, Granite) that is `+lambda` on the router logit. The mixing weights stay the unbiased probs: only the
+  `ffn_moe_argsort-<l>` op is replaced, and the `get_rows` that reads the weights reads its source, not the score. So
+  0003's skip rules (`VOLLIE_SKIP_MASS`, `GGML_EXPERT_SKIP`) still rank by the true weight and compose unchanged; the
+  history is the selected set, before skip (the skip decision is made later, in the expert op).
+- **Same decisions in a batch and one token at a time.** The history is a per-layer ring of 4,096 entries keyed by
+  position with a position tag; an entry counts only if its tag is the position wanted. Thread 0 decides the rows of
+  one graph in row order and each row writes its entry before the next row reads. A 512-token batch therefore takes
+  the decisions 512 one-token graphs take **given the same probs**. Positions come from the graph's rope positions
+  (`inp_pos`, OLMoE); a graph without rope (Granite-4.0-H's attention is NoPE: no `ROPE` node, no positions in the
+  graph) uses, per token row, the number of KV cells its attention-mask row admits minus 1, which is the position in a
+  single causal sequence. A pruned last layer (only the output rows, `out_ids`) maps its rows through `out_ids`. Both
+  inputs are copied at graph start (the allocator reuses an input's memory after its last reader).
+- **Sequence start, chunk start, KV reuse.** Position 0 has no history (`p-d < 0`). A new sequence overwrites the
+  entries position by position before any later position reads them, so stale entries of an earlier sequence never
+  count. A rollback or a KV prefix reuse finds the entries written when those positions were last evaluated, which
+  are the ones the reused KV cells belong to. Not covered: a KV state loaded from a file (entries absent: the prior
+  starts empty at the loaded positions) and interleaved multi-sequence batches (sequences would share entries; a
+  contiguous sequence after another one in the same batch is fine). In a perplexity chunk the last layer routes only
+  positions 256 to 511 (outputs), in both settings alike; in an app prompt it routes only the last prompt token, so
+  the last layer's history at the first decode token is that token alone.
+- **Counters** (`VOLLIE_SKIP_STATS=1` and `VOLLIE_PRIOR` set), on the slots the expert op really kept (after skip),
+  per token and layer: `forced_per_lt` (selected experts outside the unbiased top k), `hist_overlap` (selected and in
+  `H`), `prev_overlap_kept` (kept and kept at `p-1`), `new_vs_prev_per_lt` / `_per_tok` (kept slices not kept at
+  `p-1`, the per-layer means on the `c2-prior-layer:` line), `ws32_slices` (distinct kept slices over aligned
+  32-position windows, all layers). `VOLLIE_PRIOR_DUMP` writes 32-byte records (pos, layer, selected, kept, unbiased
+  masks) per token and layer; `tools/c2_prior_trace.py stats|cmp|sim` reads them.
+- **Cost.** With the knob unset: one `getenv` per graph. On: a graph scan per graph (positions, `out_ids`, k), the
+  MoE argsort on thread 0 alone (two 64-element insertion sorts per row), about 2.1 MB of ring for 16 layers (5.2 MB for
+  40). Not plumbed into `GGML_CPU_AB`.
+- **Host checks (2026-11-16, *host*, M4 Pro, `-t 8`, build `armv8.2-a+dotprod+fp16`, KleidiAI, Metal and BLAS off (the budgets' build kind),
+  OpenMP on; env `GGML_TINY_OP=262144 GGML_EXPERT_IO=1 VOLLIE_SAMPLER_BYPASS=1 GGML_C2_IO=1 VOLLIE_SKIP_STATS=1`):**
+  - *Identity.* Knob unset and `VOLLIE_PRIOR=0` (counters on): per-chunk PPL of 3 chunks equal to the 0001-0006 tree at
+    `-b 512`, `-ub 32` and `-ub 1`, on `olmoe-Mi` and `granite-Mi`, in the off arm and the num arm (OLMoE `MASS=900` +
+    `VOLLIE_HEAD2=1024`, Granite `GGML_EXPERT_SKIP=130` + `GGML_HEAD2=2048 GGML_HEAD2_Q=q4_0`, `_BATCH` at `-b 512`).
+    The 60-chunk stock values equal R50's and R59's at chunk 60 (OLMoE 12.6795, Granite 9.3419 / 9.3420, Granite num
+    9.6526 / 9.6464).
+  - *The op computes the defined rule in every batch shape.* `VOLLIE_PRIOR=1000 VOLLIE_PRIOR_N=4 VOLLIE_PRIOR_J=1`,
+    2 chunks: `tools/c2_prior_trace.py replay` (the rule written out sequentially, its own history, on the probs the op
+    saw) differs from the op's selection in 0 of 15,903 rows (OLMoE) and 0 of 40,527 (Granite), at `-b 512`, `-ub 32`
+    and `-ub 1` each.
+  - *Positions.* On OLMoE, `VOLLIE_PRIOR_POS=mask` gives dumps byte-identical to the rope positions at `-b 512` and
+    `-ub 1` (2 chunks), so Granite's mask positions are the same quantity.
+  - *What differs between settings is the probs, and the prior amplifies it.* The router probs of a batch and of one
+    token differ in the last bits; in stock that changes 7.5 % of the (token, layer) expert sets between `-b 512` and
+    `-ub 1` (OLMoE, 3 chunks), each change confined to its token. With the prior a change also moves the next N tokens'
+    bias: 29 to 31 % of the sets differ at `VOLLIE_PRIOR=1000 N=4`. Hence the PPL gate at both settings is needed, not
+    a formality.
+  - *Full sets* (same env; `VOLLIE_PRIOR=500 VOLLIE_PRIOR_N=16`, the same setting on both models; queue and exact
+    commands in `lab/logs/r64-prior/queue.txt`): OLMoE num + prior 12.2454 (`-b 512`) / 12.2435 (`-ub 1`) against num
+    12.1053 / 12.0946 and the budget 12.3003; OLMoE prior alone 11.8587 (`-b 512` only) against stock 11.7146. Granite
+    num + prior 9.5487 / 9.5478 against num 9.5173 / 9.5076 and the budget 9.6879; Granite prior alone 9.3172 (`-b 512`
+    only) against 9.2266. All inside the budgets; the prior-alone rows lack their `-ub 1` run.
+  - *What it buys* is file-page residency only: the expert bytes a token computes do not change (OLMoE 347.6 MB, num
+    300 MB; Granite 246.3 MB, num 139 to 141 MB per token), so a fully resident run gains nothing. The 32-token
+    working set falls 7 to 22 % and memo-18's simulator puts the decode re-read at 1.8 GB of cache 33 to 90 % lower
+    (*estimated*); numbers and the reading against R62 / memo-23 are in the R64 hand-off, not here.
+- **Not verified:** anything on Android; the cost of the thread-0 argsort on the A78 (*estimated* microseconds per
+  layer); KV reuse and rollback (argued above, not exercised by `llama-perplexity`); the app's prompt shape (the
+  simulator windows are wikitext positions 300 to 487 of each chunk, not the official prompt).
