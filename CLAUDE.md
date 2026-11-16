@@ -62,6 +62,9 @@ Vollie runs a sparse (mixture-of-experts) LLM on a 2021 phone CPU (Samsung Galax
 - **The owner** runs everything that needs hardware: phone benchmarks (the app's research kit, device JSON back into
   `reports/device/`) and full-set perplexity runs on the owner's laptop (Apple M4). Ask for them with exact
   commands and the pre-registration commit to run against.
+- **Kit APKs (owner, 2026-11-16):** upload each kit to the private Hugging Face repo `HoeioUser/vollie-kits` as
+  `r<n>/<apk>`, `r<n>/BUILD-r<n>.txt`, `r<n>/SHA256SUMS`, after the pre-registration is pushed; the owner
+  downloads it there. The write token is given by the owner per session; never write it into a file.
 - **You** do research, plans, pre-registrations, patch and kernel code, scripts, parsers, analysis, and keep the
   repository current. You cannot measure speed yourself.
 - The owner writes to you in Korean; reply in Korean. Repository documents are in English.
