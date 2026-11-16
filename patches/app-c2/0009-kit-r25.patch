@@ -1,0 +1,191 @@
+diff --git a/lib/research.dart b/lib/research.dart
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -1,8 +1,8 @@
+ part of 'assistant.dart';
+ 
+-/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-23-kit-r24.md).
++/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-26-kit-r25.md).
+ /// model: a [KitModel] id ([Research.kitModels]); the first spec of a group (block) reloads that model.
+-/// proto: 'r24' = memo-23's two-model ABBA blocks, the gate rule per quad (r16 or plateau).
++/// proto: 'r25' = r24's two-model ABBA blocks (memo-23), the gate rule per quad (r16 or plateau), plus the kv factor.
+ /// phase: 'warmup' (unscored), 'on' (scored) or 'prof' (profiled, not scored).
+ /// arm: 'off' = the model's baseline (r21's knob-off arm); 'num' = baseline + the model's [KitModel.num] (declared
+ ///      numerics: skip + two-stage head, R59).
+@@ -10,6 +10,8 @@
+ ///      every gated run, both arms).
+ /// kind: 'official32' = the benchmark (_benchPrompt, 32 tokens, greedy, the app's streaming, as r16);
+ ///       'profiled32' = the same under the profiling env (r16's per-token lines).
++/// kv (r25, in env and id): VOLLIE_KV_DONTNEED=1 (c1-olmoe 0008, declared bit-identical) in half of the scored runs;
++///      id suffix '_kv'; never in warm-ups and profiled runs.
+ /// env: set before the run, every other known knob unset. repack: weight repack at load (a change reloads the model).
+ /// threads: 0 = the app's pick (r24 sets 3 explicitly). reps: repetitions in a row. pause: idle seconds after the gate.
+ /// gate: a cool-down gate before the run (headroom read every 5 s, at most 90 s); false = no wait.
+@@ -24,14 +26,15 @@
+ typedef RunSpec = ({String id, String model, String proto, String group, String phase, String arm, String kind,
+     Map<String, String> env, bool repack, int threads, int reps, int pause, bool gate, String gateRule, bool hold});
+ 
+-/// Research kit r24: campaign 1's runtime (llama.cpp 620d2225c + patches/llama.cpp/0001-0003) +
+-/// patches/llama.cpp-c1-olmoe/0001 to 0006, unchanged from r23. The models of [kitModels] in one session, blocks in
++/// Research kit r25: campaign 1's runtime (llama.cpp 620d2225c + patches/llama.cpp/0001-0003) +
++/// patches/llama.cpp-c1-olmoe/0001 to 0008 (0007 off: no VOLLIE_PRIOR; 0008 = the kv factor). r24's protocol unchanged
++/// plus one factor: kv (KV / recurrent clear by MADV_DONTNEED), alternated per scored run (memo-26). The models of [kitModels] in one session, blocks in
+ /// [blockOrder] (G O O G); in each block the arms off / num in ABBA, one quad with r16's gate and one with the plateau
+ /// gate; 3 threads; hold (r23's rule) in every gated run; the kit pauses while a charger is connected. One tap, one JSON
+ /// report (clipboard, a file next to the models, and "Save to Downloads").
+ extension Research on Assistant {
+-  static const kit = 'r24';
+-  static const app = '1.24.0+24';
++  static const kit = 'r25';
++  static const app = '1.25.0+25';
+ 
+   /// Shown on the kit's start screen and kept in the report (R60: a banking app was running; R62: a charger was plugged
+   /// in during the last block).
+@@ -89,6 +92,9 @@
+   /// (2,048 rows, Q4_0 screen), as screened in R59. VOLLIE_SKIP_STATS=1: the c2-skip-run line (0005), counters only.
+   static const _numOlmoe = {'VOLLIE_SKIP_MASS': '900', 'VOLLIE_HEAD2': '1024', 'VOLLIE_SKIP_STATS': '1'};
+   static const _numGranite = {'GGML_EXPERT_SKIP': '130', 'GGML_HEAD2': '2048', 'GGML_HEAD2_Q': 'q4_0', 'VOLLIE_SKIP_STATS': '1'};
++  /// r25's kv factor (c1-olmoe 0008, memo-24 §A3 (a)): the KV cache's and the recurrent state's clear before every prompt
++  /// releases the page-aligned interior with MADV_DONTNEED instead of a memset; one c2-kvclear line per buffer cleared.
++  static const _kv = {'VOLLIE_KV_DONTNEED': '1'};
+ 
+   /// hold (memo-22 §2): "wanted" = the model file's pages resident at the end of the previous run of that model. A pass =
+   /// one mincore of the file, then posix_fadvise WILLNEED on each run of wanted pages that are gone. r23: in the wait one
+@@ -131,12 +137,16 @@
+   /// off), the first quad with the plateau gate in odd blocks and with r16's in even ones (so each model of a G O O G
+   /// order gets the plateau gate first once and last once, as r23 did with threads), then one profiled run per arm with
+   /// r16's gate (order off/num in odd blocks, num/off in even ones). Every run but the warm-ups is gated and holds.
+-  static List<RunSpec> _block(int b, KitModel m) {
+-    RunSpec r(String arm, String phase, int reps, String rule) {
+-      final prof = phase == 'prof', wu = phase == 'warmup';
+-      final env = {...m.settings, ..._io, if (arm == 'num') ...m.num, if (prof) ..._profOn};
++  /// r25: the kv factor alternates per scored run: in odd blocks on off on off in the first quad and off on off on in
++  /// the second (even blocks the reverse), so each arm x gate-rule cell has one kv run and one plain run, and kv sits
++  /// on positions 1 3 6 8 or 2 4 5 7 of a block's 8 scored runs (same mean position).
++  static List<RunSpec> _block(int b, KitModel m) {
++    RunSpec r(String arm, String phase, int reps, String rule, [bool kv = false]) {
++      final prof = phase == 'prof', wu = phase == 'warmup';
++      final env = {...m.settings, ..._io, if (arm == 'num') ...m.num, if (prof) ..._profOn, if (kv) ..._kv};
+       return (
+-        id: '${m.id}_$arm${prof ? '_prof' : wu ? '_wu' : rule == 'plateau' ? '_pl' : '_r16'}', model: m.id, proto: 'r24',
++        id: '${m.id}_$arm${prof ? '_prof' : wu ? '_wu' : rule == 'plateau' ? '_pl' : '_r16'}${kv ? '_kv' : ''}',
++        model: m.id, proto: 'r25',
+         group: 'b$b', phase: phase, arm: arm, kind: prof ? 'profiled32' : 'official32', env: env,
+         repack: m.repack, threads: threads, reps: reps, pause: 0, gate: !wu, gateRule: rule, hold: !wu,
+       );
+@@ -145,8 +155,8 @@
+     final p = b.isOdd ? ['off', 'num'] : ['num', 'off'];
+     return [
+       r('off', 'warmup', 2, 'none'),
+-      for (final rule in g)
+-        for (final a in ['off', 'num', 'num', 'off']) r(a, 'on', 1, rule),
++      for (var q = 0; q < 2; q++)
++        for (var j = 0; j < 4; j++) r(['off', 'num', 'num', 'off'][j], 'on', 1, g[q], (j + q + (b.isOdd ? 0 : 1)).isEven),
+       for (final a in p) r(a, 'prof', 1, 'r16'),
+     ];
+   }
+@@ -232,6 +242,7 @@
+     'VOLLIE_TINY_OP', 'VOLLIE_GRAPH_STATS', 'VOLLIE_Q3K_X4', 'VOLLIE_MMID_NB', 'VOLLIE_MMID_FUSE', 'VOLLIE_EXPERT_IO',
+     'VOLLIE_SAMPLER_BYPASS', 'VOLLIE_PROF', 'VOLLIE_AB', 'VOLLIE_AB_WARM', 'VOLLIE_AB_BLOCK', 'VOLLIE_AB_BAAB',
+     'VOLLIE_RUN', 'VOLLIE_LINES', 'VOLLIE_HEAD2', 'VOLLIE_HEAD2_BATCH', 'VOLLIE_HEAD2_CHECK', 'VOLLIE_HEAD2_REPACK',
++    'VOLLIE_PRIOR', 'VOLLIE_PRIOR_N', 'VOLLIE_PRIOR_J', 'VOLLIE_KV_DONTNEED',
+   ];
+   static Set<String> get _knobs => {..._knownKnobs, for (final r in runs) ...r.env.keys, for (final m in kitModels) ...m.load.keys};
+ 
+@@ -251,6 +262,7 @@
+         'id': s.id, 'model': s.model, 'proto': s.proto, 'group': s.group, 'phase': s.phase, 'arm': s.arm, 'kind': s.kind,
+         'env': s.env, 'repack': s.repack,
+         'threads': s.threads, 'reps': s.reps, 'pause_s': s.pause, 'gate': s.gate, 'gate_rule': s.gateRule, 'hold': s.hold,
++        'kv': s.env.containsKey('VOLLIE_KV_DONTNEED'),
+       };
+ 
+   /// The native libraries this process has mapped (llama.cpp's), from /proc/self/maps.
+@@ -547,7 +559,10 @@
+           'arm num = off + the model\'s num env (declared numerics, R59/R61); GGML_PREFILL_COLD and GGML_KEEP_WARM are never set; '
+           'hold = app-side read-back of the pages the gate wait took (memo-22 §2, r23 rule unchanged), no env, in every gated '
+           'run; gate rule r16 or plateau per quad (memo-23 §2), profiled runs r16; 3 threads in every run; the kit pauses '
+-          'while a charger is connected (charger_rule)',
++          'while a charger is connected (charger_rule); r25: kv factor (kv_rule)',
++      'kv_rule': 'scored runs alternate VOLLIE_KV_DONTNEED=1 (spec kv, id suffix _kv; c1-olmoe 0008, declared bit-identical): '
++          'llama_memory_clear(data) releases the KV / recurrent buffers\' page-aligned interior with MADV_DONTNEED instead '
++          'of a memset; one c2-kvclear line per buffer (kind kv / rs, bytes, released, why); warm-ups and profiled runs off',
+       'hold_rule': {'back': Research.holdBack, 'stall': Research.holdStall, 'rounds': Research.holdRounds,
+                     'every_ms': Research.holdEvery.inMilliseconds, 'settle_ms': Research.holdSettle.inMilliseconds,
+                     'max_ms': Research.holdMax.inMilliseconds,
+diff --git a/lib/settings_screen.dart b/lib/settings_screen.dart
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -351,7 +351,7 @@
+               icon: const Icon(Icons.thermostat_rounded),
+               label: const Text('Run phone test (10 min)'),
+             ),
+-      // Research kit r24: the models of Research.kitModels (memo-23); the kit's own files are fetched here first.
++      // Research kit r25: the models of Research.kitModels (memo-26); the kit's own files are fetched here first.
+       if (!assistant.kitModelReady)
+         assistant.researching
+             ? OutlinedButton.icon(
+@@ -362,7 +362,7 @@
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.downloadKitModels,
+                 icon: const Icon(Icons.download_rounded),
+-                label: Text('Download kit r24 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
++                label: Text('Download kit r25 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
+                     '(${(assistant.kitMissingBytes / 1e9).toStringAsFixed(1)} GB, Wi-Fi)'),
+               ),
+       if (assistant.kitModelReady)
+@@ -375,7 +375,7 @@
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.researchRun,
+                 icon: const Icon(Icons.science_rounded),
+-                label: const Text('Run research kit r24 (~35-75 min)'),
++                label: const Text('Run research kit r25 (~35-75 min)'),
+               ),
+       if (assistant.kitModelReady && !assistant.researching)
+         Padding(
+diff --git a/pubspec.yaml b/pubspec.yaml
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.24.0+24
++version: 1.25.0+25
+ 
+ environment:
+   sdk: ^3.10.7
+diff --git a/test/kit_lines_test.dart b/test/kit_lines_test.dart
+--- a/test/kit_lines_test.dart
++++ b/test/kit_lines_test.dart
+@@ -70,7 +70,11 @@
+     expect(h.tag, 'olmoe_num_t4.0');
+     expect(h.line.endsWith('c2_why=layout:CPU_KLEIDIAI'), true);
+   });
+-  test('kit r24: run list generated from the model table', () {
++  test('kit r25: the c2-kvclear line (c1-olmoe 0008) is tagged', () {
++    final k = Research.parseLine('c2-kvclear run=olmoe_off_pl_kv.0 kind=kv on=1 bytes=299040768 released=299036672 why=ok us=900')!;
++    expect(k.tag, 'olmoe_off_pl_kv.0');
++  });
++  test('kit r25: run list generated from the model table', () {
+     final ids = Research.kitModels.map((m) => m.id).toList();
+     expect(Research.blockOrder.map((m) => m.id).toList(), [...ids, ...ids.reversed]);
+     expect(Research.runs.length, Research.blockOrder.length * 11);
+@@ -78,10 +82,17 @@
+     for (var b = 0; b < Research.blockOrder.length; b++) {
+       final m = Research.blockOrder[b];
+       final blk = Research.runs.where((r) => r.group == 'b${b + 1}').toList();
+-      expect(blk.every((r) => r.model == m.id && r.repack && r.proto == 'r24' && r.threads == 3), true);
++      expect(blk.every((r) => r.model == m.id && r.repack && r.proto == 'r25' && r.threads == 3), true);
+       final scored = blk.where((r) => r.phase == 'on').toList();
+       expect(scored.map((r) => r.arm).toList(), ['off', 'num', 'num', 'off', 'off', 'num', 'num', 'off']);
+       expect(scored.map((r) => r.gateRule).toSet(), {'r16', 'plateau'});
++      // r25: kv alternates per scored run, one kv and one plain run per arm x gate rule, never outside scored runs
++      final kv = scored.map((r) => r.env['VOLLIE_KV_DONTNEED'] == '1').toList();
++      expect(kv, b.isEven ? [true, false, true, false, false, true, false, true] : [false, true, false, true, true, false, true, false]);
++      for (final r in blk) {
++        expect(r.id.endsWith('_kv'), r.env.containsKey('VOLLIE_KV_DONTNEED'));
++        if (r.phase != 'on') expect(r.env.containsKey('VOLLIE_KV_DONTNEED'), false);
++      }
+       expect(scored.sublist(0, 4).every((r) => r.gateRule == scored[0].gateRule) &&
+           scored.sublist(4).every((r) => r.gateRule != scored[0].gateRule), true);
+       plFirst.putIfAbsent(m.id, () => []).add(scored[0].gateRule == 'plateau');

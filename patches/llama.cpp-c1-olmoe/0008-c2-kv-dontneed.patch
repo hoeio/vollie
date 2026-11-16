@@ -1,0 +1,124 @@
+diff --git a/src/llama-impl.cpp b/src/llama-impl.cpp
+index c216a310b..448da8897 100644
+--- a/src/llama-impl.cpp
++++ b/src/llama-impl.cpp
+@@ -99,6 +99,77 @@ void llama_clear_tensor_data(ggml_tensor * t, size_t offset, size_t size) {
+     }
+ }
+ 
++#if defined(__linux__)
++#include <sys/mman.h>
++#include <unistd.h>
++#include <mutex>
++
++// True if every mapping overlapping [a, b) is private and anonymous (inode 0), so MADV_DONTNEED gives zero pages.
++// ggml's CPU buffer comes from posix_memalign (bionic scudo / glibc: private anonymous mmap), so this is expected.
++// Checked once per base address (the caches keep their buffers until freed).
++static bool c2_private_anon(uintptr_t a, uintptr_t b) {
++    static std::mutex mtx;
++    static std::vector<std::pair<uintptr_t, bool>> seen;
++    std::lock_guard<std::mutex> lock(mtx);
++    for (auto & s : seen) if (s.first == a) return s.second;
++    bool ok = false;
++    if (FILE * f = fopen("/proc/self/maps", "r")) {
++        char l[512]; uintptr_t cov = a; ok = true;
++        while (fgets(l, sizeof(l), f)) {
++            unsigned long lo, hi, ino; char perm[8];
++            if (sscanf(l, "%lx-%lx %7s %*s %*s %lu", &lo, &hi, perm, &ino) != 4 || hi <= a || lo >= b) continue;
++            if (lo > cov || perm[3] != 'p' || ino != 0) { ok = false; break; }
++            cov = hi;
++        }
++        ok = ok && cov >= b;
++        fclose(f);
++    }
++    seen.emplace_back(a, ok);
++    return ok;
++}
++#endif
++
++void llama_c2_buffer_clear0(ggml_backend_buffer_t buf, const char * kind) {
++    const char * e  = getenv("VOLLIE_KV_DONTNEED");
++    const char * io = getenv("GGML_C2_IO");
++    const bool on = e && atoi(e) > 0;
++    if (!on && !(io && atoi(io) > 0)) {
++        ggml_backend_buffer_clear(buf, 0);
++        return;
++    }
++    const int64_t t0 = ggml_time_us();
++    const size_t size = ggml_backend_buffer_get_size(buf);
++    size_t released = 0;
++    const char * why = on ? "os" : "off";
++#if defined(__linux__)
++    if (on) {
++        uint8_t * p = (uint8_t *) ggml_backend_buffer_get_base(buf);
++        const uintptr_t pg = (uintptr_t) sysconf(_SC_PAGESIZE);
++        const uintptr_t a = ((uintptr_t) p + pg - 1) & ~(pg - 1), b = ((uintptr_t) p + size) & ~(pg - 1);
++        if (!ggml_backend_buffer_is_host(buf) || strcmp(ggml_backend_buffer_name(buf), "CPU") != 0 || p == nullptr) {
++            why = "notcpu";
++        } else if (b <= a) {
++            why = "small";
++        } else if (!c2_private_anon(a, b)) {
++            why = "map";
++        } else if (madvise((void *) a, b - a, MADV_DONTNEED) != 0) {
++            why = "madvise";
++        } else {
++            memset(p, 0, a - (uintptr_t) p);
++            memset((void *) b, 0, (uintptr_t) p + size - b);
++            released = b - a;
++            why = "ok";
++        }
++    }
++#endif
++    if (released == 0) {
++        ggml_backend_buffer_clear(buf, 0);
++    }
++    const char * run = getenv("VOLLIE_RUN");
++    fprintf(stderr, "c2-kvclear run=%s kind=%s on=%d bytes=%zu released=%zu why=%s us=%lld\n", run && *run ? run : "-",
++            kind, on ? 1 : 0, size, released, why, (long long) (ggml_time_us() - t0));
++}
++
+ void replace_all(std::string & s, const std::string & search, const std::string & replace) {
+     if (search.empty()) {
+         return;
+diff --git a/src/llama-impl.h b/src/llama-impl.h
+index 7ccd23c86..a0d715661 100644
+--- a/src/llama-impl.h
++++ b/src/llama-impl.h
+@@ -98,6 +98,11 @@ struct buffer_view {
+ 
+ void llama_clear_tensor_data(ggml_tensor * t, size_t offset, size_t size);
+ 
++// Vollie c2 (0008): ggml_backend_buffer_clear(buf, 0) for the KV and recurrent caches' clear(data = true). With
++// VOLLIE_KV_DONTNEED=1 on Linux/Android, a private anonymous CPU buffer has its page-aligned interior released with
++// madvise(MADV_DONTNEED) (reads back as zeros) and its edges memset; else memset. kind: "kv" or "rs" (kit line).
++void llama_c2_buffer_clear0(struct ggml_backend_buffer * buf, const char * kind);
++
+ void replace_all(std::string & s, const std::string & search, const std::string & replace);
+ 
+ // TODO: rename to llama_format ?
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index b7dfadef4..9cd0a1e9f 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -396,7 +396,7 @@ void llama_kv_cache::clear(bool data) {
+ 
+     if (data) {
+         for (auto & [_, buf] : ctxs_bufs) {
+-            ggml_backend_buffer_clear(buf.get(), 0);
++            llama_c2_buffer_clear0(buf.get(), "kv"); // 0008: VOLLIE_KV_DONTNEED
+         }
+     }
+ }
+diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
+index 2893d819e..0d70dea18 100644
+--- a/src/llama-memory-recurrent.cpp
++++ b/src/llama-memory-recurrent.cpp
+@@ -158,7 +158,7 @@ void llama_memory_recurrent::clear(bool data) {
+ 
+     if (data) {
+         for (auto & [_, buf] : ctxs_bufs) {
+-            ggml_backend_buffer_clear(buf.get(), 0);
++            llama_c2_buffer_clear0(buf.get(), "rs"); // 0008: VOLLIE_KV_DONTNEED
+         }
+     }
+ 

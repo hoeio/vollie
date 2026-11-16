@@ -242,3 +242,36 @@ Everything here runs only with `GGML_C2_IO=1` (0002's counter) and only prints; 
 - **Not verified:** anything on Android; the cost of the thread-0 argsort on the A78 (*estimated* microseconds per
   layer); KV reuse and rollback (argued above, not exercised by `llama-perplexity`); the app's prompt shape (the
   simulator windows are wikitext positions 300 to 487 of each chunk, not the official prompt).
+
+## 0008-c2-kv-dontneed.patch (declared bit-identical)
+
+`VOLLIE_KV_DONTNEED=1` (unset or 0 = off), read at every clear. Files: `src/llama-impl.cpp`, `src/llama-impl.h`,
+`src/llama-kv-cache.cpp`, `src/llama-memory-recurrent.cpp` (libllama only; the CPU module is untouched). memo-24 §A3 (a);
+kit and checks: `campaigns/02-25toks-5pct/reports/memo-26-kit-r25.md`.
+
+- **Path.** `llama_memory_clear(mem, true)` (llamadart before every prompt when `reusePrefix = false`) reaches
+  `llama_kv_cache::clear(true)` and `llama_memory_recurrent::clear(true)` (a hybrid memory such as Granite's calls both),
+  which called `ggml_backend_buffer_clear(buf, 0)`, a `memset` of the whole buffer in ggml-base. Both now call
+  `llama_c2_buffer_clear0`. The clears at cache construction are unchanged.
+- **What it does with the knob.** On Linux/Android, for a host buffer of type `CPU`: the page-aligned interior gets
+  `madvise(MADV_DONTNEED)` and the unaligned edges a `memset`. Declined (whole `memset`, reason in the line) if the
+  buffer is not `CPU` (`notcpu`), has no whole page (`small`), lies in a mapping that is not private anonymous per
+  `/proc/self/maps` (`map`, checked once per base address), or `madvise` fails (`madvise`). Elsewhere (macOS): `memset`
+  (`os`). The CPU buffer comes from `ggml_aligned_malloc` → `posix_memalign` (bionic scudo / glibc: private anonymous
+  memory), so released pages read back as zeros.
+- **Kit line** (with the knob or `GGML_C2_IO=1`, one per buffer cleared): `c2-kvclear run=<VOLLIE_RUN> kind=kv|rs on=0|1
+  bytes=<buffer> released=<bytes given back by DONTNEED> why=ok|off|os|notcpu|small|map|madvise us=<clear time>`.
+- **Host checks (2026-11-16, *host*, 4 chunks at `-b 512` and `-b 512 -ub 32`, 2 chunks at `-b 512 -ub 1`, `-c 512`,
+  kit off env + `GGML_C2_IO=1`).** Knob on equals knob off per chunk for `olmoe-Mi` and `granite-Mi` at all three
+  settings, (a) on macOS (M4 Pro, clang, `armv8.2-a+dotprod+fp16`; the knob's path is `memset` there, `why=os`) and
+  (b) on Linux aarch64 (Ubuntu 24.04 container on the same laptop, gcc, same arch flags), where every clear printed
+  `why=ok` and released the buffer less one edge page (OLMoE KV 67,104,768 of 67,108,864 B at `-c 512`; Granite KV
+  4,190,208 and recurrent 58,056,704 of 58,060,800 B). Greedy: a test program on the app's settings (`n_ctx` 4096, q8_0
+  K/V, flash attention) runs three prompts in one process, each after `llama_memory_clear(mem, true)`, 32 tokens: the
+  three texts are equal to each other and between knob off and on, both models, on both platforms (Linux: OLMoE KV
+  285,208,576 of 285,212,672 B released per clear). A Linux unit test of the function itself (buffers of 285 MB + 123 B,
+  12,295 B, 100 B, 61 MB, filled non-zero first): every byte zero after the clear, RSS down by 291,960 KB for the 285 MB
+  buffer, reuse after a release works.
+- **Not verified:** anything on Android (bionic, the phone's kernel, zram, THP mode); the `map` decline path (no public
+  API makes a `CPU` buffer over shared memory; a `CPU_Mapped` buffer over a shared mapping is declined as `notcpu` and
+  zeroed by the `memset`).

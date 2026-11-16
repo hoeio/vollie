@@ -169,3 +169,15 @@ debug key: installs as an update over r23. Design, replay, schema and owner step
   wait restarts (`plug_pauses`); `plugged_after`, `plugged_run` per row.
 - **Records:** idle baseline (30 s) and `/sys/class/thermal` zones at the start (errors kept), `zones_before`,
   `/proc/vmstat` swap and fault counters at start / first chunk / end, `mem_first`.
+
+## 0009-kit-r25.patch (on top of 0008)
+
+Kit r25 (version 1.25.0+25): r24's protocol unchanged plus one factor, kv. Runtime `patches/llama.cpp-c1-olmoe/0001-0008`
+(0007 present and off: no `VOLLIE_PRIOR`; 0008 is the factor). Same package and debug key: installs as an update over r24.
+Design, run list and owner steps: `campaigns/02-25toks-5pct/reports/memo-26-kit-r25.md`.
+
+- **kv factor:** `VOLLIE_KV_DONTNEED=1` in half of the scored runs, alternated per run (odd blocks on off on off / off on
+  off on over the two quads, even blocks the reverse); one kv run and one plain run per arm × gate rule cell. Never in
+  warm-ups or profiled runs. Run id suffix `_kv`, spec field `kv`, report `kv_rule`.
+- `VOLLIE_KV_DONTNEED` and 0007's `VOLLIE_PRIOR`, `_N`, `_J` added to the knobs cleared before every run.
+- The runtime's `c2-kvclear` lines are tagged with `run=` and filed into the row's runtime lines like `c2-io-blk`.
