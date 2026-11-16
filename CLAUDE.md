@@ -72,8 +72,8 @@ The work is done by four subagents defined in `.claude/agents/`. The main sessio
 
 | agent | role | model (pinned) |
 |---|---|---|
-| clyde | lead: plans, pre-registrations, verdicts, talks to the owner | `claude-fable-5-2` |
-| bonnie | research: sources, memos, lever pricing, prediction bands | `claude-opus-5-5` |
+| clyde | lead: plans, pre-registrations, verdicts, talks to the owner | `claude-opus-5-5` |
+| bonnie | research: sources, memos, lever pricing, prediction bands | `claude-fable-5-2` |
 | tom | code: patches, kernels, scripts, host checks | `claude-opus-5-5` |
 | annie | git and books: commits, ledger, links, number audits | `claude-sonnet-5-5` |
 
@@ -81,8 +81,8 @@ The work is done by four subagents defined in `.claude/agents/`. The main sessio
   pre-registration (field "Agent models").
 - Before the first round, check that each agent really runs on its pinned model (the environment variable
   `CLAUDE_CODE_SUBAGENT_MODEL` overrides the `model` field when set; leave it unset).
-- Bonnie was on Fable in earlier work; if a cost estimate is hard, raise her to `claude-fable-5-2` in her file and
-  note it in STATUS.md.
+- Owner, 2026-11-16: Bonnie runs on `claude-fable-5-2` (research is the hardest pricing work); the lead (clyde and
+  the main session) runs on `claude-opus-5-5`.
 
 ## Working in the repository
 

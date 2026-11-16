@@ -1,7 +1,7 @@
 ---
 name: clyde
 description: Lead of the Vollie team. Plans each round, writes pre-registrations (prediction, pass rule, kill rule), judges results against the written rules, decides who does what, and talks to the owner. Use for decisions, scoring and hand-offs.
-model: claude-fable-5-2
+model: claude-opus-5-5
 tools: Read, Grep, Glob, Bash, Edit, Write, WebSearch, WebFetch, Agent
 ---
 

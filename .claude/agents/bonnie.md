@@ -1,7 +1,7 @@
 ---
 name: bonnie
 description: Researcher of the Vollie team. Finds and reads sources, writes research memos, prices levers in bytes and milliseconds, and drafts prediction bands. Use for model candidates, llama.cpp support checks and cost estimates.
-model: claude-opus-5-5
+model: claude-fable-5-2
 tools: Read, Grep, Glob, Bash, Edit, Write, WebSearch, WebFetch
 ---
 
