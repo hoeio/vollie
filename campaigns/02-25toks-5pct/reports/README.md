@@ -727,9 +727,17 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   - **OLMoE:** nothing was charged.
   - Next kit: stop and wait (or mark the run void) when `plugged` turns true.
 
+- **Correction to the R62 entry, 2026-11-16 (memo-23 §1):** the reading "OLMoE's num runs took more major
+  faults, which is where its skip gain went" is **not shown as an arm effect**: the high-fault runs are 5 of 8
+  num against 2 of 8 off (Fisher p = 0.32), cluster in time across both arms, and are absent in the profiled
+  runs and in R60. The faults themselves appear to be mostly swap-ins of the app's own memory from zram, not
+  file reads (inferred from the counters and the Linux 5.4 source; R63 records `pswpin` to test it). "Resident
+  MB" measures the file only and does not see this.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-21, unconventional levers priced on both models (owner's list and new directions)](memo-21-unconventional-levers.md);
 [memo-22, kit r23 (head knob at load, cheap hold, threads 3 against 4)](memo-22-kit-r23.md);
+[memo-23, kit r24 (plateau gate rule, charger guard, swap counters) and why runs fault: zram swap-ins](memo-23-kit-r24.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
 [memo-05, why skip was inert on Q4_0 experts: repack](memo-05-q4-experts-repack.md);
 [memo-08, predictions for the device baselines of OLMoE; Granite verdict proposed](memo-08-device-baseline-predictions.md);

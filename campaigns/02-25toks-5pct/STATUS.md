@@ -59,6 +59,14 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
+**Waiting on the owner (2026-11-16):** kit r24 handed over; R63 pre-registered
+([prereg](prereg/R63-gate-rule-and-numerics-two-models-device.md), kit and fault analysis in
+[memo-23](reports/memo-23-kit-r24.md)). APK `lab/dist-c2/vollie-c2-1.24.0+24-research-r24.apk` (sha256
+`6a655ca7…ffa5beba`). When the report comes back: `python3 -I tools/c2_research_parse.py <json>`, score as
+written, store the raw report. New reading to carry: most major faults of a gated run look like zram swap-ins
+of the app's own 0.5 to 0.7 GB of anonymous memory (memo-23 §1, inferred; R63 tests it); if confirmed, that is
+the next lever. Not started: memo-21 item 2 (routing prior simulation).
+
 **Latest (R62, kit r23, 2026-11-16, *device*; [R-log entry](reports/README.md)):** Granite num passes
 (+2.37 ± 0.69 tok/s, 17.65 against 15.95 at three threads) and its setting is frozen. OLMoE: the head now runs
 on the phone (0006 works) but saves nothing measurable, and num minus off is +0.15 ± 1.00, not shown for the
@@ -306,3 +314,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-15 | 4 (continued) | R61 scored (*host*, KleidiAI build, 10 full-set runs): both num settings inside by both readings; Granite stock +0.57 / +0.50 % with KleidiAI (prediction missed at `-b 512`), OLMoE unchanged. Next: app load setting, cheaper hold, memo-21 items 1, 2, 5, then kit r23 and its pre-registration. |
 | 2026-11-16 | 4 (continued) | Kit r23 built by Tom (OLMoE head knob at load, cheap hold in every gated run, threads 3 against 4, memo-22); R62 pre-registered; APK handed to the owner. Never run on a phone: 0006, the new hold rule, the thread sampler. |
 | 2026-11-16 | 4 (continued) | R62 scored from kit r23 (raw report stored): Granite num pass and frozen; OLMoE num not shown, head runs but is worth about 0 ms; four threads killed on both; cheap hold misses its predictions; all gates timed out. Next: the pre-run state (gate, faults), OLMoE fault count in the skip arm, goal statement to the owner. |
+| 2026-11-16 | 4 (continued) | Owner: apps were closed in R62; a charger was plugged in during Granite's last block (dated note). Gate reading: headroom plateaus near 0.72 on the three morning sessions. Tom: memo-23 (faults are mostly zram swap-ins, inferred; num-arm fault excess not an arm effect) and kit r24 (plateau gate rule as a factor, charger guard, swap counters). R63 pre-registered; APK handed to the owner. |

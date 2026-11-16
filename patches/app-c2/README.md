@@ -154,3 +154,18 @@ installs as an update over r22 and keeps both models. Design, run list, schema a
   runs at 3. Per row `pinned_cpus`, `threads_loaded`, `thread_samples` (CPU of the running DartWorker threads).
 - **Report:** `kernel_release`, `owner_note`, `thread_rule`, the new `hold_rule`, `load_env` per model. The start
   screen shows "close background apps (R60: a banking app was running)".
+
+## 0008-kit-r24.patch (on top of 0007)
+
+Kit r24 (version 1.24.0+24), runtime unchanged from r23 (`patches/llama.cpp-c1-olmoe/0001-0006`). Same package and
+debug key: installs as an update over r23. Design, replay, schema and owner steps:
+`campaigns/02-25toks-5pct/reports/memo-23-kit-r24.md`.
+
+- **Gate rule per quad** (`RunSpec.gateRule`): `r16` (below 0.65 or 90 s) or `plateau` (also end at >= 30 s when the
+  lowest of the last 2 readings is not more than 0.01 below the 2 before and at least 0.05 below the wait's highest);
+  plateau first in odd blocks. Warm-ups `none`, profiled runs `r16`. Per row `gate_rule`, `wait_end`, `wait_ms`.
+- **3 threads** in every run (R62 closed plain four-thread decode).
+- **Charger guard:** a gate poll that finds a charger pauses the kit with a message until it is unplugged, then the
+  wait restarts (`plug_pauses`); `plugged_after`, `plugged_run` per row.
+- **Records:** idle baseline (30 s) and `/sys/class/thermal` zones at the start (errors kept), `zones_before`,
+  `/proc/vmstat` swap and fault counters at start / first chunk / end, `mem_first`.

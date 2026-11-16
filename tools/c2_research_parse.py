@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Campaign 2 research-kit report parser (kits r17 to r23; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
-memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md, memo-19-kit-r21.md, memo-20-kit-r22.md and memo-22-kit-r23.md).
+"""Campaign 2 research-kit report parser (kits r17 to r24; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
+memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md, memo-19-kit-r21.md, memo-20-kit-r22.md, memo-22-kit-r23.md and memo-23-kit-r24.md).
 Standard library only.
 
 usage: python3 -I tools/c2_research_parse.py <report.json | clipboard text "c2gz:..."> [--min-mhz 1800]
@@ -48,7 +48,15 @@ text per arm and thread count, the load env per model (OLMoE VOLLIE_HEAD2_REPACK
 runs whose c2-head-run line shows declines (c1-olmoe 0006's c2_declined / c2_why) or no active copy, gated runs without
 hold; per model, arm and threads the scored runs' medians; num minus off over ABBA quads (all, per thread count);
 threads 4 minus 3 per model and arm (per block, mean of the arm's runs at 4 minus at 3, mean over blocks ± SE; and all
-runs, Welch); where the DartWorker threads ran (thread_samples); the hold per gated run and its cost."""
+runs, Welch); where the DartWorker threads ran (thread_samples); the hold per gated run and its cost.
+
+Kit r24 (arms off / num in ABBA, factor gate rule r16 / plateau per quad, 3 threads, hold in every gated run, charger
+guard): r23's checks plus the gate rule of every row against its spec, why each wait ended, charger pauses and the
+runs with a charger at their start or end (listed and flagged, never dropped here); per model, arm and gate rule the
+scored runs' medians; num minus off over ABBA quads (all, per gate rule; and without flagged runs); plateau minus r16
+per model (tok/s, wait s, MB resident before, MB lost in the wait, headroom at the run's start, big-core clock and cap:
+per block paired ± SE, and all runs, Welch); swap-ins and major faults per phase from /proc/vmstat; the idle baseline and
+thermal zones; the hold table of r23."""
 import argparse
 import base64
 import gzip
@@ -880,6 +888,28 @@ def r23_quads(rs):
     return [q for q in r22_quads(rs) if len({x.get('threads') for x in q}) == 1]
 
 
+def hold_lines(runs):
+    out = []
+    out.append('hold per gated run: pos tag | gate s | want MB, lost in wait MB | passes wait+final | CPU ms (mincore ms) | '
+               'after-gate ms | back % | advised MB sum / distinct, of earlier advice resident at the last pass | stop | res before MB')
+    for x in [x for x in runs if x.get('gate')]:
+        h = x.get('hold_stats') or {}
+        out.append(f"  {x.get('pos')} {x.get('run_tag')} | {fmt((x.get('cool_ms') or 0) / 1000, 0)} | {x.get('want_mb')}, "
+                   f"{x.get('wait_lost_mb')} | {h.get('wait_passes', 0)}+{h.get('final_passes', 0)} | "
+                   f"{fmt(None if h.get('cpu_us') is None else h['cpu_us'] / 1000, 0)} ({h.get('mincore_ms')}) | {h.get('final_ms')} | "
+                   f"{fmt(None if h.get('back_permille') is None else h['back_permille'] / 10, 1)} | {h.get('advised_mb')} / "
+                   f"{h.get('advised_distinct_mb')}, {h.get('adv_back_mb')} of {h.get('adv_before_mb')} | {h.get('stop')} | {res_mb(x)}")
+    hs = [x.get('hold_stats') for x in runs if x.get('gate') and isinstance(x.get('hold_stats'), dict) and 'passes' in x['hold_stats']]
+    if hs:
+        g = lambda k, f=1: spread([None if h.get(k) is None else h[k] * f for h in hs])
+        ok = sum(1 for h in hs if (h.get('back_permille') or 0) >= 950)
+        out.append(f"hold cost per gated run (median [min..max] n): CPU ms {g('cpu_us', 1e-3)} | mincore ms {g('mincore_ms')} | "
+                   f"passes {g('passes')} | ms after the gate {g('final_ms')} | back % {g('back_permille', 0.1)} (>= 95 % in {ok} "
+                   f"of {len(hs)}) | advised MB distinct {g('advised_distinct_mb')} | blocks read MB {g('inblock', 512 / 1e6)} | "
+                   f"fadvise fails {g('advise_fails')}")
+    return out
+
+
 def r23_tables(r):
     runs = [x for x in r.get('runs', []) if x.get('proto') == 'r23']
     if not runs:
@@ -932,24 +962,154 @@ def r23_tables(r):
             sh = lambda f: '-' if not cpus else f"{100 * sum(1 for c in cpus if f(c)) / len(cpus):.0f}%"
             out.append(f"  {m} t{t}: samples {len(smp)}, running {fmt(med(s[1] for s in smp), 1)}, cpu 0-3 {sh(lambda c: c < 4)} "
                        f"4-6 {sh(lambda c: 4 <= c <= 6)} 7 {sh(lambda c: c == 7)}; pinned {sorted({str(x.get('pinned_cpus')) for x in sc(m, None, t)})}")
-    out.append('hold per gated run: pos tag | gate s | want MB, lost in wait MB | passes wait+final | CPU ms (mincore ms) | '
-               'after-gate ms | back % | advised MB sum / distinct, of earlier advice resident at the last pass | stop | res before MB')
-    for x in [x for x in runs if x.get('gate')]:
-        h = x.get('hold_stats') or {}
-        out.append(f"  {x.get('pos')} {x.get('run_tag')} | {fmt((x.get('cool_ms') or 0) / 1000, 0)} | {x.get('want_mb')}, "
-                   f"{x.get('wait_lost_mb')} | {h.get('wait_passes', 0)}+{h.get('final_passes', 0)} | "
-                   f"{fmt(None if h.get('cpu_us') is None else h['cpu_us'] / 1000, 0)} ({h.get('mincore_ms')}) | {h.get('final_ms')} | "
-                   f"{fmt(None if h.get('back_permille') is None else h['back_permille'] / 10, 1)} | {h.get('advised_mb')} / "
-                   f"{h.get('advised_distinct_mb')}, {h.get('adv_back_mb')} of {h.get('adv_before_mb')} | {h.get('stop')} | {res_mb(x)}")
-    hs = [x.get('hold_stats') for x in runs if x.get('gate') and isinstance(x.get('hold_stats'), dict) and 'passes' in x['hold_stats']]
-    if hs:
-        g = lambda k, f=1: spread([None if h.get(k) is None else h[k] * f for h in hs])
-        ok = sum(1 for h in hs if (h.get('back_permille') or 0) >= 950)
-        out.append(f"hold cost per gated run (median [min..max] n): CPU ms {g('cpu_us', 1e-3)} | mincore ms {g('mincore_ms')} | "
-                   f"passes {g('passes')} | ms after the gate {g('final_ms')} | back % {g('back_permille', 0.1)} (>= 95 % in {ok} "
-                   f"of {len(hs)}) | advised MB distinct {g('advised_distinct_mb')} | blocks read MB {g('inblock', 512 / 1e6)} | "
-                   f"fadvise fails {g('advise_fails')}")
+    return out + hold_lines(runs)
+
+
+# kit r24 (memo-23): factor gate rule per quad, charger guard, vmstat counters, idle baseline, thermal zones
+def cap_of(s):
+    v = [int(x) for x in re.findall(r'\d+', (re.match(r'cap=([\d/]+)', s or '') or [None, ''])[1])]
+    return min(v) if v else None
+
+
+def vm_delta(x, a, b, k):
+    u, v = x.get(a), x.get(b)
+    return v[k] - u[k] if isinstance(u, dict) and isinstance(v, dict) and k in u and k in v else None
+
+
+PLATEAU = {'from_ms': 30000, 'window': 2, 'eps': 0.01, 'fall': 0.05}  # kit r24's Research.plateau* (memo-23 §2)
+
+
+def plateau_end(series, below=0.65, wait_ms=90000, p=PLATEAU):
+    """Kit r24's plateau gate replayed on a heat series ([[ms, headroom or None], ...] at the gate polls): (ms, why, h)."""
+    hs, k = [], p['window']
+    for ms, h in series:
+        if h is not None:
+            hs.append(h)
+            if h < below:
+                return ms, 'gate', h
+            if ms >= p['from_ms'] and len(hs) >= 2 * k and min(hs[-k:]) >= min(hs[-2 * k:-k]) - p['eps'] \
+                    and max(hs) - min(hs[-k:]) >= p['fall']:
+                return ms, 'plateau', h
+        if ms >= wait_ms:
+            return ms, 'timeout', h
+    return (series[-1][0], 'timeout', series[-1][1]) if series else (None, 'none', None)
+
+
+def plateau_replay(r):
+    """Every gated run with a heat series (kits r22 to r24): the r16 wait as run, and what the plateau gate would have done."""
+    out = ['plateau gate replayed on the heat series (pos tag | wait s as run, end | plateau: wait s, end, headroom | '
+           'lowest headroom later in the series):']
+    rows = []
+    for x in r.get('runs', []):
+        sr = x.get('heat_series')
+        if not (x.get('gate') and sr):
+            continue
+        e, why, h = plateau_end(sr)
+        later = [v for ms, v in sr if v is not None and ms > e]
+        rows.append((e, why, h, min(later) if later else None, sr[-1][1]))
+        out.append(f"  {x.get('pos')} {x.get('run_tag')} | {(x.get('cool_ms') or 0) / 1000:.0f}, "
+                   f"{x.get('wait_end') or ('timeout' if x.get('gate_timeout') else 'gate')} | {e / 1000:.0f}, {why}, {h} | "
+                   f"{min(later) if later else '-'}")
+    if rows:
+        out.append(f"summary: n {len(rows)}; ends {{{', '.join(f'{w}: {sum(1 for x in rows if x[1] == w)}' for w in ('gate', 'plateau', 'timeout'))}}}; "
+                   f"wait s {spread([x[0] / 1000 for x in rows])}; headroom at the end {spread([x[2] for x in rows])}; "
+                   f"headroom at the r16 end {spread([x[4] for x in rows])}; further fall after the end "
+                   f"{spread([max(0.0, x[2] - x[3]) for x in rows if x[3] is not None])}, > 0.03 in "
+                   f"{sum(1 for x in rows if x[3] is not None and x[2] - x[3] > 0.03)}")
     return out
+
+
+def r24_checks(r):
+    out = [l for l in r23_checks(r) if not l.startswith('kernel release')]
+    specs = {sp.get('id'): sp for sp in r.get('specs') or []}
+    runs = r.get('runs', [])
+    bad = [x.get('run_tag') for x in runs if x.get('gate') and x.get('gate_rule') != (specs.get(x.get('id')) or {}).get('gate_rule')]
+    ends = {}
+    for x in runs:
+        if x.get('gate'):
+            ends.setdefault(x.get('gate_rule'), {}).setdefault(x.get('wait_end'), 0)
+            ends[x.get('gate_rule')][x.get('wait_end')] += 1
+    plug = [x.get('run_tag') for x in runs if x.get('plugged_run') or x.get('plugged')]
+    pauses = [f"{x.get('run_tag')}({sum(p[1] for p in x['plug_pauses']) // 1000} s)" for x in runs if x.get('plug_pauses')]
+    vm = sum(1 for x in runs if isinstance(x.get('vmstat_after'), dict))
+    zs = r.get('thermal_zones') or []
+    zok = [z for z in zs if z.get('temp') is not None]
+    base = (r.get('idle_baseline') or {}).get('samples') or []
+    out.append(f"r24: gate rule != spec in {','.join(bad) or 'none'}; wait ends per rule {ends}; charger pauses "
+               f"{','.join(pauses) or 'none'}; runs with a charger at start or end (FLAG) {','.join(plug) or 'none'}; vmstat "
+               f"readable in {vm} of {len(runs)} rows; thermal zones readable {len(zok)} of {len(zs)}"
+               f"{' (' + str(zs[0].get('error')) + ')' if zs and not zok else ''}; idle baseline {len(base)} samples")
+    out.append(f"kernel release {r.get('kernel_release')!r}; owner note {r.get('owner_note')!r}")
+    return out
+
+
+def r24_tables(r):
+    runs = [x for x in r.get('runs', []) if x.get('proto') == 'r24']
+    if not runs:
+        return []
+    models = r21_models(r)
+    flagged = lambda x: bool(x.get('plugged_run') or x.get('plugged'))
+    sc = lambda m, a=None, g=None: [x for x in runs if x.get('model') == m and x.get('phase') == 'on'
+                                    and (a is None or x.get('arm') == a) and (g is None or x.get('gate_rule') == g)]
+    out = []
+    base = (r.get('idle_baseline') or {}).get('samples') or []
+    if base:
+        out.append('idle baseline before the first run (ms, headroom, battery C, plugged, status): ' +
+                   ' '.join(str(b) for b in base))
+    zs = [z for z in r.get('thermal_zones') or [] if z.get('temp') is not None]
+    if zs:
+        out.append('thermal zones at the start: ' + ', '.join(f"{z.get('type')}={z.get('temp')}" for z in zs))
+    out.append('kit r24, scored runs (phase on), per model, arm and gate rule (*device*):')
+    for m in models:
+        for a in ('off', 'num'):
+            for g in ('r16', 'plateau'):
+                v = sc(m, a, g)
+                st_ = r22_stats(v)
+                out.append(f"  {m} {a} {g:7}: n {st_['n']} (flagged {sum(map(flagged, v))}) tok/s {fmt(st_['tps'])} "
+                           f"[{fmt(st_['tps_min'])}..{fmt(st_['tps_max'])}] | wait s {fmt(med((x.get('wait_ms') or 0) / 1000 for x in v), 0)} "
+                           f"ends {sorted(x.get('wait_end') or '-' for x in v)} | heat at start {fmt(med(x.get('heat') for x in v), 3)} | "
+                           f"res before MB {fmt(st_['res_before'], 0)} lost in wait {fmt(st_['wait_lost_mb'], 0)} | decode majflt "
+                           f"{fmt(st_['dec_majflt'], 0)} inblock MB {fmt(st_['dec_inblock_mb'], 0)} | pswpin prefill / decode "
+                           f"{fmt(med(vm_delta(x, 'vmstat_before', 'vmstat_first', 'pswpin') for x in v), 0)} / "
+                           f"{fmt(med(vm_delta(x, 'vmstat_first', 'vmstat_after', 'pswpin') for x in v), 0)} | VmSwap before MB "
+                           f"{fmt(med(memv(x.get('mem_before'), 'swap') for x in v), 0)} | hold cpu ms {fmt(st_['hold_cpu_ms'], 0)}")
+    out.append('num minus off, mean over ABBA quads of mean(num) - mean(off), tok/s ± SE (flag-free = quads without a flagged run):')
+    for m in models:
+        qs = [q for g in r23_blocks(runs, m) for q in r22_quads([x for x in runs if x.get('group') == g and x.get('phase') == 'on'])
+              if len({x.get('gate_rule') for x in q}) == 1]
+        e = lambda g=None, clean=False: [quad_effect(q) for q in qs if (g is None or q[0].get('gate_rule') == g)
+                                         and not (clean and any(map(flagged, q)))]
+        out.append(f"  {m}: all {fmt_se(e())} | r16 {fmt_se(e('r16'))} | plateau {fmt_se(e('plateau'))} | flag-free {fmt_se(e(clean=True))}")
+    metrics = [('tok/s', lambda x: x.get('decode_tps'), 2), ('wait s', lambda x: None if x.get('wait_ms') is None else x['wait_ms'] / 1000, 1),
+               ('res before MB', res_mb, 0), ('lost in wait MB', lambda x: x.get('wait_lost_mb'), 0),
+               ('heat at start', lambda x: x.get('heat'), 3), ('big-core MHz', lambda x: big_min(x.get('mhz_before')), 0),
+               ('cap MHz', lambda x: cap_of(x.get('cap_before')), 0)]
+    out.append('plateau minus r16 per model, both arms: per block mean(plateau runs) - mean(r16 runs), mean over blocks ± SE; '
+               'all runs, Welch:')
+    for m in models:
+        parts = []
+        for name, f, d in metrics:
+            dd = []
+            for g in r23_blocks(runs, m):
+                b = [x for x in sc(m) if x.get('group') == g]
+                u = [f(x) for x in b if x.get('gate_rule') == 'plateau']
+                v = [f(x) for x in b if x.get('gate_rule') == 'r16']
+                if u and v and None not in u + v:
+                    dd.append(st.mean(u) - st.mean(v))
+            parts.append(f"{name} {fmt_se(dd)}, runs {welch([f(x) for x in sc(m, None, 'plateau')], [f(x) for x in sc(m, None, 'r16')], d)}")
+        out.append(f"  {m}: " + ' | '.join(parts))
+    plug = [x for x in runs if flagged(x)]
+    out.append(f"runs with a charger at their start or end: {len(plug)}" +
+               ''.join(f"\n  {x.get('pos')} {x.get('run_tag')} plugged before {x.get('plugged')} after {x.get('plugged_after')} "
+                       f"tok/s {fmt(x.get('decode_tps'))}" for x in plug))
+    out.append('swap and faults per gated run (system pswpin pages, prefill / decode; the run\'s majflt prefill / decode from c2-io):')
+    for x in [x for x in runs if x.get('gate')]:
+        i = io_of(x) or {}
+        out.append(f"  {x.get('pos')} {x.get('run_tag')} | pswpin {vm_delta(x, 'vmstat_before', 'vmstat_first', 'pswpin')} / "
+                   f"{vm_delta(x, 'vmstat_first', 'vmstat_after', 'pswpin')} | pgmajfault {vm_delta(x, 'vmstat_before', 'vmstat_first', 'pgmajfault')}"
+                   f" / {vm_delta(x, 'vmstat_first', 'vmstat_after', 'pgmajfault')} | majflt {i.get('pre_majflt')} / {i.get('dec_majflt')} | "
+                   f"VmSwap MB {memv(x.get('mem_before'), 'swap')} -> {memv(x.get('mem_first'), 'swap')} -> {memv(x.get('mem_after'), 'swap')}")
+    return out + hold_lines(runs)
 
 
 def main(argv=None):
@@ -962,6 +1122,7 @@ def main(argv=None):
     a.add_argument('--r16', default=R16, help="campaign 1's kit r16 report, for kit r20's position-by-position table")
     a.add_argument('--wait-s', type=float, default=30, help="kit r22: a gate wait of at least this many seconds is 'waited'")
     a.add_argument('--selftest', action='store_true')
+    a.add_argument('--plateau', action='store_true', help="replay kit r24's plateau gate on the report's heat series (r22 on)")
     o = a.parse_args(argv)
     if o.selftest:
         return selftest()
@@ -969,9 +1130,13 @@ def main(argv=None):
         a.error('report.json required')
     r = load(o.report)
     print(f"kit {r.get('kit')} app {r.get('app')} started {r.get('started')} stopped_early {r.get('stopped_early')}")
+    if o.plateau:
+        print('\n'.join(plateau_replay(r)))
+        return 0
     r16 = load(o.r16) if r.get('kit') == 'r20' and o.r16 and os.path.exists(o.r16) else None
     parts = (r21_checks(r), r21_tables(r)) if r.get('kit') == 'r21' else (r22_checks(r), r22_tables(r, o.wait_s)) \
-        if r.get('kit') == 'r22' else (r23_checks(r), r23_tables(r)) if r.get('kit') == 'r23' else (
+        if r.get('kit') == 'r22' else (r23_checks(r), r23_tables(r)) if r.get('kit') == 'r23' \
+        else (r24_checks(r), r24_tables(r)) if r.get('kit') == 'r24' else (
         checks(r, o.prompt), identity(r), groups(r, o.min_mhz, o.fault_run), ab(r, o.min_mhz, o.sigma),
         r16_compare(r, r16), waits(r), warm(r))
     for part in parts:
@@ -1240,6 +1405,54 @@ def selftest():
     assert any(l.startswith('granite (r23)') and 'missing in none' in l for l in c), c  # granite has no load env to miss
     r23['runs'][24]['load_env_set'] = {}
     assert any(l.startswith('olmoe (r23)') and 'missing in olmoe_off_t3.90' in l for l in r23_checks(r23))
+    # r24: gate rule per quad (plateau first in odd blocks), 3 threads, charger flag, vmstat counters.
+    def row24(m, g, arm, i, rule, phase='on', first=False):
+        pl = rule == 'plateau'
+        tps = 17 + (2 if arm == 'num' else 0) + (1 if pl else 0)  # num +2, plateau +1 tok/s
+        x = row23(m, g, arm, i, tps, 3, phase, first)
+        tag = f"{m}_{arm}_{'pl' if pl else 'r16'}.{i}"
+        x['c2'] = [l.replace(f"run={x['run_tag']} ", f'run={tag} ') for l in x['c2']]
+        x.update({'proto': 'r24', 'id': f"{m}_{arm}_{'pl' if pl else 'r16' if phase != 'warmup' else 'wu'}", 'run_tag': tag,
+                  'gate_rule': rule, 'wait_end': None if phase == 'warmup' else 'plateau' if pl else 'timeout',
+                  'wait_ms': 50000 if pl else 90000, 'heat': 0.73 if pl else 0.72, 'plugged': False, 'plugged_after': False,
+                  'plugged_run': False, 'res_before': rz(2400 if pl else 2300), 'wait_lost_mb': 200 if pl else 300,
+                  'mhz_before': 'mhz=1,1,1,1,2112,2112,2112,2035', 'cap_before': 'cap=2035/2035',
+                  'vmstat_before': {'pswpin': 0, 'pgmajfault': 0}, 'vmstat_first': {'pswpin': 1000, 'pgmajfault': 1200},
+                  'vmstat_after': {'pswpin': 1100, 'pgmajfault': 1400}})
+        if phase == 'warmup':
+            x['gate'] = None
+        return x
+    r24 = dict(r23, kit='r24', runs=[], idle_baseline={'fields': ['ms', 'headroom'], 'samples': [[0, 0.8], [5000, 0.79]]},
+               thermal_zones=[{'zone': 'thermal_zone0', 'type': None, 'temp': None, 'error': 'type: denied'}])
+    specs = {}
+    for b, m in enumerate(['granite', 'olmoe', 'olmoe', 'granite'], 1):
+        r24['runs'] += [row24(m, f'b{b}', 'off', 90 + k, 'none', 'warmup', k == 0) for k in range(2)]
+        for qi, rule in enumerate(['plateau', 'r16'] if b % 2 else ['r16', 'plateau']):
+            for j, arm in enumerate(['off', 'num', 'num', 'off']):
+                r24['runs'].append(row24(m, f'b{b}', arm, 4 * qi + j, rule))
+        r24['runs'] += [row24(m, f'b{b}', a, 8 + k, 'r16', 'prof') for k, a in enumerate(['off', 'num'] if b % 2 else ['num', 'off'])]
+    for x in r24['runs']:
+        specs[x['id']] = {'id': x['id'], 'gate_rule': x['gate_rule']}
+    r24['specs'] = list(specs.values())
+    r24['runs'][3]['plugged_after'] = r24['runs'][3]['plugged_run'] = True
+    c = r24_checks(r24)
+    assert any(l.startswith('r24: gate rule != spec in none') and 'FLAG) granite_num_pl.1' in l and 'readable 0 of 1 (type: denied)' in l
+               for l in c), c
+    t = r24_tables(r24)
+    assert any(l.startswith('  granite num plateau: n 4 (flagged 1) tok/s 20.00') and 'pswpin prefill / decode 1000 / 100' in l for l in t), t
+    assert any(l.startswith('  olmoe: all +2.00 ± 0.00 (n 4) | r16 +2.00 ± 0.00 (n 2) | plateau +2.00') and 'flag-free +2.00 ± 0.00 (n 4)' in l
+               for l in t), t
+    assert any(l.startswith('  granite: all') and 'flag-free +2.00 ± 0.00 (n 3)' in l for l in t), t
+    assert any(l.startswith('  granite: tok/s +1.00 ± 0.00 (n 2)') and 'wait s -40.00 ± 0.00 (n 2)' in l and 'res before MB +100.00' in l
+               for l in t), t
+    assert any(l.startswith('runs with a charger at their start or end: 1') for l in t), t
+    assert any(l.startswith('hold cost per gated run') for l in t), t
+    # the plateau gate, as the app's unit test (R62's pos 4 and 6 series, every 5 s)
+    p4 = [0.873, 0.873, 0.873, 0.873, 0.802, 0.788, 0.755, 0.741, 0.721, 0.735, 0.725, 0.735, 0.748, 0.764, 0.77]
+    p6 = [0.725, 0.767, 0.789, 0.81, 0.833, 0.833, 0.808, 0.778, 0.753, 0.741, 0.717, 0.737, 0.753, 0.776, 0.79]
+    assert plateau_end([[5000 * i, h] for i, h in enumerate(p4)]) == (50000, 'plateau', 0.725)
+    assert plateau_end([[5000 * i, h] for i, h in enumerate(p6)]) == (60000, 'plateau', 0.753)
+    assert plateau_end([[0, 0.7], [5000, 0.64]]) == (5000, 'gate', 0.64)
     print('selftest OK')
     return 0
 

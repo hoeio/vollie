@@ -1,0 +1,496 @@
+diff --git a/lib/device.dart b/lib/device.dart
+--- a/lib/device.dart
++++ b/lib/device.dart
+@@ -563,6 +563,65 @@
+     }
+   }
+ 
++  /// Kit r24: system-wide swap and fault counters from /proc/vmstat (pages; pswpin = swap-ins, pgmajfault = major faults,
++  /// pgpgin = KB read from block devices, as the kernel counts them). Null if the file cannot be read.
++  static Map<String, int>? vmstat() {
++    try {
++      const keys = {'pswpin', 'pswpout', 'pgmajfault', 'pgpgin', 'pgpgout'};
++      final m = <String, int>{};
++      for (final l in File('/proc/vmstat').readAsLinesSync()) {
++        final f = l.split(' ');
++        if (f.length == 2 && keys.contains(f[0])) m[f[0]] = int.tryParse(f[1]) ?? -1;
++      }
++      return m.isEmpty ? null : m;
++    } catch (_) {
++      return null;
++    }
++  }
++
++  /// Kit r24: every /sys/class/thermal/thermal_zone*: its type and temperature (millidegrees as the kernel gives them),
++  /// or the error (the app's SELinux domain may deny it). Never throws.
++  static List<({String zone, String? type, int? temp, String? error})> thermalZones() {
++    final out = <({String zone, String? type, int? temp, String? error})>[];
++    try {
++      final d = Directory('/sys/class/thermal').listSync().where((e) => e.path.split('/').last.startsWith('thermal_zone'));
++      for (final e in d) {
++        final z = e.path.split('/').last;
++        String? type, err;
++        int? temp;
++        try {
++          type = File('${e.path}/type').readAsStringSync().trim();
++        } catch (x) {
++          err = 'type: $x';
++        }
++        try {
++          temp = int.tryParse(File('${e.path}/temp').readAsStringSync().trim());
++        } catch (x) {
++          err = '${err == null ? '' : '$err; '}temp: $x';
++        }
++        out.add((zone: z, type: type, temp: temp, error: err));
++      }
++      if (out.isEmpty) out.add((zone: '-', type: null, temp: null, error: 'no thermal_zone entries listed'));
++    } catch (x) {
++      out.add((zone: '-', type: null, temp: null, error: 'list: $x'));
++    }
++    return out;
++  }
++
++  /// The current temperature of each zone that was readable in [zones] ({zone: temp}); empty if none was.
++  static Map<String, int?> zoneTemps(List<({String zone, String? type, int? temp, String? error})> zones) {
++    final m = <String, int?>{};
++    for (final z in zones) {
++      if (z.temp == null) continue;
++      try {
++        m[z.zone] = int.tryParse(File('/sys/class/thermal/${z.zone}/temp').readAsStringSync().trim());
++      } catch (_) {
++        m[z.zone] = null;
++      }
++    }
++    return m;
++  }
++
+   /// Current clock of every core in MHz ("mhz=1804,1804,…"), to see throttling
+   /// next to a timing. Empty off Linux.
+   static String cpuMhz() {
+diff --git a/lib/research.dart b/lib/research.dart
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -1,8 +1,8 @@
+ part of 'assistant.dart';
+ 
+-/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-22-kit-r23.md).
++/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-23-kit-r24.md).
+ /// model: a [KitModel] id ([Research.kitModels]); the first spec of a group (block) reloads that model.
+-/// proto: 'r23' = memo-22's two-model ABBA blocks (campaign 1's r16 gate before every gated run).
++/// proto: 'r24' = memo-23's two-model ABBA blocks, the gate rule per quad (r16 or plateau).
+ /// phase: 'warmup' (unscored), 'on' (scored) or 'prof' (profiled, not scored).
+ /// arm: 'off' = the model's baseline (r21's knob-off arm); 'num' = baseline + the model's [KitModel.num] (declared
+ ///      numerics: skip + two-stage head, R59).
+@@ -11,8 +11,10 @@
+ /// kind: 'official32' = the benchmark (_benchPrompt, 32 tokens, greedy, the app's streaming, as r16);
+ ///       'profiled32' = the same under the profiling env (r16's per-token lines).
+ /// env: set before the run, every other known knob unset. repack: weight repack at load (a change reloads the model).
+-/// threads: 0 = the app's pick (r23 sets 3 or 4 explicitly). reps: repetitions in a row. pause: idle seconds after the gate.
+-/// gate: r16's cool-down gate before the run (headroom < 0.65, at most 90 s, read every 5 s); false = no wait.
++/// threads: 0 = the app's pick (r24 sets 3 explicitly). reps: repetitions in a row. pause: idle seconds after the gate.
++/// gate: a cool-down gate before the run (headroom read every 5 s, at most 90 s); false = no wait.
++/// gateRule: 'r16' = end the wait below 0.65 or at 90 s; 'plateau' = also end it once the headroom has stopped falling
++///      ([Research.plateauFrom] .. [Research.plateauFall], memo-23 §2); 'none' for runs without a gate.
+ /// One model of the kit ([Research.kitModels]).
+ /// load: env set only while the model loads (both arms; r23: OLMoE's VOLLIE_HEAD2_REPACK=1, c1-olmoe 0006).
+ typedef KitModel = ({String id, String name, String arch, String file, int bytes, String sha256, String url, String source,
+@@ -20,19 +22,21 @@
+     List<int> experts});
+ 
+ typedef RunSpec = ({String id, String model, String proto, String group, String phase, String arm, String kind,
+-    Map<String, String> env, bool repack, int threads, int reps, int pause, bool gate, bool hold});
++    Map<String, String> env, bool repack, int threads, int reps, int pause, bool gate, String gateRule, bool hold});
+ 
+-/// Research kit r23: campaign 1's runtime (llama.cpp 620d2225c + patches/llama.cpp/0001-0003) +
+-/// patches/llama.cpp-c1-olmoe/0001 to 0006 (keep-warm and prefill-cold unused; 0003 skip, 0004 untied head, 0005 per-prompt
+-/// counter lines, 0006 the head out of KleidiAI at load and the head's decline reason). The models of [kitModels] in one
+-/// session, blocks in [blockOrder] (G O O G); in each block the arms off / num in ABBA, one quad at 3 threads and one at 4;
+-/// hold in every gated run. One tap, one JSON report (clipboard, a file next to the models, and "Save to Downloads").
++/// Research kit r24: campaign 1's runtime (llama.cpp 620d2225c + patches/llama.cpp/0001-0003) +
++/// patches/llama.cpp-c1-olmoe/0001 to 0006, unchanged from r23. The models of [kitModels] in one session, blocks in
++/// [blockOrder] (G O O G); in each block the arms off / num in ABBA, one quad with r16's gate and one with the plateau
++/// gate; 3 threads; hold (r23's rule) in every gated run; the kit pauses while a charger is connected. One tap, one JSON
++/// report (clipboard, a file next to the models, and "Save to Downloads").
+ extension Research on Assistant {
+-  static const kit = 'r23';
+-  static const app = '1.23.0+23';
++  static const kit = 'r24';
++  static const app = '1.24.0+24';
+ 
+-  /// Shown on the kit's start screen and kept in the report (R60: a banking app was running in the background).
+-  static const ownerNote = 'Before you start: close background apps (R60: a banking app was running).';
++  /// Shown on the kit's start screen and kept in the report (R60: a banking app was running; R62: a charger was plugged
++  /// in during the last block).
++  static const ownerNote = 'Before you start: close background apps and unplug the charger. The kit pauses while a '
++      'charger is connected.';
+ 
+   /// r16's gate (campaign 1's Assistant._coolDown, R48 coolOfficial = true): before every gated run read the headroom;
+   /// below [Assistant.coolHeadroom] (0.65) -> go; else wait [gatePoll] and read again, until [gateWait] (90 s) has
+@@ -40,6 +44,28 @@
+   static const coolOfficial = true;
+   static const gateWait = Duration(seconds: 90), gatePoll = Duration(seconds: 5);
+ 
++  /// r24's plateau gate (memo-23 §2, from the heat series of r22 and r23): besides r16's rule, end the wait at a reading
++  /// taken at least [plateauFrom] into it when the lowest of the last [plateauWindow] readings is not more than
++  /// [plateauEps] below the lowest of the [plateauWindow] readings before them (the headroom has stopped falling) and is
++  /// at least [plateauFall] below the highest reading of this wait (it did fall: the headroom often rises first after a
++  /// run). Null readings are skipped.
++  static const plateauFrom = Duration(seconds: 30);
++  static const plateauWindow = 2;
++  static const plateauEps = 0.01, plateauFall = 0.05;
++
++  /// The plateau test on the readings of one wait so far (pure, for the unit test).
++  static bool plateau(List<double> h) {
++    const k = plateauWindow;
++    if (h.length < 2 * k) return false;
++    final last = h.sublist(h.length - k).reduce(math.min);
++    final before = h.sublist(h.length - 2 * k, h.length - k).reduce(math.min);
++    return last >= before - plateauEps && h.reduce(math.max) - last >= plateauFall;
++  }
++
++  /// r24: while a charger is connected at a gate poll the kit pauses (polls every [plugPoll]) and then starts the wait
++  /// again; each pause is recorded in the row.
++  static const plugPoll = Duration(seconds: 5);
++
+   /// false: every run re-reads the whole prompt (no reuse of the previous identical prompt's KV cache), as r17.
+   static const reusePrefix = false;
+ 
+@@ -98,30 +124,30 @@
+   static final Map<String, KitModel> models = {for (final m in kitModels) m.id: m};
+   static final Map<String, KitModel> _byFile = {for (final m in kitModels) m.file: m};
+ 
+-  /// The thread counts of the two quads (memo-21 item 1's cheapest test: does a fourth thread on the fourth big core pay?).
+-  static const threadsBase = 3, threadsAlt = 4;
++  /// Threads of every run (R62: four plain threads lost on both models and are closed).
++  static const threads = 3;
+ 
+-  /// One block: load, two unscored warm-ups (arm off, 3 threads, no gate, no hold), 8 scored runs in two ABBA quads (off
+-  /// num num off), the first quad at 4 threads in odd blocks and at 3 in even ones (so each model of a G O O G order gets
+-  /// 4 threads first once and last once, as r22 did with hold), then one profiled run per arm at 3 threads (order off/num
+-  /// in odd blocks, num/off in even ones). Every run but the warm-ups is gated, and every gated run holds.
++  /// One block: load, two unscored warm-ups (arm off, no gate, no hold), 8 scored runs in two ABBA quads (off num num
++  /// off), the first quad with the plateau gate in odd blocks and with r16's in even ones (so each model of a G O O G
++  /// order gets the plateau gate first once and last once, as r23 did with threads), then one profiled run per arm with
++  /// r16's gate (order off/num in odd blocks, num/off in even ones). Every run but the warm-ups is gated and holds.
+   static List<RunSpec> _block(int b, KitModel m) {
+-    RunSpec r(String arm, String phase, int reps, int threads) {
++    RunSpec r(String arm, String phase, int reps, String rule) {
+       final prof = phase == 'prof', wu = phase == 'warmup';
+       final env = {...m.settings, ..._io, if (arm == 'num') ...m.num, if (prof) ..._profOn};
+       return (
+-        id: '${m.id}_$arm${prof ? '_prof' : wu ? '_wu' : '_t$threads'}', model: m.id, proto: 'r23',
++        id: '${m.id}_$arm${prof ? '_prof' : wu ? '_wu' : rule == 'plateau' ? '_pl' : '_r16'}', model: m.id, proto: 'r24',
+         group: 'b$b', phase: phase, arm: arm, kind: prof ? 'profiled32' : 'official32', env: env,
+-        repack: m.repack, threads: threads, reps: reps, pause: 0, gate: !wu, hold: !wu,
++        repack: m.repack, threads: threads, reps: reps, pause: 0, gate: !wu, gateRule: rule, hold: !wu,
+       );
+     }
+-    final t = b.isOdd ? [threadsAlt, threadsBase] : [threadsBase, threadsAlt];
++    final g = b.isOdd ? ['plateau', 'r16'] : ['r16', 'plateau'];
+     final p = b.isOdd ? ['off', 'num'] : ['num', 'off'];
+     return [
+-      r('off', 'warmup', 2, threadsBase),
+-      for (final n in t)
+-        for (final a in ['off', 'num', 'num', 'off']) r(a, 'on', 1, n),
+-      for (final a in p) r(a, 'prof', 1, threadsBase),
++      r('off', 'warmup', 2, 'none'),
++      for (final rule in g)
++        for (final a in ['off', 'num', 'num', 'off']) r(a, 'on', 1, rule),
++      for (final a in p) r(a, 'prof', 1, 'r16'),
+     ];
+   }
+ 
+@@ -224,7 +250,7 @@
+   static Map<String, Object?> _specJson(RunSpec s) => {
+         'id': s.id, 'model': s.model, 'proto': s.proto, 'group': s.group, 'phase': s.phase, 'arm': s.arm, 'kind': s.kind,
+         'env': s.env, 'repack': s.repack,
+-        'threads': s.threads, 'reps': s.reps, 'pause_s': s.pause, 'gate': s.gate, 'hold': s.hold,
++        'threads': s.threads, 'reps': s.reps, 'pause_s': s.pause, 'gate': s.gate, 'gate_rule': s.gateRule, 'hold': s.hold,
+       };
+ 
+   /// The native libraries this process has mapped (llama.cpp's), from /proc/self/maps.
+@@ -519,15 +545,16 @@
+       'baseline_note': 'arm off = r22 knob-off arm (campaign 1 shipping settings minus numerics, repack on, GGML_C2_IO=1), '
+           'loaded with the model\'s load env (OLMoE VOLLIE_HEAD2_REPACK=1: head in CPU_REPACK, R61); '
+           'arm num = off + the model\'s num env (declared numerics, R59/R61); GGML_PREFILL_COLD and GGML_KEEP_WARM are never set; '
+-          'hold = app-side read-back of the pages the gate wait took (memo-22 §2), no env, in every gated run; '
+-          'threads 3 or 4 per quad (memo-21 item 1), warm-ups and profiled runs at 3',
++          'hold = app-side read-back of the pages the gate wait took (memo-22 §2, r23 rule unchanged), no env, in every gated '
++          'run; gate rule r16 or plateau per quad (memo-23 §2), profiled runs r16; 3 threads in every run; the kit pauses '
++          'while a charger is connected (charger_rule)',
+       'hold_rule': {'back': Research.holdBack, 'stall': Research.holdStall, 'rounds': Research.holdRounds,
+                     'every_ms': Research.holdEvery.inMilliseconds, 'settle_ms': Research.holdSettle.inMilliseconds,
+                     'max_ms': Research.holdMax.inMilliseconds,
+                     'advice': 'posix_fadvise WILLNEED on the pages resident at the previous run end of the model and not now; '
+                         'one pass in the wait at >= every_ms, then passes every settle_ms after the gate until back, stall, '
+                         'rounds or max_ms'},
+-      'thread_rule': {'base': Research.threadsBase, 'alt': Research.threadsAlt,
++      'thread_rule': {'threads': Research.threads,
+                       'note': 'llama.cpp threads = the spec\'s threads (prompt and decode); the app restricts its DartWorker '
+                           'threads (and the ggml workers they start) to pinned_cpus as a set, no per-thread pinning'},
+       'memlock_rlimit': () {
+@@ -538,7 +565,13 @@
+       'tok_fields': Research.tokFields,
+       'tok_fields_c1': Research.tokFieldsC1,
+       'gate': {'below': Assistant.coolHeadroom, 'wait_ms': Research.gateWait.inMilliseconds,
+-               'poll_ms': Research.gatePoll.inMilliseconds, 'rule': 'r16'},
++               'poll_ms': Research.gatePoll.inMilliseconds, 'rule': 'r16 or plateau per spec (gate_rule)',
++               'plateau': {'from_ms': Research.plateauFrom.inMilliseconds, 'window': Research.plateauWindow,
++                           'eps': Research.plateauEps, 'fall': Research.plateauFall,
++                           'test': 'min(last window readings) >= min(the window before them) - eps and '
++                               'max(readings of this wait) - min(last window readings) >= fall, at >= from_ms'}},
++      'charger_rule': 'at every gate poll: plugged -> pause (poll every ${Research.plugPoll.inSeconds} s) until unplugged, '
++          'then the wait starts again (row plug_pauses); plugged_run = plugged before or after the run',
+       'load_env': {for (final m in Research.kitModels) m.id: {...Research.loadEnv, ...m.load}},
+       'read_ahead_kb': {for (final b in ['sda', 'sdb', 'sdc']) b: DeviceProfile.sysRead('/sys/block/$b/queue/read_ahead_kb')},
+       'res_start': {for (final m in paths.keys) m: Research._residency(paths[m]!)},
+@@ -642,25 +675,51 @@
+ 
+     // r16's gate (Assistant._coolDown of campaign 1): read; below [below] -> go; else wait 5 s and read again, until
+     // [maxWait] has passed (checked after a read). A null reading (NaN: polled too soon, or none) is "unknown, read
+-    // again" (DeviceProfile.thermal spaces calls >= 1.1 s), never "cool".
+-    Future<({double? heat, bool timeout, bool unknown, List<List<num?>> series})> kitGate(double below, Duration maxWait,
+-        [void Function(int ms)? onPoll]) async {
+-      final t0 = DateTime.now();
+-      final series = <List<num?>>[];
++    // again" (DeviceProfile.thermal spaces calls >= 1.1 s), never "cool". r24: rule 'plateau' also ends the wait when
++    // [Research.plateau] holds at a reading >= [Research.plateauFrom]; [why] = gate / plateau / timeout / stopped. Charger
++    // guard: a poll that finds a charger connected pauses the kit until it is unplugged, then the wait starts again
++    // (readings, series and the clock restart; [pauses] = [ms into the wait, pause ms] each).
++    Future<({double? heat, bool timeout, bool unknown, List<List<num?>> series, String why, List<List<int>> pauses})> kitGate(
++        double below, Duration maxWait, String rule, [void Function(int ms)? onPoll]) async {
++      var t0 = DateTime.now();
++      var series = <List<num?>>[];
++      final pauses = <List<int>>[];
++      var hs = <double>[];
+       double? last;
+       while (true) {
++        if ((await DeviceProfile.battery()).plugged) {
++          final p0 = DateTime.now();
++          final at = p0.difference(t0).inMilliseconds;
++          while (!_stopTest && (await DeviceProfile.battery()).plugged) {
++            show('Charger connected: unplug it to continue (paused ${DateTime.now().difference(p0).inSeconds} s)');
++            await Future<void>.delayed(Research.plugPoll);
++          }
++          pauses.add([at, DateTime.now().difference(p0).inMilliseconds]);
++          t0 = DateTime.now();
++          series = <List<num?>>[];
++          hs = <double>[];
++          last = null;
++          if (_stopTest) return (heat: last, timeout: false, unknown: true, series: series, why: 'stopped', pauses: pauses);
++        }
+         final h = (await DeviceProfile.thermal()).headroom;
+         final ms = DateTime.now().difference(t0).inMilliseconds;
+         series.add([ms, h == null ? null : (h * 1000).round() / 1000]);
+         if (h != null) {
+           last = h;
+-          if (h < below) return (heat: h, timeout: false, unknown: false, series: series);
+-          show('cooling: headroom ${(h * 100).round()}% (gate ${(below * 100).round()}%), ${ms ~/ 1000} s of ${maxWait.inSeconds} s');
++          hs.add(h);
++          if (h < below) return (heat: h, timeout: false, unknown: false, series: series, why: 'gate', pauses: pauses);
++          if (rule == 'plateau' && ms >= Research.plateauFrom.inMilliseconds && Research.plateau(hs)) {
++            return (heat: h, timeout: false, unknown: false, series: series, why: 'plateau', pauses: pauses);
++          }
++          show('cooling ($rule): headroom ${(h * 100).round()}% (gate ${(below * 100).round()}%), ${ms ~/ 1000} s of '
++              '${maxWait.inSeconds} s');
+         }
+         onPoll?.call(ms); // r23 hold: at most one read-back in the wait (Research.holdEvery)
+-        if (ms >= maxWait.inMilliseconds) return (heat: last, timeout: true, unknown: last == null, series: series);
++        if (ms >= maxWait.inMilliseconds) {
++          return (heat: last, timeout: true, unknown: last == null, series: series, why: 'timeout', pauses: pauses);
++        }
+         await Future<void>.delayed(h == null ? Duration.zero : Research.gatePoll);
+-        if (_stopTest) return (heat: last, timeout: false, unknown: last == null, series: series);
++        if (_stopTest) return (heat: last, timeout: false, unknown: last == null, series: series, why: 'stopped', pauses: pauses);
+       }
+     }
+ 
+@@ -747,6 +806,8 @@
+       return have;
+     }
+ 
++    // r24: every /sys/class/thermal zone once at the start (type, temp or the error); runs then read the readable ones.
++    final zones = DeviceProfile.thermalZones();
+     final repOf = <String, int>{};
+     var pos = 0;
+     double? lastHeat; // no-gate runs: the reading after the previous run
+@@ -804,8 +865,12 @@
+           hold['wait_passes'] = (hold['wait_passes'] ?? 0) + 1;
+         }
+         if (s.gate) {
+-          final g = await kitGate(Assistant.coolHeadroom, Research.gateWait, s.hold && want != null ? inWait : null);
++          final g = await kitGate(Assistant.coolHeadroom, Research.gateWait, s.gateRule, s.hold && want != null ? inWait : null);
+           row['cool_ms'] = DateTime.now().difference(c0).inMilliseconds;
++          row['gate_rule'] = s.gateRule;
++          row['wait_end'] = g.why;
++          row['plug_pauses'] = g.pauses;
++          row['wait_ms'] = g.series.isEmpty ? 0 : g.series.last[0]; // the wait after the last charger pause (= cool_ms without one)
+           row['gate'] = Assistant.coolHeadroom;
+           row['heat'] = g.heat;
+           row['heat_series'] = g.series;
+@@ -888,6 +953,8 @@
+         final b0 = await DeviceProfile.battery();
+         row['batt_c_before'] = b0.tempC;
+         row['plugged'] = b0.plugged;
++        row['zones_before'] = DeviceProfile.zoneTemps(zones); // r24: readable thermal zones (none if SELinux denies them)
++        row['vmstat_before'] = DeviceProfile.vmstat(); // r24: swap-in / major-fault counters, system-wide (memo-23 §1)
+         row['mhz_before'] = DeviceProfile.cpuMhz();
+         row['mem_before'] = DeviceProfile.memInfo();
+         harvest(row); // untagged lines since the last run belong to this row
+@@ -909,6 +976,8 @@
+         final c = await _kitComplete(Assistant._benchPrompt, Assistant._benchTokens, false, (ch) {
+           if (ch.text.isNotEmpty && firstMs == null) {
+             firstMs = sw.elapsedMicroseconds / 1000;
++            row['vmstat_first'] = DeviceProfile.vmstat(); // r24: the prefill's share
++            row['mem_first'] = DeviceProfile.memInfo(); // r24: VmSwap / RssFile after the prefill
+             io1st = DeviceProfile.ioReadBytes(); // the app's own split (the c2-io line is the runtime's)
+             ib1st = DeviceProfile.rusage()?.inblock;
+           }
+@@ -937,7 +1006,11 @@
+         row['res_after'] = lastRes = Research._residency(path);
+         if (!s.gate) row['heat_after'] = lastHeat = (await DeviceProfile.thermal()).headroom;
+         if (s.gate) lastHeat = null;
+-        row['batt_c_after'] = (await DeviceProfile.battery()).tempC;
++        final b1 = await DeviceProfile.battery();
++        row['batt_c_after'] = b1.tempC;
++        row['vmstat_after'] = DeviceProfile.vmstat();
++        row['plugged_after'] = b1.plugged;
++        row['plugged_run'] = b0.plugged || b1.plugged; // r24: a charger at the run's start or end (list / flag in the parser)
+         final u = c.usage;
+         row['tokens'] = u?.completionTokens;
+         row['prompt_tokens'] = u?.promptTokens;
+@@ -973,6 +1046,19 @@
+ 
+     try {
+       Research.clearKnobs();
++      // r24: idle baseline before the first run (headroom and battery once per 5 s for 30 s), and the thermal zones.
++      final base = <List<Object?>>[];
++      final b0 = DateTime.now();
++      for (var i = 0; i <= 6 && !_stopTest; i++) {
++        final ms = DateTime.now().difference(b0).inMilliseconds;
++        show('idle baseline ${ms ~/ 1000} s of 30 s');
++        final t = await DeviceProfile.thermal();
++        final b = await DeviceProfile.battery();
++        base.add([ms, t.headroom == null ? null : (t.headroom! * 1000).round() / 1000, b.tempC, b.plugged, t.status]);
++        if (i < 6) await Future<void>.delayed(b0.add(Duration(seconds: 5 * (i + 1))).difference(DateTime.now()));
++      }
++      report['idle_baseline'] = {'fields': ['ms', 'headroom', 'batt_c', 'plugged', 'status'], 'samples': base};
++      report['thermal_zones'] = zones.map((z) => {'zone': z.zone, 'type': z.type, 'temp': z.temp, 'error': z.error}).toList();
+       await save();
+       for (final s in Research.runs) {
+         for (var i = 0; i < s.reps && !_stopTest; i++) {
+diff --git a/lib/settings_screen.dart b/lib/settings_screen.dart
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -351,7 +351,7 @@
+               icon: const Icon(Icons.thermostat_rounded),
+               label: const Text('Run phone test (10 min)'),
+             ),
+-      // Research kit r23: the models of Research.kitModels (memo-22); the kit's own files are fetched here first.
++      // Research kit r24: the models of Research.kitModels (memo-23); the kit's own files are fetched here first.
+       if (!assistant.kitModelReady)
+         assistant.researching
+             ? OutlinedButton.icon(
+@@ -362,7 +362,7 @@
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.downloadKitModels,
+                 icon: const Icon(Icons.download_rounded),
+-                label: Text('Download kit r23 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
++                label: Text('Download kit r24 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
+                     '(${(assistant.kitMissingBytes / 1e9).toStringAsFixed(1)} GB, Wi-Fi)'),
+               ),
+       if (assistant.kitModelReady)
+@@ -375,7 +375,7 @@
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.researchRun,
+                 icon: const Icon(Icons.science_rounded),
+-                label: const Text('Run research kit r23 (~35-80 min)'),
++                label: const Text('Run research kit r24 (~35-75 min)'),
+               ),
+       if (assistant.kitModelReady && !assistant.researching)
+         Padding(
+diff --git a/pubspec.yaml b/pubspec.yaml
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.23.0+23
++version: 1.24.0+24
+ 
+ environment:
+   sdk: ^3.10.7
+diff --git a/test/kit_lines_test.dart b/test/kit_lines_test.dart
+--- a/test/kit_lines_test.dart
++++ b/test/kit_lines_test.dart
+@@ -70,25 +70,25 @@
+     expect(h.tag, 'olmoe_num_t4.0');
+     expect(h.line.endsWith('c2_why=layout:CPU_KLEIDIAI'), true);
+   });
+-  test('kit r23: run list generated from the model table', () {
++  test('kit r24: run list generated from the model table', () {
+     final ids = Research.kitModels.map((m) => m.id).toList();
+     expect(Research.blockOrder.map((m) => m.id).toList(), [...ids, ...ids.reversed]);
+     expect(Research.runs.length, Research.blockOrder.length * 11);
+-    final fourFirst = <String, List<bool>>{};
++    final plFirst = <String, List<bool>>{};
+     for (var b = 0; b < Research.blockOrder.length; b++) {
+       final m = Research.blockOrder[b];
+       final blk = Research.runs.where((r) => r.group == 'b${b + 1}').toList();
+-      expect(blk.every((r) => r.model == m.id && r.repack && r.proto == 'r23'), true);
++      expect(blk.every((r) => r.model == m.id && r.repack && r.proto == 'r24' && r.threads == 3), true);
+       final scored = blk.where((r) => r.phase == 'on').toList();
+       expect(scored.map((r) => r.arm).toList(), ['off', 'num', 'num', 'off', 'off', 'num', 'num', 'off']);
+-      expect(scored.map((r) => r.threads).toSet(), {3, 4});
+-      expect(scored.sublist(0, 4).every((r) => r.threads == scored[0].threads) &&
+-          scored.sublist(4).every((r) => r.threads != scored[0].threads), true);
+-      fourFirst.putIfAbsent(m.id, () => []).add(scored[0].threads == 4);
++      expect(scored.map((r) => r.gateRule).toSet(), {'r16', 'plateau'});
++      expect(scored.sublist(0, 4).every((r) => r.gateRule == scored[0].gateRule) &&
++          scored.sublist(4).every((r) => r.gateRule != scored[0].gateRule), true);
++      plFirst.putIfAbsent(m.id, () => []).add(scored[0].gateRule == 'plateau');
+       expect(blk.where((r) => r.phase == 'prof').map((r) => r.arm).toSet(), {'off', 'num'});
+-      expect(blk.where((r) => r.phase == 'prof').every((r) => r.hold && r.threads == 3), true);
+-      expect(blk.first.phase == 'warmup' && blk.first.reps == 2 && !blk.first.gate && !blk.first.hold && blk.first.threads == 3,
+-          true);
++      expect(blk.where((r) => r.phase == 'prof').every((r) => r.hold && r.gateRule == 'r16'), true);
++      expect(blk.first.phase == 'warmup' && blk.first.reps == 2 && !blk.first.gate && !blk.first.hold &&
++          blk.first.gateRule == 'none', true);
+       for (final r in blk) {
+         expect(r.env['GGML_C2_IO'], '1');
+         expect(r.env.containsKey('GGML_PREFILL_COLD') || r.env.containsKey('GGML_KEEP_WARM'), false);
+@@ -100,8 +100,8 @@
+         expect(r.hold, r.gate); // hold is protocol: every gated run
+       }
+     }
+-    for (final v in fourFirst.values) {
+-      expect(v.toSet(), {true, false}); // each model: 4 threads first once, last once
++    for (final v in plFirst.values) {
++      expect(v.toSet(), {true, false}); // each model: the plateau gate first once, last once
+     }
+     expect(Research.models['olmoe']!.load, {'VOLLIE_HEAD2_REPACK': '1'});
+     expect(Research.models['granite']!.load, isEmpty);
+@@ -112,4 +112,22 @@
+       expect(m.experts.length.isEven && m.experts.last <= m.bytes, true);
+     }
+   });
++
++  test('kit r24: the plateau rule on two R62 heat series (device, r23 report pos 4 and 6)', () {
++    // Readings every 5 s (pos 4: 0 to 90 s; pos 6 starts low right after the run, rises, then falls).
++    int? end(List<double> series) {
++      final hs = <double>[];
++      for (var i = 0; i < series.length; i++) {
++        hs.add(series[i]);
++        if (i * 5000 >= Research.plateauFrom.inMilliseconds && Research.plateau(hs)) return i;
++      }
++      return null;
++    }
++    const p4 = [0.873, 0.873, 0.873, 0.873, 0.802, 0.788, 0.755, 0.741, 0.721, 0.735, 0.725, 0.735, 0.748, 0.764, 0.77];
++    const p6 = [0.725, 0.767, 0.789, 0.81, 0.833, 0.833, 0.808, 0.778, 0.753, 0.741, 0.717, 0.737, 0.753, 0.776, 0.79];
++    expect(end(p4), 10); // 50 s, at 0.725 (the 90 s r16 wait ended at 0.744)
++    expect(end(p6), 12); // 60 s: no end while it rose (0.81 at 30 s is not 0.05 below the top)
++    expect(Research.plateau([0.9, 0.88, 0.86, 0.84]), false); // still falling 0.02 per reading
++    expect(Research.plateau([0.80, 0.80, 0.80, 0.80]), false); // flat but never fell
++  });
+ }
