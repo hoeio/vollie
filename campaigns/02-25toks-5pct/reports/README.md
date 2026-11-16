@@ -647,6 +647,7 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
 
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-21, unconventional levers priced on both models (owner's list and new directions)](memo-21-unconventional-levers.md);
+[memo-22, kit r23 (head knob at load, cheap hold, threads 3 against 4)](memo-22-kit-r23.md);
 [memo-02, which campaign-1 levers apply to `olmoe` and `lfm2moe`](memo-02-lever-applicability.md);
 [memo-05, why skip was inert on Q4_0 experts: repack](memo-05-q4-experts-repack.md);
 [memo-08, predictions for the device baselines of OLMoE; Granite verdict proposed](memo-08-device-baseline-predictions.md);

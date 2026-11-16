@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Campaign 2 research-kit report parser (kits r17 to r22; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
-memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md, memo-19-kit-r21.md and memo-20-kit-r22.md). Standard library
-only.
+"""Campaign 2 research-kit report parser (kits r17 to r23; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
+memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md, memo-19-kit-r21.md, memo-20-kit-r22.md and memo-22-kit-r23.md).
+Standard library only.
 
 usage: python3 -I tools/c2_research_parse.py <report.json | clipboard text "c2gz:..."> [--min-mhz 1800]
            [--prompt tools/c2_official_prompt.txt] [--sigma 0.4] [--r16 reports/device/r16_2026-11-08.json]
@@ -41,7 +41,14 @@ and c2-head-run lines), the I/O source (getrusage inblock, /proc/self/io), RLIMI
 scored runs' medians; the num effect per model as the mean over ABBA quads of mean(num) - mean(off) with SE = sd/sqrt(n
 quads), overall and split by hold; the hold effect (hold minus no hold) on the off arm, all runs and the runs whose gate
 waited at least --wait-s seconds: tok/s and model MB resident before the run, difference of means with Welch SE; the
-hold's cost (MB read back, CPU ms, ms after the gate)."""
+hold's cost (MB read back, CPU ms, ms after the gate).
+
+Kit r23 (arms off / num in ABBA, factor threads 3 / 4 per quad, hold in every gated run): r22's identity checks plus one
+text per arm and thread count, the load env per model (OLMoE VOLLIE_HEAD2_REPACK=1 at every load, nowhere else), num
+runs whose c2-head-run line shows declines (c1-olmoe 0006's c2_declined / c2_why) or no active copy, gated runs without
+hold; per model, arm and threads the scored runs' medians; num minus off over ABBA quads (all, per thread count);
+threads 4 minus 3 per model and arm (per block, mean of the arm's runs at 4 minus at 3, mean over blocks ± SE; and all
+runs, Welch); where the DartWorker threads ran (thread_samples); the hold per gated run and its cost."""
 import argparse
 import base64
 import gzip
@@ -675,13 +682,18 @@ def skiprun_of(x):
                                'dec_mb_skip': float(m.group(6)), 'dec_unread_pct': float(m.group(7))}
 
 
+DECL_RE = re.compile(r' c2_declined=(\d+) c2_why=(\S+)')  # c1-olmoe 0006 (kit r23): appended to c2-head-run
+
+
 def headrun_of(x):
     m = tagged(x, HEADRUN_RE)
     if not m:
         return None
     v = m.groups()
+    d = DECL_RE.search(m.string)
     return {'c2_k': int(v[1]), 'c2_calls': int(v[2]), 'c2_copies': int(v[5]), 'c2_copy': v[6] == '1', 'c1_m': int(v[7]),
-            'c1_calls': int(v[8]), 'c1_copies': int(v[9]), 'c1_copy': v[10] == '1'}
+            'c1_calls': int(v[8]), 'c1_copies': int(v[9]), 'c1_copy': v[10] == '1',
+            'c2_declined': int(d.group(1)) if d else None, 'c2_why': d.group(2) if d else None}
 
 
 def md5(t):
@@ -825,6 +837,121 @@ def r22_tables(r, wait_s=30):
     return out
 
 
+# kit r23 (memo-22): factor threads per quad, hold in every gated run, OLMoE's load env, 0006's head decline line
+def r23_checks(r):
+    out = r22_checks(r)
+    runs = r.get('runs', [])
+    models = r.get('models') or {}
+    for k in r21_models(r):
+        rs = [x for x in runs if x.get('model') == k]
+        load = (models.get(k) or {}).get('load') or {}
+        loads = [x for x in rs if x.get('reload_ms') is not None]
+        bad_load = [x.get('run_tag') for x in loads if any((x.get('load_env_set') or {}).get(e) != v for e, v in load.items())]
+        other = {e for m, d in models.items() if m != k for e in ((d or {}).get('load') or {})} - set(load)
+        leak_load = [x.get('run_tag') for x in loads if other & set(x.get('load_env_set') or {})]
+        in_run = [x.get('run_tag') for x in rs if set(load) & set(env_of(x))]
+        texts = {}
+        for x in rs:
+            if x.get('text') is not None:
+                texts.setdefault((x.get('arm'), x.get('threads')), set()).add(md5(x['text'])[:8])
+        tt = '; '.join(f"{a} t{t}: {next(iter(v)) if len(v) == 1 else f'NO ({len(v)})'}" for (a, t), v in sorted(texts.items(), key=str))
+        same = all(len({next(iter(v)) for (a2, _), v in texts.items() if a2 == a and len(v) == 1}) <= 1 for a in ('off', 'num'))
+        hr = {x.get('run_tag'): headrun_of(x) for x in rs}
+        decl = [f"{t}({h['c2_declined']} {h['c2_why']})" for t, h in hr.items() if h and h.get('c2_declined')]
+        nohead = [x.get('run_tag') for x in rs if x.get('arm') == 'num' and not ((hr[x.get('run_tag')] or {}).get('c2_copy')
+                                                                                 or (hr[x.get('run_tag')] or {}).get('c1_copy'))]
+        nohold = [x.get('run_tag') for x in rs if x.get('gate') and not (x.get('hold') and isinstance(x.get('hold_stats'), dict))]
+        thr = [x.get('run_tag') for x in rs if x.get('threads_loaded') not in (None, [x.get('threads'), x.get('threads')])]
+        out.append(f"{k} (r23): load env {load or '{}'} at {len(loads)} load(s): missing in {','.join(bad_load) or 'none'}, other "
+                   f"model's load env in {','.join(leak_load) or 'none'}, in a run env {','.join(in_run) or 'none'}; texts per arm "
+                   f"and threads: {tt}; same text at 3 and 4 threads: {'yes' if same else 'NO'}; head declines: "
+                   f"{','.join(decl) or 'none'}; num without an active head copy: {','.join(nohead) or 'none'}; gated without "
+                   f"hold: {','.join(nohold) or 'none'}; threads applied != spec: {','.join(thr) or 'none'}")
+    out.append(f"kernel release {r.get('kernel_release')!r}; owner note {r.get('owner_note')!r}")
+    return out
+
+
+def r23_blocks(runs, m):
+    return sorted({x.get('group') for x in runs if x.get('model') == m}, key=lambda g: int(str(g).lstrip('b') or 0))
+
+
+def r23_quads(rs):
+    """One block's scored runs in list order: the ABBA quads (off num num off, one thread count each)."""
+    return [q for q in r22_quads(rs) if len({x.get('threads') for x in q}) == 1]
+
+
+def r23_tables(r):
+    runs = [x for x in r.get('runs', []) if x.get('proto') == 'r23']
+    if not runs:
+        return []
+    models = r21_models(r)
+    sc = lambda m, a=None, t=None: [x for x in runs if x.get('model') == m and x.get('phase') == 'on'
+                                    and (a is None or x.get('arm') == a) and (t is None or x.get('threads') == t)]
+    ts = sorted({x.get('threads') for x in runs if x.get('phase') == 'on'})
+    out = ['kit r23, scored runs (phase on), per model, arm and threads (*device*):']
+    for m in models:
+        for a in ('off', 'num'):
+            for t in ts:
+                v = sc(m, a, t)
+                s = r22_stats(v)
+                bk = med(None if (x.get('hold_stats') or {}).get('back_permille') is None else x['hold_stats']['back_permille'] / 10
+                         for x in v)
+                out.append(f"  {m} {a} t{t}: n {s['n']} tok/s {fmt(s['tps'])} [{fmt(s['tps_min'])}..{fmt(s['tps_max'])}] | res "
+                           f"before MB {fmt(s['res_before'], 0)} lost in wait {fmt(s['wait_lost_mb'], 0)} back % {fmt(bk, 1)} gate s "
+                           f"{fmt(s['cool_s'], 0)} | decode majflt {fmt(s['dec_majflt'], 0)} inblock MB {fmt(s['dec_inblock_mb'], 0)} | "
+                           f"prefill ms {fmt(s['pre_ms'], 0)} ttft ms {fmt(s['ttft_ms'], 0)} | skip bytes % {fmt(s['skip_bytes_pct'])} | "
+                           f"hold cpu ms {fmt(s['hold_cpu_ms'], 0)} after-gate ms {fmt(s['hold_final_ms'], 0)} | Cached MB "
+                           f"{fmt(s['cached_mb'], 0)}")
+    out.append('num minus off, mean over ABBA quads of mean(num) - mean(off), tok/s ± SE:')
+    for m in models:
+        qs = [q for g in r23_blocks(runs, m) for q in r23_quads([x for x in runs if x.get('group') == g and x.get('phase') == 'on'])]
+        e = lambda t=None: [quad_effect(q) for q in qs if t is None or q[0].get('threads') == t]
+        out.append(f"  {m}: all {fmt_se(e())} | " + ' | '.join(f"t{t} {fmt_se(e(t))}" for t in ts))
+    if len(ts) == 2:
+        lo, hi = ts
+        out.append(f'threads {hi} minus {lo}, tok/s: per block mean(arm at {hi}) - mean(arm at {lo}), mean over blocks ± SE; '
+                   'all runs, Welch:')
+        for m in models:
+            parts = []
+            for a in ('off', 'num', None):
+                d = []
+                for g in r23_blocks(runs, m):
+                    b = [x for x in sc(m, a) if x.get('group') == g]
+                    u, v = [x.get('decode_tps') for x in b if x.get('threads') == hi], [x.get('decode_tps') for x in b if x.get('threads') == lo]
+                    if u and v and None not in u + v:
+                        d.append(st.mean(u) - st.mean(v))
+                tps = lambda t: [x.get('decode_tps') for x in sc(m, a, t)]
+                parts.append(f"{a or 'both arms'} blocks {fmt_se(d)}, runs {welch(tps(hi), tps(lo))}")
+            out.append(f"  {m}: " + ' | '.join(parts))
+    out.append('where the DartWorker threads ran (thread_samples, scored runs): running per sample median; share of running '
+               'samples on cpu 0-3 / 4-6 / 7:')
+    for m in models:
+        for t in ts:
+            smp = [s for x in sc(m, None, t) for s in (x.get('thread_samples') or [])]
+            cpus = [c for s in smp for c in s[2:]]
+            sh = lambda f: '-' if not cpus else f"{100 * sum(1 for c in cpus if f(c)) / len(cpus):.0f}%"
+            out.append(f"  {m} t{t}: samples {len(smp)}, running {fmt(med(s[1] for s in smp), 1)}, cpu 0-3 {sh(lambda c: c < 4)} "
+                       f"4-6 {sh(lambda c: 4 <= c <= 6)} 7 {sh(lambda c: c == 7)}; pinned {sorted({str(x.get('pinned_cpus')) for x in sc(m, None, t)})}")
+    out.append('hold per gated run: pos tag | gate s | want MB, lost in wait MB | passes wait+final | CPU ms (mincore ms) | '
+               'after-gate ms | back % | advised MB sum / distinct, of earlier advice resident at the last pass | stop | res before MB')
+    for x in [x for x in runs if x.get('gate')]:
+        h = x.get('hold_stats') or {}
+        out.append(f"  {x.get('pos')} {x.get('run_tag')} | {fmt((x.get('cool_ms') or 0) / 1000, 0)} | {x.get('want_mb')}, "
+                   f"{x.get('wait_lost_mb')} | {h.get('wait_passes', 0)}+{h.get('final_passes', 0)} | "
+                   f"{fmt(None if h.get('cpu_us') is None else h['cpu_us'] / 1000, 0)} ({h.get('mincore_ms')}) | {h.get('final_ms')} | "
+                   f"{fmt(None if h.get('back_permille') is None else h['back_permille'] / 10, 1)} | {h.get('advised_mb')} / "
+                   f"{h.get('advised_distinct_mb')}, {h.get('adv_back_mb')} of {h.get('adv_before_mb')} | {h.get('stop')} | {res_mb(x)}")
+    hs = [x.get('hold_stats') for x in runs if x.get('gate') and isinstance(x.get('hold_stats'), dict) and 'passes' in x['hold_stats']]
+    if hs:
+        g = lambda k, f=1: spread([None if h.get(k) is None else h[k] * f for h in hs])
+        ok = sum(1 for h in hs if (h.get('back_permille') or 0) >= 950)
+        out.append(f"hold cost per gated run (median [min..max] n): CPU ms {g('cpu_us', 1e-3)} | mincore ms {g('mincore_ms')} | "
+                   f"passes {g('passes')} | ms after the gate {g('final_ms')} | back % {g('back_permille', 0.1)} (>= 95 % in {ok} "
+                   f"of {len(hs)}) | advised MB distinct {g('advised_distinct_mb')} | blocks read MB {g('inblock', 512 / 1e6)} | "
+                   f"fadvise fails {g('advise_fails')}")
+    return out
+
+
 def main(argv=None):
     a = argparse.ArgumentParser()
     a.add_argument('report', nargs='?')
@@ -844,7 +971,7 @@ def main(argv=None):
     print(f"kit {r.get('kit')} app {r.get('app')} started {r.get('started')} stopped_early {r.get('stopped_early')}")
     r16 = load(o.r16) if r.get('kit') == 'r20' and o.r16 and os.path.exists(o.r16) else None
     parts = (r21_checks(r), r21_tables(r)) if r.get('kit') == 'r21' else (r22_checks(r), r22_tables(r, o.wait_s)) \
-        if r.get('kit') == 'r22' else (
+        if r.get('kit') == 'r22' else (r23_checks(r), r23_tables(r)) if r.get('kit') == 'r23' else (
         checks(r, o.prompt), identity(r), groups(r, o.min_mhz, o.fault_run), ab(r, o.min_mhz, o.sigma),
         r16_compare(r, r16), waits(r), warm(r))
     for part in parts:
@@ -1069,6 +1196,50 @@ def selftest():
     assert any(l.startswith('hold cost per gated run') and 'read back MB 100.00 [100.00..100.00] n 16' in l for l in t), t
     r22['runs'][3]['text'] = 'other'
     assert any('num: NO (2 texts)' in l for l in r22_checks(r22) if l.startswith('granite'))
+    # r23: threads 3 / 4 per quad (4 first in odd blocks), hold in every gated run, OLMoE's load env, 0006's decline fields.
+    loads = {'granite': {}, 'olmoe': {'VOLLIE_HEAD2_REPACK': '1'}}
+    def row23(m, g, arm, i, tps, thr, phase='on', first=False):
+        x = row22(m, g, arm, phase != 'warmup', i, tps, 2500, 60000 if phase != 'warmup' else 0, phase)
+        x.update({'proto': 'r23', 'threads': thr, 'threads_loaded': [thr, thr], 'run_tag': f'{m}_{arm}_t{thr}.{i}', 'pos': i,
+                  'gate': 0.6 if phase != 'warmup' else None, 'pinned_cpus': [4, 5, 6, 7], 'want_mb': 2600,
+                  'thread_samples': [[900, thr, *([4, 5, 6, 7][:thr])]]})
+        x['c2'] = [l.replace('c1_copy=0', 'c1_copy=0 c2_declined=0 c2_why=-').replace(f"run={m}_{arm}{'_h' if phase != 'warmup' else ''}.{i} ",
+                   f"run={x['run_tag']} ") for l in x['c2']]
+        if first:
+            x.update({'reload_ms': 9000, 'load_env_set': {'GGML_C2_IO': '1', **loads[m]}})
+        if phase != 'warmup':
+            x['hold_stats'].update({'wait_passes': 1, 'final_passes': 2, 'back_permille': 970, 'mincore_ms': 400,
+                                    'advised_distinct_mb': 90, 'adv_back_mb': 80, 'adv_before_mb': 90, 'stop': 'back'})
+        return x
+    r23 = {'kit': 'r23', 'kernel_release': '5.4.86-test', 'owner_note': 'close background apps',
+           'models': {k: {**shaM(k), 'num': nums[k], 'load': loads[k]} for k in ('granite', 'olmoe')},
+           'build': {'libs': {'libllama.so': 'aa' * 32}}, 'memlock_rlimit': {'soft': 65536, 'hard': 65536}, 'runs': []}
+    for b, m in enumerate(['granite', 'olmoe', 'olmoe', 'granite'], 1):
+        r23['runs'] += [row23(m, f'b{b}', 'off', 90 + k, 5, 3, 'warmup', k == 0) for k in range(2)]
+        for qi, thr in enumerate([4, 3] if b % 2 else [3, 4]):
+            for j, arm in enumerate(['off', 'num', 'num', 'off']):
+                # num +2 tok/s, 4 threads +0.5 tok/s
+                r23['runs'].append(row23(m, f'b{b}', arm, 4 * qi + j, 17 + (2 if arm == 'num' else 0) + (0.5 if thr == 4 else 0), thr))
+        r23['runs'] += [row23(m, f'b{b}', a, 8 + k, 18, 3, 'prof') for k, a in enumerate(['off', 'num'] if b % 2 else ['num', 'off'])]
+    assert headrun_of(r23['runs'][3])['c2_declined'] == 0 and headrun_of(r22['runs'][2])['c2_declined'] is None
+    c = r23_checks(r23)
+    assert any(l.startswith('olmoe (r23): load env') and "missing in none, other model's load env in none, in a run env none" in l
+               and 'same text at 3 and 4 threads: yes; head declines: none; num without an active head copy: none; gated '
+               'without hold: none; threads applied != spec: none' in l for l in c), c
+    assert any(l.startswith("kernel release '5.4.86-test'") for l in c), c
+    t = r23_tables(r23)
+    assert any(l.startswith('  granite num t4: n 4 tok/s 19.50') and 'back % 97.0' in l for l in t), t
+    assert any(l.startswith('  olmoe: all +2.00 ± 0.00 (n 4) | t3 +2.00 ± 0.00 (n 2) | t4 +2.00') for l in t), t
+    assert any(l.startswith('  granite: off blocks +0.50 ± 0.00 (n 2), runs +0.50') for l in t), t
+    assert any(l.startswith('  olmoe t4: samples 8, running 4.0, cpu 0-3 0% 4-6 75% 7 25%') for l in t), t
+    assert any(l.startswith('hold cost per gated run') and 'back % 97.00 [97.00..97.00] n 40 (>= 95 % in 40 of 40)' in l for l in t), t
+    r23['runs'][4]['c2'][-1] = r23['runs'][4]['c2'][-1].replace('c2_declined=0 c2_why=-', 'c2_declined=32 c2_why=type:CPU_KLEIDIAI')
+    r23['runs'][0]['load_env_set'] = {}
+    c = r23_checks(r23)
+    assert any(l.startswith('granite (r23)') and 'head declines: granite_num_t4.2(32 type:CPU_KLEIDIAI)' in l for l in c), c
+    assert any(l.startswith('granite (r23)') and 'missing in none' in l for l in c), c  # granite has no load env to miss
+    r23['runs'][24]['load_env_set'] = {}
+    assert any(l.startswith('olmoe (r23)') and 'missing in olmoe_off_t3.90' in l for l in r23_checks(r23))
     print('selftest OK')
     return 0
 

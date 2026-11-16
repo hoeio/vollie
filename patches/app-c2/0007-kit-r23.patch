@@ -1,0 +1,659 @@
+diff --git a/lib/device.dart b/lib/device.dart
+--- a/lib/device.dart
++++ b/lib/device.dart
+@@ -249,6 +249,45 @@
+     }
+   }
+ 
++  /// Kit r23: the kernel release (uname(2), struct utsname: six 65-byte fields, release is the third). Null off Android.
++  static String? unameRelease() {
++    final libc = _libc;
++    if (libc == null) return null;
++    final uname = libc.lookupFunction<Int32 Function(Pointer<Uint8>), int Function(Pointer<Uint8>)>('uname');
++    final free = libc.lookupFunction<Void Function(Pointer<Uint8>), void Function(Pointer<Uint8>)>('free');
++    final b = _malloc!(6 * 65);
++    try {
++      if (uname(b) != 0) return null;
++      final r = b.asTypedList(6 * 65).sublist(130, 195);
++      final end = r.indexOf(0);
++      return String.fromCharCodes(end < 0 ? r : r.sublist(0, end));
++    } finally {
++      free(b);
++    }
++  }
++
++  /// Kit r23: the CPU of each of this process's "DartWorker" threads that is running now (state R in
++  /// /proc/self/task/TID/stat, field 39). llama.cpp runs on those threads, and the ggml workers it starts inherit the
++  /// name and the affinity ([pinInferenceThreads]). Null when /proc/self/task cannot be read.
++  static List<int>? runningWorkerCpus() {
++    try {
++      final out = <int>[];
++      for (final t in Directory('/proc/self/task').listSync()) {
++        try {
++          if (!File('${t.path}/comm').readAsStringSync().startsWith('DartWorker')) continue;
++          final st = File('${t.path}/stat').readAsStringSync();
++          final f = st.substring(st.lastIndexOf(')') + 2).split(' '); // f[0] = field 3 (state)
++          if (f.length > 36 && f[0] == 'R') out.add(int.parse(f[36]));
++        } on FileSystemException {
++          // the thread exited mid-scan (ggml workers live for one graph)
++        }
++      }
++      return out;
++    } on FileSystemException {
++      return null;
++    }
++  }
++
+   /// Kit r22: getrlimit(RLIMIT_MEMLOCK) (soft, hard; -1 = unlimited): how much an mlock could pin. Null off Android.
+   static ({int soft, int hard})? memlockLimit() {
+     final libc = _libc;
+diff --git a/lib/research.dart b/lib/research.dart
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -1,33 +1,39 @@
+ part of 'assistant.dart';
+ 
+-/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-20-kit-r22.md).
++/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-22-kit-r23.md).
+ /// model: a [KitModel] id ([Research.kitModels]); the first spec of a group (block) reloads that model.
+-/// proto: 'r22' = memo-20's two-model ABBA blocks (campaign 1's r16 gate before every gated run).
++/// proto: 'r23' = memo-22's two-model ABBA blocks (campaign 1's r16 gate before every gated run).
+ /// phase: 'warmup' (unscored), 'on' (scored) or 'prof' (profiled, not scored).
+ /// arm: 'off' = the model's baseline (r21's knob-off arm); 'num' = baseline + the model's [KitModel.num] (declared
+ ///      numerics: skip + two-stage head, R59).
+-/// hold: during the gate's wait and right after it, read back the model's pages that the wait took (memo-20 §2).
++/// hold: during the gate's wait and right after it, read back the model's pages that the wait took (memo-22 §2; r23: in
++///      every gated run, both arms).
+ /// kind: 'official32' = the benchmark (_benchPrompt, 32 tokens, greedy, the app's streaming, as r16);
+ ///       'profiled32' = the same under the profiling env (r16's per-token lines).
+ /// env: set before the run, every other known knob unset. repack: weight repack at load (a change reloads the model).
+-/// threads: 0 = the app's pick. reps: repetitions in a row. pause: idle seconds after the gate.
++/// threads: 0 = the app's pick (r23 sets 3 or 4 explicitly). reps: repetitions in a row. pause: idle seconds after the gate.
+ /// gate: r16's cool-down gate before the run (headroom < 0.65, at most 90 s, read every 5 s); false = no wait.
+ /// One model of the kit ([Research.kitModels]).
++/// load: env set only while the model loads (both arms; r23: OLMoE's VOLLIE_HEAD2_REPACK=1, c1-olmoe 0006).
+ typedef KitModel = ({String id, String name, String arch, String file, int bytes, String sha256, String url, String source,
+-    String template, bool repack, Map<String, String> settings, Map<String, String> num, List<int> experts});
++    String template, bool repack, Map<String, String> load, Map<String, String> settings, Map<String, String> num,
++    List<int> experts});
+ 
+ typedef RunSpec = ({String id, String model, String proto, String group, String phase, String arm, String kind,
+     Map<String, String> env, bool repack, int threads, int reps, int pause, bool gate, bool hold});
+ 
+-/// Research kit r22: campaign 1's runtime (llama.cpp 620d2225c + patches/llama.cpp/0001-0003) +
+-/// patches/llama.cpp-c1-olmoe/0001 to 0005 (keep-warm and prefill-cold unused; 0003 skip, 0004 untied head, 0005 per-prompt
+-/// counter lines). The models of [kitModels] in one session, blocks in [blockOrder] (G O O G); in each block the arms
+-/// off / num in ABBA, one quad with hold and one without. One tap, one JSON report (clipboard, a file next to the
+-/// models, and "Save to Downloads").
++/// Research kit r23: campaign 1's runtime (llama.cpp 620d2225c + patches/llama.cpp/0001-0003) +
++/// patches/llama.cpp-c1-olmoe/0001 to 0006 (keep-warm and prefill-cold unused; 0003 skip, 0004 untied head, 0005 per-prompt
++/// counter lines, 0006 the head out of KleidiAI at load and the head's decline reason). The models of [kitModels] in one
++/// session, blocks in [blockOrder] (G O O G); in each block the arms off / num in ABBA, one quad at 3 threads and one at 4;
++/// hold in every gated run. One tap, one JSON report (clipboard, a file next to the models, and "Save to Downloads").
+ extension Research on Assistant {
+-  static const kit = 'r22';
+-  static const app = '1.22.0+22';
++  static const kit = 'r23';
++  static const app = '1.23.0+23';
+ 
++  /// Shown on the kit's start screen and kept in the report (R60: a banking app was running in the background).
++  static const ownerNote = 'Before you start: close background apps (R60: a banking app was running).';
++
+   /// r16's gate (campaign 1's Assistant._coolDown, R48 coolOfficial = true): before every gated run read the headroom;
+   /// below [Assistant.coolHeadroom] (0.65) -> go; else wait [gatePoll] and read again, until [gateWait] (90 s) has
+   /// passed since the gate began (checked after each read).
+@@ -37,8 +43,11 @@
+   /// false: every run re-reads the whole prompt (no reuse of the previous identical prompt's KV cache), as r17.
+   static const reusePrefix = false;
+ 
+-  /// No env at load (r16 never set GGML_REPACK_RELEASE). Kept in the report as {}.
++  /// No env at load for every model (r16 never set GGML_REPACK_RELEASE); a model's own load env is [KitModel.load].
+   static const loadEnv = <String, String>{};
++  /// r23: OLMoE's untied Q6_K head goes to CPU_REPACK instead of KleidiAI (c1-olmoe 0006), so 0004's head can run; read by
++  /// the runtime at load only, so it is set at every OLMoE load (both arms; a declared change of the off arm's head, R61).
++  static const _loadOlmoe = {'VOLLIE_HEAD2_REPACK': '1'};
+ 
+   // Building blocks of the run list (campaign 1's knob names; memo-14 §2).
+   /// r16's shipping settings without Granite's numerics (no GGML_EXPERT_SKIP, no GGML_HEAD2), for BOTH models: the
+@@ -55,10 +64,14 @@
+   static const _numOlmoe = {'VOLLIE_SKIP_MASS': '900', 'VOLLIE_HEAD2': '1024', 'VOLLIE_SKIP_STATS': '1'};
+   static const _numGranite = {'GGML_EXPERT_SKIP': '130', 'GGML_HEAD2': '2048', 'GGML_HEAD2_Q': 'q4_0', 'VOLLIE_SKIP_STATS': '1'};
+ 
+-  /// hold (memo-20 §2): a gated run's wait reads back, at every gate poll and once after the gate, the pages of the
+-  /// model file that were resident at the end of the previous run of that model and are not now (posix_fadvise
+-  /// WILLNEED on each run of lost pages); after the gate it waits until [holdBack] of them are back or [holdMax] passed.
+-  static const holdBack = 0.98, holdMax = Duration(seconds: 5), holdPoll = Duration(milliseconds: 200);
++  /// hold (memo-22 §2): "wanted" = the model file's pages resident at the end of the previous run of that model. A pass =
++  /// one mincore of the file, then posix_fadvise WILLNEED on each run of wanted pages that are gone. r23: in the wait one
++  /// pass at the first gate poll at least [holdEvery] after the last pass (so at most one in a 90 s wait, at about 45 s;
++  /// r22 passed at every 5 s poll), then after the gate a pass every [holdSettle] until [holdBack] of the wanted pages
++  /// were resident at a pass, a pass gained less than [holdStall] of them over the one before, [holdRounds] passes ran
++  /// or [holdMax] passed. There is no mincore poll besides the passes (r22 polled every 200 ms for up to 5 s).
++  static const holdBack = 0.95, holdStall = 0.01, holdRounds = 4;
++  static const holdEvery = Duration(seconds: 45), holdSettle = Duration(seconds: 1), holdMax = Duration(seconds: 8);
+ 
+   /// THE MODEL TABLE (memo-19 §2). Downloads, storage checks, blocks, residency and the report are generated from it: a
+   /// further model is one entry here (plus its host checks, memo-19 §8).
+@@ -71,46 +84,51 @@
+       id: 'granite', name: 'Granite 4.0 H Tiny · granite-Mi (d6-e6 layout, stock weights)', arch: 'granitehybrid',
+       file: 'granite-Mi.gguf', bytes: 3161269344, sha256: '8df94de731a08a377150e4fcc5dcbd16212a6d102bc0b628cdc905cba0bc0f45',
+       url: 'https://huggingface.co/HoeioUser/vollie2/resolve/e893e8a65cff2f09f3de45e4840537c625806e0b/granite-Mi.gguf',
+-      source: 'kit', template: 'model', repack: true, settings: _c1Ship, num: _numGranite, experts: _graniteExperts,
++      source: 'kit', template: 'model', repack: true, load: const {}, settings: _c1Ship, num: _numGranite,
++      experts: _graniteExperts,
+     ),
+     (
+       id: 'olmoe', name: 'OLMoE 1B-7B 0125 Instruct · olmoe-Mi', arch: 'olmoe',
+       file: 'olmoe-Mi.gguf', bytes: 3072399552, sha256: '5abf710b775cd64fd89d74a783c8a7056a409ba795cd401b9dd448ef8e444abb',
+       url: 'https://huggingface.co/HoeioUser/vollie2/resolve/e893e8a65cff2f09f3de45e4840537c625806e0b/olmoe-Mi.gguf',
+-      source: 'app', template: 'model', repack: true, settings: _c1Ship, num: _numOlmoe, experts: _olmoeExperts,
++      source: 'app', template: 'model', repack: true, load: _loadOlmoe, settings: _c1Ship, num: _numOlmoe,
++      experts: _olmoeExperts,
+     ),
+   ];
+   static final Map<String, KitModel> models = {for (final m in kitModels) m.id: m};
+   static final Map<String, KitModel> _byFile = {for (final m in kitModels) m.file: m};
+ 
+-  /// One block: load, two unscored warm-ups (arm off, no hold), 8 scored runs in two ABBA quads (off num num off), the
+-  /// first quad with hold in odd blocks and without in even ones (so each model of a G O O G order gets hold first once
+-  /// and last once), then one profiled run per arm with hold (order off/num in odd blocks, num/off in even ones). Every
+-  /// run but the warm-ups is gated.
++  /// The thread counts of the two quads (memo-21 item 1's cheapest test: does a fourth thread on the fourth big core pay?).
++  static const threadsBase = 3, threadsAlt = 4;
++
++  /// One block: load, two unscored warm-ups (arm off, 3 threads, no gate, no hold), 8 scored runs in two ABBA quads (off
++  /// num num off), the first quad at 4 threads in odd blocks and at 3 in even ones (so each model of a G O O G order gets
++  /// 4 threads first once and last once, as r22 did with hold), then one profiled run per arm at 3 threads (order off/num
++  /// in odd blocks, num/off in even ones). Every run but the warm-ups is gated, and every gated run holds.
+   static List<RunSpec> _block(int b, KitModel m) {
+-    RunSpec r(String arm, String phase, int reps, bool gate, bool hold) {
+-      final prof = phase == 'prof';
++    RunSpec r(String arm, String phase, int reps, int threads) {
++      final prof = phase == 'prof', wu = phase == 'warmup';
+       final env = {...m.settings, ..._io, if (arm == 'num') ...m.num, if (prof) ..._profOn};
+       return (
+-        id: '${m.id}_$arm${prof ? '_prof' : phase == 'warmup' ? '_wu' : hold ? '_h' : ''}', model: m.id, proto: 'r22',
++        id: '${m.id}_$arm${prof ? '_prof' : wu ? '_wu' : '_t$threads'}', model: m.id, proto: 'r23',
+         group: 'b$b', phase: phase, arm: arm, kind: prof ? 'profiled32' : 'official32', env: env,
+-        repack: m.repack, threads: 0, reps: reps, pause: 0, gate: gate, hold: hold,
++        repack: m.repack, threads: threads, reps: reps, pause: 0, gate: !wu, hold: !wu,
+       );
+     }
+-    final holdFirst = b.isOdd;
++    final t = b.isOdd ? [threadsAlt, threadsBase] : [threadsBase, threadsAlt];
+     final p = b.isOdd ? ['off', 'num'] : ['num', 'off'];
+     return [
+-      r('off', 'warmup', 2, false, false),
+-      for (final h in [holdFirst, !holdFirst])
+-        for (final a in ['off', 'num', 'num', 'off']) r(a, 'on', 1, true, h),
+-      for (final a in p) r(a, 'prof', 1, true, true),
++      r('off', 'warmup', 2, threadsBase),
++      for (final n in t)
++        for (final a in ['off', 'num', 'num', 'off']) r(a, 'on', 1, n),
++      for (final a in p) r(a, 'prof', 1, threadsBase),
+     ];
+   }
+ 
+   /// Block order: the table forward, then backward (two models: G O O G), so a drift of the day falls on every model.
+   static final List<KitModel> blockOrder = [...kitModels, ...kitModels.reversed];
+ 
+-  /// THE RUN LIST, in order (memo-20 §3).
++  /// THE RUN LIST, in order (memo-22 §4).
+   static final List<RunSpec> runs = [for (var b = 0; b < blockOrder.length; b++) ..._block(b + 1, blockOrder[b])];
+ 
+   /// The routed-expert tensors (*_exps) of each file as [start, end) byte ranges, from the frozen files' tensor tables
+@@ -187,9 +205,9 @@
+     'VOLLIE_SKIP_SUM', 'VOLLIE_SKIP_MAX', 'VOLLIE_SKIP_MASS', 'VOLLIE_SKIP_MINK', 'VOLLIE_SKIP_STATS', 'VOLLIE_SKIP_WIRE',
+     'VOLLIE_TINY_OP', 'VOLLIE_GRAPH_STATS', 'VOLLIE_Q3K_X4', 'VOLLIE_MMID_NB', 'VOLLIE_MMID_FUSE', 'VOLLIE_EXPERT_IO',
+     'VOLLIE_SAMPLER_BYPASS', 'VOLLIE_PROF', 'VOLLIE_AB', 'VOLLIE_AB_WARM', 'VOLLIE_AB_BLOCK', 'VOLLIE_AB_BAAB',
+-    'VOLLIE_RUN', 'VOLLIE_LINES', 'VOLLIE_HEAD2', 'VOLLIE_HEAD2_BATCH', 'VOLLIE_HEAD2_CHECK',
++    'VOLLIE_RUN', 'VOLLIE_LINES', 'VOLLIE_HEAD2', 'VOLLIE_HEAD2_BATCH', 'VOLLIE_HEAD2_CHECK', 'VOLLIE_HEAD2_REPACK',
+   ];
+-  static Set<String> get _knobs => {..._knownKnobs, for (final r in runs) ...r.env.keys};
++  static Set<String> get _knobs => {..._knownKnobs, for (final r in runs) ...r.env.keys, for (final m in kitModels) ...m.load.keys};
+ 
+   /// Every knob unset (the stock runtime), then [_always]. Called at every load and before every kit run.
+   static void clearKnobs() {
+@@ -491,16 +509,27 @@
+       'header': await _testHeader('research ${Research.kit}', started),
+       'saved': {'write_threads': w, 'context': contextSize, 'reuse_prefix': Research.reusePrefix},
+       'kernel': DeviceProfile.sysRead('/proc/version'),
++      'kernel_release': DeviceProfile.unameRelease(), // r23: uname(2) release; /proc/version reads empty in the app (r22)
+       'os_version': Platform.operatingSystemVersion, // r21: /proc/version reads empty in the app; this is uname's (Dart)
++      'owner_note': Research.ownerNote,
+       'thp': DeviceProfile.sysRead('/sys/kernel/mm/transparent_hugepage/enabled'),
+       'mem_start': DeviceProfile.memInfo(),
+       'specs': Research.runs.map(Research._specJson).toList(),
+       'block_order': Research.blockOrder.map((m) => m.id).toList(),
+-      'baseline_note': 'arm off = r21 knob-off arm (campaign 1 shipping settings minus numerics, repack on, GGML_C2_IO=1); '
+-          'arm num = off + the model\'s num env (declared numerics, R59); GGML_PREFILL_COLD and GGML_KEEP_WARM are never set; '
+-          'hold = app-side read-back of the pages the gate wait took (memo-20 §2), no env',
+-      'hold_rule': {'back': Research.holdBack, 'max_ms': Research.holdMax.inMilliseconds, 'poll_ms': Research.holdPoll.inMilliseconds,
+-                    'advice': 'posix_fadvise WILLNEED on the pages resident at the previous run end of the model and not now'},
++      'baseline_note': 'arm off = r22 knob-off arm (campaign 1 shipping settings minus numerics, repack on, GGML_C2_IO=1), '
++          'loaded with the model\'s load env (OLMoE VOLLIE_HEAD2_REPACK=1: head in CPU_REPACK, R61); '
++          'arm num = off + the model\'s num env (declared numerics, R59/R61); GGML_PREFILL_COLD and GGML_KEEP_WARM are never set; '
++          'hold = app-side read-back of the pages the gate wait took (memo-22 §2), no env, in every gated run; '
++          'threads 3 or 4 per quad (memo-21 item 1), warm-ups and profiled runs at 3',
++      'hold_rule': {'back': Research.holdBack, 'stall': Research.holdStall, 'rounds': Research.holdRounds,
++                    'every_ms': Research.holdEvery.inMilliseconds, 'settle_ms': Research.holdSettle.inMilliseconds,
++                    'max_ms': Research.holdMax.inMilliseconds,
++                    'advice': 'posix_fadvise WILLNEED on the pages resident at the previous run end of the model and not now; '
++                        'one pass in the wait at >= every_ms, then passes every settle_ms after the gate until back, stall, '
++                        'rounds or max_ms'},
++      'thread_rule': {'base': Research.threadsBase, 'alt': Research.threadsAlt,
++                      'note': 'llama.cpp threads = the spec\'s threads (prompt and decode); the app restricts its DartWorker '
++                          'threads (and the ggml workers they start) to pinned_cpus as a set, no per-thread pinning'},
+       'memlock_rlimit': () {
+         final l = DeviceProfile.memlockLimit();
+         return l == null ? null : {'soft': l.soft, 'hard': l.hard};
+@@ -510,7 +539,7 @@
+       'tok_fields_c1': Research.tokFieldsC1,
+       'gate': {'below': Assistant.coolHeadroom, 'wait_ms': Research.gateWait.inMilliseconds,
+                'poll_ms': Research.gatePoll.inMilliseconds, 'rule': 'r16'},
+-      'load_env': Research.loadEnv,
++      'load_env': {for (final m in Research.kitModels) m.id: {...Research.loadEnv, ...m.load}},
+       'read_ahead_kb': {for (final b in ['sda', 'sdb', 'sdc']) b: DeviceProfile.sysRead('/sys/block/$b/queue/read_ahead_kb')},
+       'res_start': {for (final m in paths.keys) m: Research._residency(paths[m]!)},
+       'models': {
+@@ -521,6 +550,7 @@
+             'source': Research.models[m]!.source,
+             'template_source': Research.models[m]!.template,
+             'repack_rule': Research.models[m]!.repack,
++            'load': Research.models[m]!.load,
+             'settings': Research.models[m]!.settings,
+             'num': Research.models[m]!.num,
+             'file': Research.models[m]!.file,
+@@ -583,9 +613,12 @@
+       logPos = lines.length;
+     }
+ 
+-    // Loads [path] with repack [on] when [force] or anything differs; returns the reload's ms, or null.
++    // Loads [path] with repack [on] when [force] or anything differs; returns the reload's ms, or null. Without a reload
++    // only the thread count is applied (llama_set_n_threads; no reload, r23's 3/4 quads).
+     // r21: every block starts with a load of its model (force), repack set explicitly (never the app's size rule).
+-    Future<int?> ensureLoad(String path, bool on, int threads, bool force) async {
++    // r23: the model's load env ([KitModel.load]) is set during the load only; what native code saw is in [loadSeen].
++    Map<String, String>? loadSeen;
++    Future<int?> ensureLoad(String path, KitModel m, bool on, int threads, bool force) async {
+       if (!force && _loadedPath == path && _loadedAccel == Accel.cpu && _loadedRepack == on) {
+         await _benchOn(Accel.cpu, threads, threads);
+         return null;
+@@ -595,11 +628,13 @@
+       Research.clearKnobs();
+       await _engine.unloadModel(); // frees the context: the last run's c2-io line is printed here
+       _loadedPath = path;
+-      Research.loadEnv.forEach(setNativeEnv);
++      final le = {...Research.loadEnv, ...m.load};
++      le.forEach(setNativeEnv);
++      loadSeen = Research._envNow();
+       try {
+         await _loadOn(Accel.cpu, threads, threads);
+       } finally {
+-        Research.loadEnv.keys.forEach(unsetNativeEnv);
++        le.keys.forEach(unsetNativeEnv);
+       }
+       await _complete('Hi', 1); // the load's own warm-up (knobs cleared)
+       return DateTime.now().difference(t0).inMilliseconds;
+@@ -609,7 +644,7 @@
+     // [maxWait] has passed (checked after a read). A null reading (NaN: polled too soon, or none) is "unknown, read
+     // again" (DeviceProfile.thermal spaces calls >= 1.1 s), never "cool".
+     Future<({double? heat, bool timeout, bool unknown, List<List<num?>> series})> kitGate(double below, Duration maxWait,
+-        [void Function()? onPoll]) async {
++        [void Function(int ms)? onPoll]) async {
+       final t0 = DateTime.now();
+       final series = <List<num?>>[];
+       double? last;
+@@ -622,7 +657,7 @@
+           if (h < below) return (heat: h, timeout: false, unknown: false, series: series);
+           show('cooling: headroom ${(h * 100).round()}% (gate ${(below * 100).round()}%), ${ms ~/ 1000} s of ${maxWait.inSeconds} s');
+         }
+-        onPoll?.call(); // r22 hold: read back what the wait took so far
++        onPoll?.call(ms); // r23 hold: at most one read-back in the wait (Research.holdEvery)
+         if (ms >= maxWait.inMilliseconds) return (heat: last, timeout: true, unknown: last == null, series: series);
+         await Future<void>.delayed(h == null ? Duration.zero : Research.gatePoll);
+         if (_stopTest) return (heat: last, timeout: false, unknown: last == null, series: series);
+@@ -650,36 +685,66 @@
+       };
+     }
+ 
+-    // r22 hold: the model file's resident pages at the end of the last run of that model (the pages it needs), and the
+-    // read-back that keeps them through a gate wait (memo-20 §2). One pass = mincore now, then WILLNEED on the runs of
+-    // pages resident then and gone now. Its own blocks read and CPU time are measured around each pass.
++    // Hold (r22, memo-20 §2; r23 schedule and accounting, memo-22 §2): the model file's resident pages at the end of the
++    // last run of that model (the pages it needs), and the read-back that keeps them through a gate wait. One pass =
++    // mincore now, then WILLNEED on the runs of pages resident then and gone now. CPU time (getrusage, the whole process)
++    // and blocks read are measured around each pass; there is no other mincore in the hold.
+     final lastVec = <String, Uint8List>{};
+     var pageSize = 4096;
+     int wantPages(Uint8List w) => w.fold(0, (a, b) => a + b);
+-    Map<String, int> holdPass(String path, Map<String, int> acc) {
++    int mb(int pages) => pages * pageSize ~/ 1000000;
++    // [union]: 1 = advised by an earlier pass of this wait. Returns the wanted pages resident at this pass (before its own
++    // advice), or null. Each pass is also one entry of [per]: when, lost, resident, advised, and how many of the pages
++    // advised by earlier passes are resident now (so "how much of what was advised came back" can be read).
++    int? holdPass(String path, Map<String, int> acc, List<Map<String, int>> per, Uint8List union, int tMs) {
+       final want = lastVec[path];
+-      if (want == null) return acc;
++      if (want == null) return null;
+       final u0 = DeviceProfile.rusage();
+       final t0 = DateTime.now();
+       final now = DeviceProfile.pageVector(path);
+-      if (now == null) return acc;
+-      var lost = 0;
+-      for (var i = 0; i < want.length && i < now.v.length; i++) {
+-        if (want[i] != 0 && now.v[i] == 0) lost++;
++      final t1 = DateTime.now();
++      if (now == null) return null;
++      var lost = 0, have = 0, advEver = 0, advBack = 0, advNew = 0;
++      final n = math.min(want.length, math.min(now.v.length, union.length));
++      for (var i = 0; i < n; i++) {
++        if (union[i] != 0) {
++          advEver++;
++          if (now.v[i] != 0) advBack++;
++        }
++        if (want[i] == 0) continue;
++        if (now.v[i] != 0) {
++          have++;
++        } else {
++          lost++;
++          if (union[i] == 0) advNew++;
++        }
+       }
+       final a = lost == 0 ? null : DeviceProfile.willNeedLost(path, want, now.v, now.pageSize);
++      for (var i = 0; i < n && a != null; i++) {
++        if (want[i] != 0 && now.v[i] == 0) union[i] = 1;
++      }
++      final t2 = DateTime.now();
+       final u1 = DeviceProfile.rusage();
++      final cpu = u0 != null && u1 != null ? u1.cpuUs - u0.cpuUs : 0;
+       acc['passes'] = (acc['passes'] ?? 0) + 1;
+       acc['lost_pages_max'] = math.max(acc['lost_pages_max'] ?? 0, lost);
+       acc['advised_pages'] = (acc['advised_pages'] ?? 0) + (a?.pages ?? 0);
++      acc['advised_distinct_pages'] = (acc['advised_distinct_pages'] ?? 0) + (a == null ? 0 : advNew);
+       acc['advise_calls'] = (acc['advise_calls'] ?? 0) + (a?.calls ?? 0);
+       acc['advise_fails'] = (acc['advise_fails'] ?? 0) + (a?.fails ?? 0);
+-      acc['pass_ms'] = (acc['pass_ms'] ?? 0) + DateTime.now().difference(t0).inMilliseconds;
++      acc['pass_ms'] = (acc['pass_ms'] ?? 0) + t2.difference(t0).inMilliseconds;
++      acc['mincore_ms'] = (acc['mincore_ms'] ?? 0) + t1.difference(t0).inMilliseconds;
+       if (u0 != null && u1 != null) {
+-        acc['cpu_us'] = (acc['cpu_us'] ?? 0) + u1.cpuUs - u0.cpuUs;
++        acc['cpu_us'] = (acc['cpu_us'] ?? 0) + cpu;
+         acc['inblock'] = (acc['inblock'] ?? 0) + u1.inblock - u0.inblock;
+       }
+-      return acc;
++      per.add({
++        't_ms': tMs, 'lost_mb': mb(lost), 'have_mb': mb(have), 'advised_mb': mb(a?.pages ?? 0), 'calls': a?.calls ?? 0,
++        'adv_before_mb': mb(advEver), 'adv_back_mb': mb(advBack), 'mincore_ms': t1.difference(t0).inMilliseconds,
++        'advise_ms': t2.difference(t1).inMilliseconds, 'cpu_ms': cpu ~/ 1000,
++        'inblock_mb': u0 != null && u1 != null ? (u1.inblock - u0.inblock) * 512 ~/ 1000000 : -1,
++      });
++      return have;
+     }
+ 
+     final repOf = <String, int>{};
+@@ -696,6 +761,7 @@
+       final row = <String, Object?>{
+         'pos': ++pos, 'id': s.id, 'model': s.model, 'proto': s.proto, 'group': s.group, 'phase': s.phase, 'arm': s.arm,
+         'hold': s.hold, 'kind': s.kind, 'rep': rep, 'run_tag': tag, 'env': s.env, 'repack': s.repack, 'threads': threads,
++        'pinned_cpus': _pinnedCores(threads), // r23: the set the app restricts llama.cpp's threads to (null = every core)
+         'tok': <List<Object>>[], 'prof': <String>[], 'c2': <String>[],
+       };
+       byTag[tag] = row;
+@@ -709,10 +775,11 @@
+           lastRes = null;
+           lastHeat = null;
+         }
+-        final reload = await ensureLoad(path, s.repack, threads, blockStart);
++        final reload = await ensureLoad(path, Research.models[s.model]!, s.repack, threads, blockStart);
+         group = s.group;
+         if (reload != null) {
+           row['reload_ms'] = reload;
++          row['load_env_set'] = loadSeen; // r23: the env native code saw during this load (OLMoE: VOLLIE_HEAD2_REPACK=1)
+           row['libs'] = {for (final l in Research._nativeLibs()) l.split('/').last: await DeviceProfile.sha256(l)};
+           if (!(report['templates'] as Map).containsKey(s.model)) await describe(s.model);
+         }
+@@ -722,12 +789,22 @@
+         s.env.forEach(setNativeEnv);
+         setNativeEnv('VOLLIE_RUN', tag);
+         row['env_set'] = Research._envNow();
++        row['threads_loaded'] = [_loadedThreads, _loadedRead];
+         final c0 = DateTime.now();
+         final want = lastVec[path];
+         if (want != null) row['want_mb'] = wantPages(want) * pageSize ~/ 1000000; // resident at the previous run's end
+         final hold = <String, int>{};
++        final per = <Map<String, int>>[];
++        final union = Uint8List(want?.length ?? 0);
++        var lastPass = 0; // ms into the wait of the last pass (0 = the wait's start)
++        void inWait(int ms) {
++          if (ms - lastPass < Research.holdEvery.inMilliseconds || ms >= Research.gateWait.inMilliseconds) return;
++          lastPass = ms;
++          holdPass(path, hold, per, union, ms);
++          hold['wait_passes'] = (hold['wait_passes'] ?? 0) + 1;
++        }
+         if (s.gate) {
+-          final g = await kitGate(Assistant.coolHeadroom, Research.gateWait, s.hold ? () => holdPass(path, hold) : null);
++          final g = await kitGate(Assistant.coolHeadroom, Research.gateWait, s.hold && want != null ? inWait : null);
+           row['cool_ms'] = DateTime.now().difference(c0).inMilliseconds;
+           row['gate'] = Assistant.coolHeadroom;
+           row['heat'] = g.heat;
+@@ -745,39 +822,62 @@
+           await Future<void>.delayed(Duration(seconds: s.pause));
+         }
+         row['pause_s'] = s.pause;
+-        // before any hold pass of the end: what the wait took (both hold states; with hold, after the in-wait passes)
+-        final pre = want == null ? null : DeviceProfile.pageVector(path);
+-        if (want != null && pre != null) {
+-          var lost = 0;
+-          for (var i = 0; i < want.length && i < pre.v.length; i++) {
+-            if (want[i] != 0 && pre.v[i] == 0) lost++;
+-          }
+-          row['wait_lost_mb'] = lost * pre.pageSize ~/ 1000000;
+-        }
++        String? stop;
+         if (s.hold && want != null) {
+-          // the end of the wait: one more pass, then until holdBack of the wanted pages are back or holdMax passed
+-          final h0 = DateTime.now();
+-          final need = (wantPages(want) * Research.holdBack).ceil();
+-          holdPass(path, hold);
+-          var back = 0;
++          // After the gate: a pass every holdSettle until holdBack of the wanted pages are resident at a pass, a pass
++          // gained less than holdStall of them, holdRounds passes ran or holdMax passed. The first pass's lost count is
++          // what the wait took (r22's wait_lost_mb, measured before the final read-back).
++          final h0 = DateTime.now();
++          final wp = wantPages(want);
++          final need = (wp * Research.holdBack).ceil(), stall = (wp * Research.holdStall).ceil();
++          int? prev;
++          var rounds = 0, back = 0;
+           while (true) {
+-            final v = DeviceProfile.pageVector(path);
+-            if (v == null) break;
+-            back = 0;
+-            for (var i = 0; i < want.length && i < v.v.length; i++) {
+-              if (want[i] != 0 && v.v[i] != 0) back++;
++            final b = holdPass(path, hold, per, union, DateTime.now().difference(c0).inMilliseconds);
++            if (b == null) {
++              stop = 'mincore failed';
++              break;
+             }
+-            if (back >= need || DateTime.now().difference(h0) >= Research.holdMax) break;
+-            await Future<void>.delayed(Research.holdPoll);
++            if (rounds++ == 0) row['wait_lost_mb'] = mb(wp - b);
++            back = b;
++            if (b >= need) {
++              stop = 'back';
++            } else if (prev != null && b - prev < stall) {
++              stop = 'stall';
++            } else if (rounds >= Research.holdRounds) {
++              stop = 'rounds';
++            } else if (DateTime.now().difference(h0) + Research.holdSettle > Research.holdMax) {
++              stop = 'time';
++            }
++            if (stop != null) break;
++            prev = b;
++            await Future<void>.delayed(Research.holdSettle);
+           }
+           hold['final_ms'] = DateTime.now().difference(h0).inMilliseconds;
+-          hold['back_mb'] = back * pageSize ~/ 1000000;
++          hold['final_passes'] = rounds;
++          hold['back_mb'] = mb(back);
++          hold['back_permille'] = wp == 0 ? 0 : back * 1000 ~/ wp;
++        } else if (want != null) {
++          // no hold (warm-ups): what the time since the last run took, for the record (not part of any hold cost)
++          final pre = DeviceProfile.pageVector(path);
++          if (pre != null) {
++            var lost = 0;
++            for (var i = 0; i < want.length && i < pre.v.length; i++) {
++              if (want[i] != 0 && pre.v[i] == 0) lost++;
++            }
++            row['wait_lost_mb'] = lost * pre.pageSize ~/ 1000000;
++          }
+         }
+         if (s.hold) {
+           row['hold_stats'] = {
+             ...hold,
+-            if (hold.containsKey('advised_pages')) 'advised_mb': hold['advised_pages']! * pageSize ~/ 1000000,
+-            if (hold.containsKey('lost_pages_max')) 'lost_mb_max': hold['lost_pages_max']! * pageSize ~/ 1000000,
++            if (hold.containsKey('advised_pages')) 'advised_mb': mb(hold['advised_pages']!),
++            if (hold.containsKey('advised_distinct_pages')) 'advised_distinct_mb': mb(hold['advised_distinct_pages']!),
++            if (hold.containsKey('lost_pages_max')) 'lost_mb_max': mb(hold['lost_pages_max']!),
++            if (per.isNotEmpty) 'adv_back_mb': per.last['adv_back_mb'], // of the pages advised before the last pass: resident at it
++            if (per.isNotEmpty) 'adv_before_mb': per.last['adv_before_mb'],
++            if (stop != null) 'stop': stop,
++            'per_pass': per,
+             if (want == null) 'note': 'no previous run of this model: nothing to hold',
+           };
+         }
+@@ -802,13 +902,24 @@
+         sw.start();
+         int? io1st;
+         double? firstMs;
++        // r23: where llama.cpp's threads run during the decode: up to 3 samples, >= 500 ms apart, of the DartWorker
++        // threads (the app's inference threads and the ggml workers they start) in state R and their CPU.
++        final thr = <List<int>>[]; // per sample: [ms into the run, running threads, cpu of each running thread...]
++        var lastSample = -1000000;
+         final c = await _kitComplete(Assistant._benchPrompt, Assistant._benchTokens, false, (ch) {
+           if (ch.text.isNotEmpty && firstMs == null) {
+             firstMs = sw.elapsedMicroseconds / 1000;
+             io1st = DeviceProfile.ioReadBytes(); // the app's own split (the c2-io line is the runtime's)
+             ib1st = DeviceProfile.rusage()?.inblock;
+           }
++          final ms = sw.elapsedMilliseconds;
++          if (firstMs != null && thr.length < 3 && ms - lastSample >= 500) {
++            lastSample = ms;
++            final r = DeviceProfile.runningWorkerCpus();
++            if (r != null) thr.add([ms, r.length, ...r]);
++          }
+         });
++        row['thread_samples'] = thr;
+         lastEnd = DateTime.now();
+         row['wall_ms'] = lastEnd!.difference(t0).inMilliseconds;
+         final f1 = DeviceProfile.pageFaults();
+diff --git a/lib/settings_screen.dart b/lib/settings_screen.dart
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -351,7 +351,7 @@
+               icon: const Icon(Icons.thermostat_rounded),
+               label: const Text('Run phone test (10 min)'),
+             ),
+-      // Research kit r22: the models of Research.kitModels (memo-20); the kit's own files are fetched here first.
++      // Research kit r23: the models of Research.kitModels (memo-22); the kit's own files are fetched here first.
+       if (!assistant.kitModelReady)
+         assistant.researching
+             ? OutlinedButton.icon(
+@@ -362,7 +362,7 @@
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.downloadKitModels,
+                 icon: const Icon(Icons.download_rounded),
+-                label: Text('Download kit r22 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
++                label: Text('Download kit r23 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
+                     '(${(assistant.kitMissingBytes / 1e9).toStringAsFixed(1)} GB, Wi-Fi)'),
+               ),
+       if (assistant.kitModelReady)
+@@ -375,8 +375,13 @@
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.researchRun,
+                 icon: const Icon(Icons.science_rounded),
+-                label: const Text('Run research kit r22 (~35-80 min)'),
++                label: const Text('Run research kit r23 (~35-80 min)'),
+               ),
++      if (assistant.kitModelReady && !assistant.researching)
++        Padding(
++          padding: const EdgeInsets.symmetric(vertical: 4),
++          child: Text(Research.ownerNote, style: const TextStyle(fontWeight: FontWeight.bold)),
++        ),
+       if (assistant.kitNote != null && !assistant.researching)
+         Padding(
+           padding: const EdgeInsets.symmetric(vertical: 4),
+diff --git a/pubspec.yaml b/pubspec.yaml
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.22.0+22
++version: 1.23.0+23
+ 
+ environment:
+   sdk: ^3.10.7
+diff --git a/test/kit_lines_test.dart b/test/kit_lines_test.dart
+--- a/test/kit_lines_test.dart
++++ b/test/kit_lines_test.dart
+@@ -64,34 +64,47 @@
+     expect(h.tag, 'granite_num.1');
+     expect(Research.parseLine('c2-io-blk run=granite_off.0 inblock=10/20/30')!.tag, 'granite_off.0');
+   });
+-  test('kit r22: run list generated from the model table', () {
++  test('kit r23: the extended c2-head-run line (c1-olmoe 0006) is tagged', () {
++    final h = Research.parseLine('E/x c2-head-run: run=olmoe_num_t4.0 c2_k=0 c2_calls=0 c2_cols=0 c2_exact_rows_per_col=0.0 '
++        'c2_copies=0 c2_copy=0 c1_m=0 c1_calls=0 c1_copies=0 c1_copy=0 c2_declined=33 c2_why=layout:CPU_KLEIDIAI')!;
++    expect(h.tag, 'olmoe_num_t4.0');
++    expect(h.line.endsWith('c2_why=layout:CPU_KLEIDIAI'), true);
++  });
++  test('kit r23: run list generated from the model table', () {
+     final ids = Research.kitModels.map((m) => m.id).toList();
+     expect(Research.blockOrder.map((m) => m.id).toList(), [...ids, ...ids.reversed]);
+     expect(Research.runs.length, Research.blockOrder.length * 11);
+-    final holdFirst = <String, List<bool>>{};
++    final fourFirst = <String, List<bool>>{};
+     for (var b = 0; b < Research.blockOrder.length; b++) {
+       final m = Research.blockOrder[b];
+       final blk = Research.runs.where((r) => r.group == 'b${b + 1}').toList();
+-      expect(blk.every((r) => r.model == m.id && r.repack), true);
++      expect(blk.every((r) => r.model == m.id && r.repack && r.proto == 'r23'), true);
+       final scored = blk.where((r) => r.phase == 'on').toList();
+       expect(scored.map((r) => r.arm).toList(), ['off', 'num', 'num', 'off', 'off', 'num', 'num', 'off']);
+-      expect(scored.sublist(0, 4).every((r) => r.hold == scored[0].hold) && scored.sublist(4).every((r) => r.hold != scored[0].hold), true);
+-      holdFirst.putIfAbsent(m.id, () => []).add(scored[0].hold);
++      expect(scored.map((r) => r.threads).toSet(), {3, 4});
++      expect(scored.sublist(0, 4).every((r) => r.threads == scored[0].threads) &&
++          scored.sublist(4).every((r) => r.threads != scored[0].threads), true);
++      fourFirst.putIfAbsent(m.id, () => []).add(scored[0].threads == 4);
+       expect(blk.where((r) => r.phase == 'prof').map((r) => r.arm).toSet(), {'off', 'num'});
+-      expect(blk.where((r) => r.phase == 'prof').every((r) => r.hold), true);
+-      expect(blk.first.phase == 'warmup' && blk.first.reps == 2 && !blk.first.gate && !blk.first.hold, true);
++      expect(blk.where((r) => r.phase == 'prof').every((r) => r.hold && r.threads == 3), true);
++      expect(blk.first.phase == 'warmup' && blk.first.reps == 2 && !blk.first.gate && !blk.first.hold && blk.first.threads == 3,
++          true);
+       for (final r in blk) {
+         expect(r.env['GGML_C2_IO'], '1');
+         expect(r.env.containsKey('GGML_PREFILL_COLD') || r.env.containsKey('GGML_KEEP_WARM'), false);
++        expect(r.env.containsKey('VOLLIE_HEAD2_REPACK'), false); // a load env, never a run env
+         for (final e in m.num.entries) {
+           expect(r.env[e.key], r.arm == 'num' ? e.value : null);
+         }
+         expect(r.gate, r.phase != 'warmup');
++        expect(r.hold, r.gate); // hold is protocol: every gated run
+       }
+     }
+-    for (final v in holdFirst.values) {
+-      expect(v.toSet(), {true, false}); // each model: hold first once, hold last once
++    for (final v in fourFirst.values) {
++      expect(v.toSet(), {true, false}); // each model: 4 threads first once, last once
+     }
++    expect(Research.models['olmoe']!.load, {'VOLLIE_HEAD2_REPACK': '1'});
++    expect(Research.models['granite']!.load, isEmpty);
+     expect(Research.models['olmoe']!.num, {'VOLLIE_SKIP_MASS': '900', 'VOLLIE_HEAD2': '1024', 'VOLLIE_SKIP_STATS': '1'});
+     expect(Research.models['granite']!.num,
+         {'GGML_EXPERT_SKIP': '130', 'GGML_HEAD2': '2048', 'GGML_HEAD2_Q': 'q4_0', 'VOLLIE_SKIP_STATS': '1'});

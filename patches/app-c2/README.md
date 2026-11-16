@@ -138,3 +138,19 @@ installs as an update over r21 and keeps both models. Design, run list, schema a
 - **Per row:** + `arm`, `hold`, `hold_stats`, `want_mb`, `wait_lost_mb`, `inblock_read_bytes` (getrusage, also to the
   first chunk), `io_wait_ticks` (`/proc/self/stat` field 42), `run_cpu_ms`, and the runtime's `c2-io-blk`,
   `c2-skip-run`, `c2-head-run` lines. Report: `memlock_rlimit`, `hold_rule`, each model's `num`.
+
+## 0007-kit-r23.patch (on top of 0006)
+
+Kit r23 (version 1.23.0+23), campaign 1's runtime + `patches/llama.cpp-c1-olmoe/0001-0006`. Same package and debug key:
+installs as an update over r22 and keeps both models. Design, run list, schema and owner steps:
+`campaigns/02-25toks-5pct/reports/memo-22-kit-r23.md`.
+
+- **Load env per model** (`KitModel.load`): OLMoE `VOLLIE_HEAD2_REPACK=1` during every load, in both arms (0006: the
+  untied Q6_K head stays out of KleidiAI); Granite none. What native code saw is in the load row's `load_env_set`.
+- **Hold in every gated run:** one pass in the wait (at least 45 s in), then a pass every 1 s after the gate until
+  95 % of the wanted pages are back, a pass gains under 1 %, 4 passes or 8 s; no other `mincore`. `hold_stats` adds
+  distinct and came-back MB, the stop reason and `per_pass`.
+- **Factor threads:** per block one ABBA quad at 4 threads and one at 3 (4 first in odd blocks); warm-ups and profiled
+  runs at 3. Per row `pinned_cpus`, `threads_loaded`, `thread_samples` (CPU of the running DartWorker threads).
+- **Report:** `kernel_release`, `owner_note`, `thread_rule`, the new `hold_rule`, `load_env` per model. The start
+  screen shows "close background apps (R60: a banking app was running)".

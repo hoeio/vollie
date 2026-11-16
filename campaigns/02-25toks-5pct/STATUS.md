@@ -57,6 +57,12 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
+**Waiting on the owner (2026-11-16):** kit r23 handed over; R62 pre-registered
+([prereg](prereg/R62-numerics-threads-hold-two-models-device.md), kit in [memo-22](reports/memo-22-kit-r23.md)).
+APK `lab/dist-c2/vollie-c2-1.23.0+23-research-r23.apk` (sha256 `2cf9d2ad…bcefd90c`). Background apps closed.
+When the report comes back: `python3 -I tools/c2_research_parse.py <json>`, score as written, store the raw
+report under `reports/device/`. Meanwhile (host): memo-21 item 2, the routing prior, trace simulation.
+
 **Latest (R60, kit r22, 2026-11-15, *device*; [R-log entry](reports/README.md)):** every gate wait ran the full 90 s. Hold: pass on both
 models (resident before the run +842 MB OLMoE, +1,165 MB Granite; tok/s +4.72 ± 1.70 and +5.28 ± 0.98), cost
 predictions missed (5.2 s CPU per wait, 20 repeated read-backs). num: Granite unresolved over four quads
@@ -271,3 +277,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-15 | 4 (continued) | Tom (`claude-opus-5-5`): OLMoE head on the phone is declined because KleidiAI owns `output.weight`; reproduced on the host; patch 0006 (load-time knob, decline reason in the kit line). Finding: all host PPL so far is from builds without KleidiAI, the phone has it on. Owner decision opened; no kit built. |
 | 2026-11-15 | 4 (continued) | Owner: R61 option (a) chosen, pre-statement pushed, queue running (Tom). Owner welcomes unconventional methods; Bonnie (`claude-opus-5-5`) wrote memo-21 (priced shortlist, dead list, owner items). |
 | 2026-11-15 | 4 (continued) | R61 scored (*host*, KleidiAI build, 10 full-set runs): both num settings inside by both readings; Granite stock +0.57 / +0.50 % with KleidiAI (prediction missed at `-b 512`), OLMoE unchanged. Next: app load setting, cheaper hold, memo-21 items 1, 2, 5, then kit r23 and its pre-registration. |
+| 2026-11-16 | 4 (continued) | Kit r23 built by Tom (OLMoE head knob at load, cheap hold in every gated run, threads 3 against 4, memo-22); R62 pre-registered; APK handed to the owner. Never run on a phone: 0006, the new hold rule, the thread sampler. |
