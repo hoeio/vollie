@@ -645,6 +645,72 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   OLMoE's off arm (−0.003 to −0.004). Not measured: the phone's dotprod KleidiAI kernels; campaign 1's Granite
   file (d6-e6) on a KleidiAI build.
 
+### R62 Skip + head with hold in every run, and threads 3 against 4, on Granite and OLMoE (kit r23)
+
+- **Date:** 2026-11-16, 10:31 to 11:43 local. **Label:** *device*. Pre-registration:
+  [prereg/R62-numerics-threads-hold-two-models-device.md](../prereg/R62-numerics-threads-hold-two-models-device.md)
+  (commit `586491c`). **Source:** the raw report [device/r23_2026-11-16.json](device/r23_2026-11-16.json)
+  (sha256 `21bde80c…20aeb7bf`), read with `tools/c2_research_parse.py`; a few figures below (per-cent effects,
+  resident / wanted, profiled-token medians) are the lead's arithmetic on the same file.
+- **Void checks:** hashes equal the build; 8 scored runs per arm and model; one text per arm and model, the
+  same at 3 and 4 threads; OLMoE loaded with `VOLLIE_HEAD2_REPACK=1` at both loads; threads applied equal the
+  spec; skip counters non-zero; no head declines. **OLMoE's head ran on the phone:** `c2_calls=33
+  c2_declined=0 c2_copy=1` in every num run (patch 0006 works). Not void.
+- **Phone state:** **all 32 gates timed out again** (headroom at the end of the wait 0.67 to 0.97 Granite, 0.70
+  to 0.82 OLMoE). `Cached` at least 2.4 GB before 12 of 16 Granite runs and 16 of 16 OLMoE runs; Granite's
+  last block ran with the cap at 1,555 MHz. By §3 **Granite's level bands are not scored**, OLMoE's are. Whether
+  background apps were closed: not yet stated by the owner.
+
+| model | arm | 3 threads, median of 4 (runs) | 4 threads, median of 4 (runs) |
+|---|---|---|---|
+| Granite-Mi | off | 15.95 (15.95, 16.01, 15.94, 12.52) | 9.90 (7.76, 14.24, 12.03, 7.58) |
+| Granite-Mi | num | **17.65** (17.79, 17.50, 17.48, 18.82) | 10.99 (10.42, 17.69, 11.55, 9.74) |
+| OLMoE-Mi | off | 16.85 (17.86, 9.99, 18.10, 15.84) | 12.45 (7.97, 13.51, 11.49, 13.41) |
+| OLMoE-Mi | num | 16.40 (15.39, 17.40, 11.68, 17.99) | 13.39 (6.26, 13.85, 12.93, 13.84) |
+
+- **num minus off (mean of the four quads ± SE):**
+  - **Granite: +2.37 ± 0.69 tok/s (+18.6 ± 5.3 %): pass** (3.4 × SE; quads +3.06, +1.67, +3.92, +0.84). Bands
+    (+1.4 to +3.4; +8 to +21 %): **hit**. Skip counter 39.62 %: **hit**. Head op 3.7 ms in the clean profiled
+    run (off 5.5): **hit**.
+  - **OLMoE: +0.15 ± 1.00 tok/s (+1.6 ± 6.9 %): not shown on this model** (quads +2.48, −0.69, +0.94, −2.14).
+    Skip counter 13.04 %: **hit**. Head line as predicted: **hit**. Head op time: 3.4 and 3.1 ms in the num
+    profiled runs against 3.3 and 3.5 ms off; predicted 2.6 (2.1 to 3.1): **miss**. The head screens all
+    50,304 rows and then recomputes about 7,000 rows exactly per token (`c2_exact_rows_per_col=7023.5`; the
+    host shows 6,936 to 7,057, so this is the lever as built, not a phone fault): on the phone it saves nothing
+    measurable. Against R60, the off arm's head op itself fell from 3.8 to 4.2 ms (KleidiAI's int8) to 3.3 to
+    3.5 ms (Q6_K repack).
+- **Levels, 3 threads:** OLMoE off 16.85 (16.0 to 21.0): **hit**; OLMoE num 16.40 (18.0 to 23.0): **miss**.
+  Granite not scored (state); for the record 15.95 and 17.65 are inside their bands.
+- **threads 4 minus 3 (8 against 8 runs, both arms, Welch):** **Granite −5.12 ± 1.37 tok/s, OLMoE −3.87 ±
+  1.51 tok/s: negative and beyond 2 × SE on both. Kill rule met: plain four-thread decode is closed on both
+  models.** Predicted −3 % and +4 %: both **miss** (about −30 % and −23 %). Caveat, a reading: the four-thread
+  runs also started hotter and, on Granite, with less of the file resident (medians 1,669 and 1,703 MB against
+  2,001 and 2,034), so part of the loss may be heat and pages rather than barriers. The thread samples show
+  the workers inside cores 4 to 7 with about a fifth of OLMoE's samples on cores 0 to 3.
+- **Hold (protocol check):** resident before the run at least 95 % of the wanted MB: **6 of 16 runs on each
+  model** (predicted at least 12): **miss**; medians 92.6 % (Granite) and 94.2 % (OLMoE). Fail rule (fewer
+  than 8 of 16 OLMoE runs at 90 %): 12 of 16, **not failed**. CPU per wait, median: 2.1 s (Granite) and 1.9 s
+  (OLMoE) against 0.9 (0.6 to 1.3): **miss**. Longest gate-to-run time 6.9 s (limit 8.5): **hit**. The cheap
+  hold is cheaper than R60's (5.2 s) and keeps less (R60's hold runs started with 86 to 98 % on OLMoE; here the
+  waits still lost 0.4 to 1.0 GB at the median before the read-back).
+- **Generalisation:** "num helps both by a similar per cent": **miss** (Granite +18.6 %, OLMoE not shown, for
+  the second round). "A fourth thread helps neither": **hit** (it hurts both).
+- **Readings (not pre-registered):**
+  - Fault-free tokens, clean profiled runs: Granite 53.9 ms off, 45.2 ms num; OLMoE 43.5 ms off (2 tokens)
+    and 51.5 ms num (1 token). No OLMoE run was near fault-free: its num runs took a median of 5,310 major
+    faults in the decode against 1,139 off (3 threads), which is where its skip gain went. Why the skip arm
+    faults more is not known.
+  - Two sessions in a row never reached the gate in 90 s, on a phone that reached it in R58. Each run then
+    waits the full 90 s and loses pages; the levels of R58 (19.70 and 17.19 without numerics) were not
+    reproduced in R60 or R62.
+- **Neighbourhood (§5, not a claim):** best cells of the round are Granite num 17.65 and OLMoE off 16.85 at
+  three threads. **Nothing here is near 25 tok/s.**
+- **What it means (§7):** Granite's setting (skip 130 + head2 2048) is confirmed twice with hold and is frozen.
+  OLMoE: the untied head is built correctly and is worth about nothing on the phone; the skip rule's gain is
+  not shown in two rounds. Four plain threads are closed; memo-21's barrier-free helper stays open as a separate
+  mechanism. The limit on both models is the state before the run (heat gate never reached, pages lost in the
+  wait, faults during the decode), not the kernels.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-21, unconventional levers priced on both models (owner's list and new directions)](memo-21-unconventional-levers.md);
 [memo-22, kit r23 (head knob at load, cheap hold, threads 3 against 4)](memo-22-kit-r23.md);

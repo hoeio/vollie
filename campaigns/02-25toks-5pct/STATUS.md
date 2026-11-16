@@ -5,6 +5,8 @@ sections above it. Last updated: 2026-11-15 (session 4; R60 scored).
 
 ## State in one paragraph
 
+**As of 2026-11-16 (R62, *device*):** Granite skip 130 + head2 passes (+2.37 ± 0.69 tok/s; 17.65 tok/s at three threads) and is frozen; OLMoE's num arm is not shown in two rounds and its repaired head saves nothing on the phone; four threads lose on both models; every gate wait timed out in R60 and R62 and no cell is near 25. The state before a run (heat, pages) decides the number.
+
 **As of 2026-11-15 (R60, *device*):** page hold through the gate wait works on both models (+4.7 tok/s OLMoE, +5.3 Granite, pass) but costs 5 s of CPU per wait; Granite's skip + head is +1.44 ± 1.28 tok/s over all quads (unresolved; +2.4 in both hold quads); OLMoE's num factor is void because the untied head did not run on the phone (skip alone +1.71 ± 0.70). Best state of the round: Granite 18.96, OLMoE 19.25 tok/s (num with hold). Not near 25.
 
 **As of 2026-11-14 evening (R52 to R58, *device*):** the paragraph below is the state before the device rounds. Best measured state: OLMoE 19.70 tok/s median (21.03 when resident before the run), Granite-Mi 17.19, both cool, both without a numerics change (R58). Speed is decided by page residency and heat, not by kernels (R55 to R58).
@@ -57,11 +59,22 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
-**Waiting on the owner (2026-11-16):** kit r23 handed over; R62 pre-registered
-([prereg](prereg/R62-numerics-threads-hold-two-models-device.md), kit in [memo-22](reports/memo-22-kit-r23.md)).
-APK `lab/dist-c2/vollie-c2-1.23.0+23-research-r23.apk` (sha256 `2cf9d2ad…bcefd90c`). Background apps closed.
-When the report comes back: `python3 -I tools/c2_research_parse.py <json>`, score as written, store the raw
-report under `reports/device/`. Meanwhile (host): memo-21 item 2, the routing prior, trace simulation.
+**Latest (R62, kit r23, 2026-11-16, *device*; [R-log entry](reports/README.md)):** Granite num passes
+(+2.37 ± 0.69 tok/s, 17.65 against 15.95 at three threads) and its setting is frozen. OLMoE: the head now runs
+on the phone (0006 works) but saves nothing measurable, and num minus off is +0.15 ± 1.00, not shown for the
+second round. Four plain threads lose on both models (−5.1 and −3.9 tok/s) and are closed. The cheap hold costs
+2 s CPU and starts runs at 93 to 94 % of the wanted MB (prediction missed, fail rule not met). All 32 gates
+timed out again. Best cells 17.65 (Granite num) and 16.85 (OLMoE off): **not near 25**. Next, in order:
+1. **The state before the run is the problem to solve first**, on both models: why the gate (0.65 in 90 s)
+   is not reached in R60 and R62 but was in R58 (compare heat series, clocks and caps of r21, r22, r23 and
+   campaign 1's r16; ask the owner what the phone state was), and why a run that starts 93 % resident still
+   takes thousands of major faults.
+2. OLMoE: why the skip arm takes more decode faults than off (5,310 against 1,139 median); whether `MASS=900`
+   is worth keeping; the untied head is kept out of the next kit's claims (about 0 ms on the phone).
+3. memo-21 item 2 (routing prior, host trace simulation): **not started yet**; item 1 only as the
+   barrier-free helper, microbench first.
+4. Say to the owner with numbers where the goal stands (R58 best 19.70 / 17.19 without numerics; R60 and R62
+   below that; fault-free arithmetic in memo-21: OLMoE about 24.4, Granite 23 to 24 tok/s at best).
 
 **Latest (R60, kit r22, 2026-11-15, *device*; [R-log entry](reports/README.md)):** every gate wait ran the full 90 s. Hold: pass on both
 models (resident before the run +842 MB OLMoE, +1,165 MB Granite; tok/s +4.72 ± 1.70 and +5.28 ± 0.98), cost
@@ -278,3 +291,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-15 | 4 (continued) | Owner: R61 option (a) chosen, pre-statement pushed, queue running (Tom). Owner welcomes unconventional methods; Bonnie (`claude-opus-5-5`) wrote memo-21 (priced shortlist, dead list, owner items). |
 | 2026-11-15 | 4 (continued) | R61 scored (*host*, KleidiAI build, 10 full-set runs): both num settings inside by both readings; Granite stock +0.57 / +0.50 % with KleidiAI (prediction missed at `-b 512`), OLMoE unchanged. Next: app load setting, cheaper hold, memo-21 items 1, 2, 5, then kit r23 and its pre-registration. |
 | 2026-11-16 | 4 (continued) | Kit r23 built by Tom (OLMoE head knob at load, cheap hold in every gated run, threads 3 against 4, memo-22); R62 pre-registered; APK handed to the owner. Never run on a phone: 0006, the new hold rule, the thread sampler. |
+| 2026-11-16 | 4 (continued) | R62 scored from kit r23 (raw report stored): Granite num pass and frozen; OLMoE num not shown, head runs but is worth about 0 ms; four threads killed on both; cheap hold misses its predictions; all gates timed out. Next: the pre-run state (gate, faults), OLMoE fault count in the skip arm, goal statement to the owner. |
