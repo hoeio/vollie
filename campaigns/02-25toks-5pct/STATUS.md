@@ -73,6 +73,16 @@ timed out again. Best cells 17.65 (Granite num) and 16.85 (OLMoE off): **not nea
    pos 40 (Granite's last block, cap 1,555 from pos 42). Blocks 1 to 3 were unplugged and timed out too.
    Granite's four-thread kill leans on that block (dated note in the R62 entry). Next kit: pause or void on
    `plugged`.
+   Owner, 2026-11-16: background apps were closed in R62, so neither the banking app nor the charger explains
+   the timeouts. **Reading of the heat series (lead, 2026-11-16, *device* data, not pre-registered):** in R60
+   and R62 the headroom falls to a plateau of about 0.72 within about 40 s of a wait and stays there (median of
+   the minimum 0.722 and 0.719; lowest value of either session 0.665); on 2026-11-14 (r16 control, r20, r21,
+   evening) the gate at 0.65 was reached in a median of 35 s or at once. The clock is uncapped at 0.72 (2,112 /
+   2,035 MHz). So on these two mornings the gate waited 50 s past the plateau for nothing and lost pages
+   meanwhile (median lost per wait 240 MB with r22's hold, 683 MB in r23). Candidate cause: the phone's idle
+   headroom floor differs by place or time of day (ask the owner). Candidate fix for research kits: end the
+   wait when the headroom has stopped falling (plateau rule) or at 0.65, whichever comes first; a claim round
+   keeps r16's gate unless the owner decides otherwise.
 2. OLMoE: why the skip arm takes more decode faults than off (5,310 against 1,139 median); whether `MASS=900`
    is worth keeping; the untied head is kept out of the next kit's claims (about 0 ms on the phone).
 3. memo-21 item 2 (routing prior, host trace simulation): **not started yet**; item 1 only as the
