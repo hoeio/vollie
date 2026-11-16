@@ -69,6 +69,10 @@ timed out again. Best cells 17.65 (Granite num) and 16.85 (OLMoE off): **not nea
    is not reached in R60 and R62 but was in R58 (compare heat series, clocks and caps of r21, r22, r23 and
    campaign 1's r16; ask the owner what the phone state was), and why a run that starts 93 % resident still
    takes thousands of major faults.
+   Owner, 2026-11-16: a charger was probably plugged in at about minute 45; the report shows `plugged` from
+   pos 40 (Granite's last block, cap 1,555 from pos 42). Blocks 1 to 3 were unplugged and timed out too.
+   Granite's four-thread kill leans on that block (dated note in the R62 entry). Next kit: pause or void on
+   `plugged`.
 2. OLMoE: why the skip arm takes more decode faults than off (5,310 against 1,139 median); whether `MASS=900`
    is worth keeping; the untied head is kept out of the next kit's claims (about 0 ms on the phone).
 3. memo-21 item 2 (routing prior, host trace simulation): **not started yet**; item 1 only as the

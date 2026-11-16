@@ -711,6 +711,22 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   mechanism. The limit on both models is the state before the run (heat gate never reached, pages lost in the
   wait, faults during the decode), not the kernels.
 
+- **Note, 2026-11-16 (owner, after the scoring):** a charger may have been plugged in about 45 minutes into the
+  session. The report agrees: `plugged` is true from pos 40 to pos 48 (Granite's last block: 7 of its 8 scored
+  runs and both profiled runs), the battery rose from 28.8 to 31.0 °C and the cap fell to 1,555 MHz from pos 42
+  on. Blocks 1 to 3 and pos 39 ran unplugged, and all their gates timed out too, so the charger does not
+  explain the timeouts. The scoring above stands as written (no run is excluded); what leans on the charged
+  block:
+  - **Granite num:** unaffected in size. The two unplugged quads (block 1) give +3.06 and +1.67, mean +2.37,
+    the same mean as all four; with two quads the SE is 0.70.
+  - **Granite threads:** block 4's four-thread quad ran entirely charged and capped, so the kill on Granite
+    leans on confounded runs. Block 1 alone (unplugged, 4 against 4 runs): -4.29 ± 2.23 tok/s, negative
+    but only 1.9 × SE, and its four-thread quad came first after the warm-up with less of the file
+    resident. **Read Granite's four-thread result as "lost, not cleanly measured"; OLMoE's (−3.87 ± 1.51, all
+    unplugged) is clean.** The kill is not reopened by this note; reopening would need a new pre-registration.
+  - **OLMoE:** nothing was charged.
+  - Next kit: stop and wait (or mark the run void) when `plugged` turns true.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-21, unconventional levers priced on both models (owner's list and new directions)](memo-21-unconventional-levers.md);
 [memo-22, kit r23 (head knob at load, cheap hold, threads 3 against 4)](memo-22-kit-r23.md);
