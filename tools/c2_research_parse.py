@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Campaign 2 research-kit report parser (kits r17 to r24; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
-memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md, memo-19-kit-r21.md, memo-20-kit-r22.md, memo-22-kit-r23.md and memo-23-kit-r24.md).
+"""Campaign 2 research-kit report parser (kits r17 to r25; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
+memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md, memo-19-kit-r21.md, memo-20-kit-r22.md, memo-22-kit-r23.md, memo-23-kit-r24.md and memo-26-kit-r25.md).
 Standard library only.
 
 usage: python3 -I tools/c2_research_parse.py <report.json | clipboard text "c2gz:..."> [--min-mhz 1800]
@@ -56,7 +56,14 @@ runs with a charger at their start or end (listed and flagged, never dropped her
 scored runs' medians; num minus off over ABBA quads (all, per gate rule; and without flagged runs); plateau minus r16
 per model (tok/s, wait s, MB resident before, MB lost in the wait, headroom at the run's start, big-core clock and cap:
 per block paired ± SE, and all runs, Welch); swap-ins and major faults per phase from /proc/vmstat; the idle baseline and
-thermal zones; the hold table of r23."""
+thermal zones; the hold table of r23.
+
+Kit r25 (memo-26, R64: r24 plus the kv factor VOLLIE_KV_DONTNEED=1 in half of the scored runs): r24's checks plus the kv
+checks (id suffix against env, kv outside scored runs, the c2-kvclear lines per kind and why, the VOID rule of R64 §4:
+released = 0 in a kv run or > 0 in a run without kv, greedy text kv against plain per arm); per model kv minus plain,
+paired within block x gate rule x arm and Welch over all runs, with medians, for pre-prompt major faults (run majflt
+minus the c2-io window, memo-24 §A2.2), pswpin start -> first chunk, TTFT, decode graph ms/token (c2-io), tok/s, VmSwap
+at run end and MB released; a mechanical R64 §4 readout; then r24's tables pooled over kv and on plain runs only."""
 import argparse
 import base64
 import gzip
@@ -1043,23 +1050,33 @@ def r24_checks(r):
     return out
 
 
-def r24_tables(r):
-    runs = [x for x in r.get('runs', []) if x.get('proto') == 'r24']
+def quad_sel_effect(q, sel):
+    """mean(num) - mean(off) over the quad's runs that pass sel (r25 plain runs: one off and one num per quad)."""
+    u = [x.get('decode_tps') for x in q if sel(x) and x.get('arm') == 'num']
+    v = [x.get('decode_tps') for x in q if sel(x) and x.get('arm') == 'off']
+    return None if not u or not v or None in u + v else st.mean(u) - st.mean(v)
+
+
+def r24_tables(r, proto='r24', sel=None, label='', extras=True):
+    """r24's tables; kit r25 calls it on proto 'r25' pooled over kv (sel None) and on plain runs (sel, extras off)."""
+    runs = [x for x in r.get('runs', []) if x.get('proto') == proto]
     if not runs:
         return []
     models = r21_models(r)
     flagged = lambda x: bool(x.get('plugged_run') or x.get('plugged'))
     sc = lambda m, a=None, g=None: [x for x in runs if x.get('model') == m and x.get('phase') == 'on'
-                                    and (a is None or x.get('arm') == a) and (g is None or x.get('gate_rule') == g)]
+                                    and (a is None or x.get('arm') == a) and (g is None or x.get('gate_rule') == g)
+                                    and (sel is None or sel(x))]
+    eff = quad_effect if sel is None else lambda q: quad_sel_effect(q, sel)
     out = []
     base = (r.get('idle_baseline') or {}).get('samples') or []
-    if base:
+    if base and extras:
         out.append('idle baseline before the first run (ms, headroom, battery C, plugged, status): ' +
                    ' '.join(str(b) for b in base))
     zs = [z for z in r.get('thermal_zones') or [] if z.get('temp') is not None]
-    if zs:
+    if zs and extras:
         out.append('thermal zones at the start: ' + ', '.join(f"{z.get('type')}={z.get('temp')}" for z in zs))
-    out.append('kit r24, scored runs (phase on), per model, arm and gate rule (*device*):')
+    out.append(f'kit {proto}{label}, scored runs (phase on), per model, arm and gate rule (*device*):')
     for m in models:
         for a in ('off', 'num'):
             for g in ('r16', 'plateau'):
@@ -1073,12 +1090,13 @@ def r24_tables(r):
                            f"{fmt(med(vm_delta(x, 'vmstat_before', 'vmstat_first', 'pswpin') for x in v), 0)} / "
                            f"{fmt(med(vm_delta(x, 'vmstat_first', 'vmstat_after', 'pswpin') for x in v), 0)} | VmSwap before MB "
                            f"{fmt(med(memv(x.get('mem_before'), 'swap') for x in v), 0)} | hold cpu ms {fmt(st_['hold_cpu_ms'], 0)}")
-    out.append('num minus off, mean over ABBA quads of mean(num) - mean(off), tok/s ± SE (flag-free = quads without a flagged run):')
+    out.append('num minus off, mean over ABBA quads of mean(num) - mean(off), tok/s ± SE (flag-free = quads without a flagged run)'
+               + ('' if sel is None else ' [only the selected runs of each quad: one num, one off]') + ':')
     for m in models:
         qs = [q for g in r23_blocks(runs, m) for q in r22_quads([x for x in runs if x.get('group') == g and x.get('phase') == 'on'])
               if len({x.get('gate_rule') for x in q}) == 1]
-        e = lambda g=None, clean=False: [quad_effect(q) for q in qs if (g is None or q[0].get('gate_rule') == g)
-                                         and not (clean and any(map(flagged, q)))]
+        e = lambda g=None, clean=False: [eff(q) for q in qs if (g is None or q[0].get('gate_rule') == g)
+                                         and not (clean and any(flagged(x) for x in q if sel is None or sel(x)))]
         out.append(f"  {m}: all {fmt_se(e())} | r16 {fmt_se(e('r16'))} | plateau {fmt_se(e('plateau'))} | flag-free {fmt_se(e(clean=True))}")
     metrics = [('tok/s', lambda x: x.get('decode_tps'), 2), ('wait s', lambda x: None if x.get('wait_ms') is None else x['wait_ms'] / 1000, 1),
                ('res before MB', res_mb, 0), ('lost in wait MB', lambda x: x.get('wait_lost_mb'), 0),
@@ -1098,6 +1116,8 @@ def r24_tables(r):
                     dd.append(st.mean(u) - st.mean(v))
             parts.append(f"{name} {fmt_se(dd)}, runs {welch([f(x) for x in sc(m, None, 'plateau')], [f(x) for x in sc(m, None, 'r16')], d)}")
         out.append(f"  {m}: " + ' | '.join(parts))
+    if not extras:
+        return out
     plug = [x for x in runs if flagged(x)]
     out.append(f"runs with a charger at their start or end: {len(plug)}" +
                ''.join(f"\n  {x.get('pos')} {x.get('run_tag')} plugged before {x.get('plugged')} after {x.get('plugged_after')} "
@@ -1110,6 +1130,117 @@ def r24_tables(r):
                    f" / {vm_delta(x, 'vmstat_first', 'vmstat_after', 'pgmajfault')} | majflt {i.get('pre_majflt')} / {i.get('dec_majflt')} | "
                    f"VmSwap MB {memv(x.get('mem_before'), 'swap')} -> {memv(x.get('mem_first'), 'swap')} -> {memv(x.get('mem_after'), 'swap')}")
     return out + hold_lines(runs)
+
+
+# kit r25 (memo-26, R64): r24 plus the kv factor (VOLLIE_KV_DONTNEED=1 in half of the scored runs, c1-olmoe 0008)
+KVCLEAR_RE = re.compile(r'c2-kvclear run=(\S+) kind=(\w+) on=(\d) bytes=(\d+) released=(\d+) why=(\w+) us=(\d+)')
+
+
+def kv_on(x):
+    return 'VOLLIE_KV_DONTNEED' in (x.get('env') or env_of(x))
+
+
+def kvclear_of(x):
+    """The row's c2-kvclear lines (one per buffer cleared): [(kind, on, bytes, released, why, us)]."""
+    return [(m.group(2), int(m.group(3)), int(m.group(4)), int(m.group(5)), m.group(6), int(m.group(7)))
+            for l in x.get('c2') or [] for m in [KVCLEAR_RE.search(l)] if m and m.group(1) == x.get('run_tag', m.group(1))]
+
+
+def released_mb(x):
+    k = kvclear_of(x)
+    return sum(c[3] for c in k) / 1e6 if k else None
+
+
+def pre_prompt_majflt(x):
+    """memo-24 §A2.2: the run's majflt minus the c2-io window (prompt start to end)."""
+    i = io_of(x) or {}
+    if x.get('majflt') is None or i.get('pre_majflt') is None or i.get('dec_majflt') is None:
+        return None
+    return x['majflt'] - i['pre_majflt'] - i['dec_majflt']
+
+
+def dec_ms_tok(x):
+    """Decode graph ms per token from the c2-io window (independent of sampling and chunk delivery)."""
+    i = io_of(x) or {}
+    return i['dec_ms'] / i['decode_graphs'] if i.get('dec_ms') is not None and i.get('decode_graphs') else None
+
+
+KV_METRICS = [('pre-prompt majflt', pre_prompt_majflt, 0),
+              ('pswpin start->first chunk', lambda x: vm_delta(x, 'vmstat_before', 'vmstat_first', 'pswpin'), 0),
+              ('TTFT ms', lambda x: x.get('ttft_ms'), 1), ('decode graph ms/token', dec_ms_tok, 2),
+              ('tok/s', lambda x: x.get('decode_tps'), 2), ('VmSwap at end MB', lambda x: memv(x.get('mem_after'), 'swap'), 0),
+              ('released MB', released_mb, 1)]
+
+
+def r25_checks(r):
+    out = r24_checks(r)
+    runs = [x for x in r.get('runs', []) if x.get('proto') == 'r25']
+    bad_id = [x.get('run_tag') for x in runs if kv_on(x) != str(x.get('id', '')).endswith('_kv')]
+    outside = [x.get('run_tag') for x in runs if kv_on(x) and x.get('phase') != 'on']
+    nokv = [x.get('run_tag') for x in runs if kv_on(x) and not (released_mb(x) or 0) > 0]
+    leak = [x.get('run_tag') for x in runs if not kv_on(x) and (released_mb(x) or 0) > 0]
+    noline = [x.get('run_tag') for x in runs if not kvclear_of(x)]
+    why = {}
+    for x in runs:
+        for c in kvclear_of(x):
+            k = (('kv' if kv_on(x) else 'plain'), c[0], c[4])
+            why[k] = why.get(k, 0) + 1
+    out.append(f"r25 kv factor: id suffix != env in {','.join(bad_id) or 'none'}; kv outside scored runs "
+               f"{','.join(outside) or 'none'}; rows without a c2-kvclear line {','.join(noline) or 'none'}; c2-kvclear lines "
+               f"(run, kind, why): {dict(sorted(why.items()))}")
+    out.append(f"r25 VOID check (R64 §4): released = 0 in a kv run: {','.join(nokv) or 'none'}; released > 0 in a run "
+               f"without kv: {','.join(leak) or 'none'} -> {'VOID' if nokv or leak else 'ok'}")
+    for m in r21_models(r):
+        parts = []
+        for a in ('off', 'num'):
+            t = {kv: {md5(x['text'])[:8] for x in runs if x.get('model') == m and x.get('arm') == a and kv_on(x) == kv
+                      and x.get('text') is not None} for kv in (True, False)}
+            same = len(t[True] | t[False]) == 1
+            parts.append(f"{a} kv {sorted(t[True])} plain {sorted(t[False])}: {'same' if same else 'DIFFER (kill rule)'}")
+        out.append(f"{m} (r25) texts kv against plain: " + '; '.join(parts))
+    return out
+
+
+def r25_kv(r):
+    runs = [x for x in r.get('runs', []) if x.get('proto') == 'r25' and x.get('phase') == 'on']
+    out = ['kv factor (R64), per model: kv minus plain; paired = within block x gate rule x arm (one kv, one plain run), mean '
+           '± SE over pairs; Welch = all kv runs against all plain runs; medians kv / plain (*device*):']
+    for m in r21_models(r):
+        rs = [x for x in runs if x.get('model') == m]
+        cells = {}
+        for x in rs:
+            cells.setdefault((x.get('group'), x.get('gate_rule'), x.get('arm')), {True: [], False: []})[kv_on(x)].append(x)
+        pairs = [(c[True][0], c[False][0]) for c in cells.values() if len(c[True]) == 1 and len(c[False]) == 1]
+        odd = [f"{'/'.join(map(str, k))}({len(c[True])} kv, {len(c[False])} plain)" for k, c in cells.items()
+               if not (len(c[True]) == 1 and len(c[False]) == 1)]
+        kv, pl = [x for x in rs if kv_on(x)], [x for x in rs if not kv_on(x)]
+        out.append(f"  {m}: {len(kv)} kv and {len(pl)} plain scored runs, {len(pairs)} pairs; unpaired cells "
+                   f"{','.join(odd) or 'none'}")
+        for name, f, d in KV_METRICS:
+            p = [None if f(a) is None or f(b) is None else f(a) - f(b) for a, b in pairs]
+            out.append(f"    {name}: paired {fmt_se(p, d)} | Welch {welch([f(x) for x in kv], [f(x) for x in pl], d)} | "
+                       f"median {fmt(med(f(x) for x in kv), d)} / {fmt(med(f(x) for x in pl), d)}")
+        fo, fp = med(pre_prompt_majflt(x) for x in kv), med(pre_prompt_majflt(x) for x in pl)
+        a, b = [x.get('ttft_ms') for x in kv if x.get('ttft_ms') is not None], [x.get('ttft_ms') for x in pl if x.get('ttft_ms') is not None]
+        d, se = diff(b, a)  # mean(kv) - mean(plain), Welch SE
+        faults = fo is not None and fp is not None and fo < fp / 2
+        ttft = 'n/a' if d is None else 'lower > 2 SE' if d < -2 * se else 'HIGHER > 2 SE (kill)' if d > 2 * se else 'within 2 SE'
+        out.append(f"    R64 §4 readout (texts and void in the checks above): faults median kv < half of plain: "
+                   f"{'yes' if faults else 'no'}; TTFT {'-' if d is None else f'{d:+.1f} ± {se:.1f} ms'}: {ttft} -> "
+                   f"{'pass' if faults and d is not None and d < -2 * se else 'kill' if d is not None and d > 2 * se else 'unresolved'}")
+        for g in ('r16', 'plateau'):
+            q = [(a, b) for a, b in pairs if a.get('gate_rule') == g]
+            out.append(f"    gate {g}: pairs {len(q)} | TTFT ms {fmt_se([a['ttft_ms'] - b['ttft_ms'] for a, b in q if a.get('ttft_ms') is not None and b.get('ttft_ms') is not None], 1)} "
+                       f"| pre-prompt majflt {fmt_se([None if pre_prompt_majflt(a) is None or pre_prompt_majflt(b) is None else pre_prompt_majflt(a) - pre_prompt_majflt(b) for a, b in q], 0)}")
+    return out
+
+
+def r25_tables(r):
+    if not any(x.get('proto') == 'r25' for x in r.get('runs', [])):
+        return []
+    return (r25_kv(r) + ["R63's gate and num comparisons, kv on and off pooled:"] + r24_tables(r, 'r25', label=' (kv pooled)')
+            + ["R63's gate and num comparisons, plain runs only:"]
+            + r24_tables(r, 'r25', sel=lambda x: not kv_on(x), label=' (plain only)', extras=False))
 
 
 def main(argv=None):
@@ -1136,7 +1267,8 @@ def main(argv=None):
     r16 = load(o.r16) if r.get('kit') == 'r20' and o.r16 and os.path.exists(o.r16) else None
     parts = (r21_checks(r), r21_tables(r)) if r.get('kit') == 'r21' else (r22_checks(r), r22_tables(r, o.wait_s)) \
         if r.get('kit') == 'r22' else (r23_checks(r), r23_tables(r)) if r.get('kit') == 'r23' \
-        else (r24_checks(r), r24_tables(r)) if r.get('kit') == 'r24' else (
+        else (r24_checks(r), r24_tables(r)) if r.get('kit') == 'r24' \
+        else (r25_checks(r), r25_tables(r)) if r.get('kit') == 'r25' else (
         checks(r, o.prompt), identity(r), groups(r, o.min_mhz, o.fault_run), ab(r, o.min_mhz, o.sigma),
         r16_compare(r, r16), waits(r), warm(r))
     for part in parts:
@@ -1447,6 +1579,62 @@ def selftest():
                for l in t), t
     assert any(l.startswith('runs with a charger at their start or end: 1') for l in t), t
     assert any(l.startswith('hold cost per gated run') for l in t), t
+    # r25: r24 plus kv alternated per scored run (odd blocks: on off on off, off on off on; even blocks the reverse).
+    # kv: TTFT -150 ms, pre-prompt majors 40,000 -> 500, pswpin to first chunk 50,000 -> 1,000, VmSwap at end 300 -> 100 MB.
+    kvb = {'granite': [('kv', 17821696), ('rs', 58056704)], 'olmoe': [('kv', 285208576)]}
+    def row25(m, g, arm, i, rule, kv=False, phase='on', first=False):
+        x = row24(m, g, arm, i, rule, phase, first)
+        x.update({'proto': 'r25', 'id': x['id'] + ('_kv' if kv else ''), 'ttft_ms': 5000.0 - (150 if kv else 0) + 10 * (i % 4),
+                  'majflt': (500 if kv else 40000) + 150, 'mem_after': f"anon=400MB swap={100 if kv else 300}MB",
+                  'vmstat_first': {'pswpin': 1000 if kv else 50000, 'pgmajfault': 1200},
+                  'vmstat_after': {'pswpin': 1100 if kv else 50100, 'pgmajfault': 1400}})
+        if kv:
+            x['env'] = {**x['env_set'], 'VOLLIE_KV_DONTNEED': '1'}
+            x['env_set'] = x['env']
+        x['c2'] = x['c2'] + [f"c2-kvclear run={x['run_tag']} kind={k} on={int(kv)} bytes={n + 4096} released={n if kv else 0} "
+                             f"why={'ok' if kv else 'off'} us={900 if kv else 30000}" for k, n in kvb[m]]
+        return x
+    r25 = dict(r24, kit='r25', runs=[], kv_rule='scored runs alternate VOLLIE_KV_DONTNEED=1')
+    for b, m in enumerate(['granite', 'olmoe', 'olmoe', 'granite'], 1):
+        r25['runs'] += [row25(m, f'b{b}', 'off', 90 + k, 'none', False, 'warmup', k == 0) for k in range(2)]
+        for qi, rule in enumerate(['plateau', 'r16'] if b % 2 else ['r16', 'plateau']):
+            for j, arm in enumerate(['off', 'num', 'num', 'off']):
+                r25['runs'].append(row25(m, f'b{b}', arm, 4 * qi + j, rule, (j + qi + (0 if b % 2 else 1)) % 2 == 0))
+        r25['runs'] += [row25(m, f'b{b}', a, 8 + k, 'r16', False, 'prof') for k, a in enumerate(['off', 'num'] if b % 2 else ['num', 'off'])]
+    r25['specs'] = list({x['id']: {'id': x['id'], 'gate_rule': x['gate_rule']} for x in r25['runs']}.values())
+    assert [kv_on(x) for x in r25['runs'][2:10]] == [True, False, True, False, False, True, False, True]
+    assert pre_prompt_majflt(r25['runs'][2]) == 500 and released_mb(r25['runs'][2]) == (17821696 + 58056704) / 1e6
+    assert dec_ms_tok(r25['runs'][2]) == 1500 / 31
+    c = r25_checks(r25)
+    assert any(l.startswith('r24: gate rule != spec in none') for l in c), c
+    assert any(l.startswith('r25 kv factor: id suffix != env in none; kv outside scored runs none; rows without a c2-kvclear '
+                            'line none') for l in c), c
+    assert any(l.endswith('-> ok') and l.startswith('r25 VOID check') for l in c), c
+    assert any(l.startswith('olmoe (r25) texts kv against plain:') and l.count(': same') == 2 for l in c), c
+    t = r25_tables(r25)
+    i = t.index(next(l for l in t if l.startswith('  olmoe: 8 kv and 8 plain scored runs, 8 pairs; unpaired cells none')))
+    assert t[i + 1].startswith('    pre-prompt majflt: paired -39500 ± 0 (n 8)') and 'median 500 / 40000' in t[i + 1], t[i + 1]
+    assert t[i + 2].startswith('    pswpin start->first chunk: paired -49000 ± 0 (n 8)'), t[i + 2]
+    assert t[i + 3].startswith('    TTFT ms: paired -150.0 ± ') and 'Welch -150.0 ± ' in t[i + 3], t[i + 3]
+    assert t[i + 5].startswith('    tok/s: paired +0.00 ± 0.00 (n 8)'), t[i + 5]
+    assert t[i + 6].startswith('    VmSwap at end MB: paired -200 ± 0 (n 8)'), t[i + 6]
+    assert t[i + 7].startswith('    released MB: paired +285.2 ± 0.0 (n 8)'), t[i + 7]
+    assert t[i + 8].endswith('-> pass') and 'faults median kv < half of plain: yes' in t[i + 8], t[i + 8]
+    assert t[i + 9].startswith('    gate r16: pairs 4 | TTFT ms -140.0 ± 11.5 (n 4) | pre-prompt majflt -39500'), t[i + 9]
+    pooled = t[t.index("R63's gate and num comparisons, kv on and off pooled:"):t.index("R63's gate and num comparisons, plain runs only:")]
+    plain = t[t.index("R63's gate and num comparisons, plain runs only:"):]
+    assert any(l.startswith('  olmoe: all +2.00 ± 0.00 (n 4) | r16 +2.00') for l in pooled), pooled
+    assert any(l.startswith('  olmoe: all +2.00 ± 0.00 (n 4) | r16 +2.00') for l in plain), plain
+    assert any(l.startswith('  granite: tok/s +1.00 ± 0.00 (n 2)') for l in plain), plain
+    assert any(l.startswith('  granite off plateau: n 2 (flagged 0)') for l in plain), plain
+    assert any(l.startswith('hold cost per gated run') for l in pooled) and not any(l.startswith('hold cost') for l in plain)
+    r25['runs'][3]['c2'][-1] = r25['runs'][3]['c2'][-1].replace('released=0', 'released=4096')  # a plain run releases
+    r25['runs'][2]['c2'] = [l.replace('released=', 'released=0 x=') for l in r25['runs'][2]['c2']]  # a kv run releases 0
+    c = r25_checks(r25)
+    v = next(l for l in c if l.startswith('r25 VOID check'))
+    assert v.endswith('-> VOID') and 'kv run: granite_off_pl.0;' in v and 'without kv: granite_num_pl.1 ' in v, v
+    r25['runs'][2]['text'] = 'other'
+    assert any(l.startswith('granite (r25) texts') and 'off kv' in l and 'DIFFER (kill rule)' in l for l in r25_checks(r25))
     # the plateau gate, as the app's unit test (R62's pos 4 and 6 series, every 5 s)
     p4 = [0.873, 0.873, 0.873, 0.873, 0.802, 0.788, 0.755, 0.741, 0.721, 0.735, 0.725, 0.735, 0.748, 0.764, 0.77]
     p6 = [0.725, 0.767, 0.789, 0.81, 0.833, 0.833, 0.808, 0.778, 0.753, 0.741, 0.717, 0.737, 0.753, 0.776, 0.79]
