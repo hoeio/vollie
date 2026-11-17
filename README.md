@@ -10,7 +10,7 @@ log of every measurement. The work is organised as **campaigns**, each with its 
 | # | goal | status |
 |---|---|---|
 | 1 | 20 tok/s on a Snapdragon 888 phone, one frozen Granite-4.0-H-Tiny file, perplexity budget +2 % | **done**: median **20.51 tok/s** (*device*, R49). Frozen at commit `686f17d`. Described on this page |
-| 2 | 25 tok/s on the same phone, a 7B-class model (to be chosen), budget +5 % | **planning**; nothing measured yet. [campaigns/02-25toks-5pct/](campaigns/02-25toks-5pct/CAMPAIGN.md) |
+| 2 | 25 tok/s on the same phone, a 7B-class model (to be chosen), budget +5 % | **in progress**: device rounds R52 onward, 25 tok/s **not reached** so far; best median 19.70 tok/s on OLMoE-1B-7B (*device*, R58). State and numbers: [STATUS.md](campaigns/02-25toks-5pct/STATUS.md), goal: [campaigns/02-25toks-5pct/](campaigns/02-25toks-5pct/CAMPAIGN.md) |
 
 **[Vollie](https://play.google.com/store/apps/details?id=com.insaneutils.vollie) is the Android app that runs
 this work, so you can reproduce the result on your own phone.** The app's source code is not in this repository.
@@ -159,12 +159,19 @@ cites as `lab/...` are not in this repository.
 
 ## Honest limits
 
-- **Cold start.** The first run after memory pressure printed 12.3-18.5, not 20 (R49). The loss is page
-  residency at the start of a run. Fixing it in the runtime is open.
+- **Cold start, and run-to-run variability.** The first run after memory pressure printed 12.3-18.5, not 20
+  (R49). The loss is page residency at the start of a run. Fixing it in the runtime is open. That range
+  understates the variability. On 2026-11-14 (R57, same-day control) campaign 1's own app and kit printed
+  **11.46 tok/s** on Granite (OLMoE: 11.25), against 20.51 on 2026-11-08. The phone's page cache was
+  1.8-2.3 GB that day against 2.2-3.0 GB on the 20.51 day (*device*). The 20.51 is therefore a result under
+  a warm, roomy page cache and was not reproduced on the later day; read it as "what the runtime reaches
+  when the experts stay resident", not as a number that holds in every phone state.
 - **One device, one model.** Everything here is one Snapdragon 888 phone and one Granite file. The goal
   includes that the method generalizes to other models and devices; that is not shown yet. Campaign 2
-  ([campaigns/02-25toks-5pct/](campaigns/02-25toks-5pct/CAMPAIGN.md)) is the next step toward it and is still in
-  planning, with no measurements.
+  ([campaigns/02-25toks-5pct/](campaigns/02-25toks-5pct/CAMPAIGN.md)) is the next step toward it. It is in
+  progress with pre-registered device rounds (second model OLMoE-1B-7B, stock non-abliterated Granite); best
+  medians so far are 19.70 tok/s on OLMoE (21.03 when the file was resident before the run) and 17.19 on
+  Granite (*device*, R58). Its goal of 25 tok/s is not reached.
 - **The metric.** The printed number is llamadart's `decodeTokensPerSec`. Its time includes one final
   decode whose logits are never used, ≈ 3 % of the official number (*estimated*, R48). It was left in, so
   the benchmark's definition did not change.
@@ -173,6 +180,15 @@ cites as `lab/...` are not in this repository.
 - **Build versions.** The 20.51 was measured on research build 2.2.21+44. The Google Play build carries the
   same configuration: the production build 2.3.0+45 has the same native code (see the paragraph after R49 in
   [reports/03_final.md](reports/03_final.md)).
+
+## How AI is used in this project
+
+The owner sets the goals, decides, and runs everything that needs hardware: the phone benchmarks and the
+full-set perplexity runs on a laptop. AI sessions (Claude Code, with four role-based subagents named clyde,
+bonnie, tom and annie in [CLAUDE.md](CLAUDE.md)) write patch and kernel code, scripts, analysis, the R-log and the
+commits. 13 of the 207 commits on `main` (as of 2026-11-17) are authored as `Claude <noreply@anthropic.com>`; the rest carry the owner's name. Commits made in AI sessions that use the owner's git identity are not separately marked, so this count is a lower bound. AI cannot
+measure speed, so no *device* number comes from an AI session, and predictions are written before runs and
+scored as written. Questions go to woobin3069@gmail.com.
 
 ## License
 

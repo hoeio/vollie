@@ -12,9 +12,11 @@ Vollie runs a sparse (mixture-of-experts) LLM on a 2021 phone CPU (Samsung Galax
 
 - **Campaign 1 (finished, frozen at commit `686f17d`):** 20 tok/s on Granite-4.0-H-Tiny, quality budget +2 %.
   Result: median 20.51 tok/s (*device*, R49). Do not edit its files; the R-log links to them by path.
-- **Campaign 2 (current, planning):** 25 tok/s on a 7B-class model, file not changed, quality budget +5 % over the
+- **Campaign 2 (current, in progress):** 25 tok/s on a 7B-class model, file not changed, quality budget +5 % over the
   served file's stock perplexity. Goal, terms and open decisions: [campaigns/02-25toks-5pct/CAMPAIGN.md](campaigns/02-25toks-5pct/CAMPAIGN.md).
-  Nothing in campaign 2 has been measured on the phone yet; the first host results are R50 (2026-11-13).
+  Device rounds exist (R52 onward; first host results R50, 2026-11-13); the 25 tok/s goal is not reached. The
+  authoritative state is [STATUS.md](campaigns/02-25toks-5pct/STATUS.md).
+  *Correction 2026-11-17: this paragraph used to say "planning, nothing measured".*
 
 ## Reading order (about 30 minutes)
 
@@ -97,7 +99,8 @@ The work is done by four subagents defined in `.claude/agents/`. The main sessio
 - Do not move or rename files of campaign 1. Add new files.
 - `patches/llama.cpp/0001-cpu-runtime.patch` (5,699 lines, base `620d2225c`) is not edited; new work goes into a
   new series (see CAMPAIGN.md).
-- Do not put the owner's e-mail address or private paths into tracked files.
+- Private paths do not go into tracked files. The owner's developer e-mail (woobin3069@gmail.com) may appear in
+  tracked files (owner, 2026-11-17).
 
 ## Environment notes (observed 2026-11-12; they may differ in your session)
 

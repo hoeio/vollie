@@ -1,7 +1,7 @@
 # Campaign 2 status and hand-off
 
 **Read this first, update it last.** Every session appends a line to the session log below and refreshes the
-sections above it. Last updated: 2026-11-15 (session 4; R60 scored).
+sections above it. Last updated: 2026-11-17 (session 5, docs corrections; R65 still pre-registered).
 
 ## State in one paragraph
 
@@ -324,3 +324,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-17 | 4 (continued) | R64 scored from kit r25 (raw report stored): kv factor VOID, every kv clear declined by the maps check (`why=map`, released 0; tagged heap pointers on arm64, inferred); texts equal kv on/off. R63's rules applied: gate exercised, plateau not shown on either model (wait -43 s hit); Granite num +2.68 +/- 0.71 pass; OLMoE num +2.02 +/- 1.09 not shown, third round, MASS=900 parked by R63 §4; vmstat unreadable, swap reading not scorable; levels not scored (cap 2035). Pre-prompt faults were small this day (plain medians 6 and 26). Environment: macOS denied this session access to ~/Documents after midnight; work continued in a fresh clone outside Documents; the Documents checkout needs `git pull` and its stray untracked `reports/device/r25_2026-11-16.json` (campaign 1 folder, copied by mistake) should be deleted. Next: untag the address in 0008, kit r26 (needs the lab build tree in Documents). |
 | 2026-11-17 | 4 (continued) | Lead: patch 0009 (untag the buffer address in 0008; `tag=` in the kit line) and `tools/c2_kvclear_tag_test.cpp` (tagged-pointer test passes in a Linux aarch64 container, host). Kit r26 not built: the app copy and build trees are in ~/Documents, which this session cannot read. |
 | 2026-11-17 | 4 (continued) | Owner's remote shell is also denied ~/Documents (mv failed). Owner chose kit r25b: the r25 APK with libllama.so rebuilt from 0001-0009 (CPU module and app code r25's byte for byte; same debug key), since the app source is in ~/Documents. R65 pre-registered (OLMoE num runs recorded, not scored, by owner's decision). Built outside Documents in ~/vollie-llama, ~/vb, ~/vollie-r25. |
+| 2026-11-17 | 5 | Docs only (no measurement): README, CLAUDE.md, campaigns/README.md and CAMPAIGN.md no longer say campaign 2 is "planning, nothing measured"; README Honest limits now carry the R57 same-day control (11.46 vs 20.51, page cache) and a short "How AI is used" section; the developer e-mail may be public (owner, 2026-11-17). No numbers changed. |

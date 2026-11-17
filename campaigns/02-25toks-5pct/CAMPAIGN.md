@@ -1,6 +1,8 @@
 # Campaign 2: 25 tok/s inside +5 % perplexity
 
-**Status: planning. Nothing in this campaign has been measured.** Every number below is *estimated* or comes
+**Correction 2026-11-17: this campaign is in progress, with device rounds R52 onward; [STATUS.md](STATUS.md) is authoritative. The line below is the original planning-time status and is kept as history.**
+
+**Status (at planning time): planning. Nothing in this campaign has been measured.** Every number below is *estimated* or comes
 from campaign 1, and is labelled. Claim rule and budget are **drafts** until the first `prereg-R50` tag exists.
 
 ## The question
