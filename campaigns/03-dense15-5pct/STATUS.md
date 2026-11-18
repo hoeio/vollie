@@ -15,7 +15,7 @@ R68's reports, the lead scores them and closes campaign 2.
 Collected here; the owner asked not to be asked until the R68 JSON arrives.
 
 - Gemma 4 E4B as a subject.
-- RWKV-7 G1 as a subject.
+- RWKV-7 G1 as a subject (memo-02 host screen: 90.5 % exact zeros, *host*, so the question is worth asking).
 - Calibration-derived tables as runtime (the lead's provisional answer: yes).
 - Does Google's QAT file of Gemma 4 E4B count as stock weights?
 
@@ -26,3 +26,4 @@ Collected here; the owner asked not to be asked until the R68 JSON arrives.
 | 2026-11-18 | 4 (continued) | Owner sets campaign 3: dense 7B-class, 15 tok/s (first 20, lowered after the lead's arithmetic), file not changed but used freely (dense as MoE allowed), served quantisation free inside the budget, +5 % budget, F16 × 1.20 ceiling, campaigns 1-2 as the base. Lead's model definition accepted. Planning files created. |
 | 2026-11-18 | 4 (continued) | memo-01 verdict: 15 tok/s on a 7.1 B+ dense body is out of reach with every priced method, P < 0.05 (*estimated*). Best priced combination is 5 to 9 tok/s (*estimated*). The Gemma 4 E4B opening is 7.5 to 14 tok/s (*estimated*). The goal stays at 15 and is not raised. Research continues. |
 | 2026-11-18 | 4 (continued) | memo-03 — no path reaches 15. Strict dense best about 12 tok/s, E4B 12.7 to 13.8 at its ceilings (*estimated*). The GPU and Hexagon paths are closed in their stock form. CPU+GPU split and multi-stream GEMV are ranked first. Device probe set P1, P2, X1, X2 is planned for the next phone window. The H6 kill line depends on the measured read rate. |
+| 2026-11-19 | 4 (continued) | memo-02 host screens (*host*): column input sparsity is open on both models (Mistral 40 %, Qwen2.5 35 % inside the margin at both settings). The exact column kernel costs 2.6x sdot per touched weight on the host, so the phone's read rate decides. Sublayer skip and per-token FFN skip are closed on both. RWKV-7 has 90.5 % exact zeros, so the owner question is worth asking. Q4_0 is within 1.02 to 1.04 of Q8_0. The probe kit design was approved by the lead and is being built. The lead's block-granular sparsity idea (H3b/H6b) is handed to Tom. |
