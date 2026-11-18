@@ -36,6 +36,8 @@ open and is finished first (R68).
 
 *Added 2026-11-19: Owner, 2026-11-19: "Only unquantized QAT checkpoints count as stock weights." Lead's reading: a publisher's unquantized QAT checkpoint (for example Google's Gemma QAT release in BF16/F16) is stock weights for campaign 3; pre-quantized QAT files (such as a publisher's Q4_0 GGUF) are not. The served file is quantized by us from the unquantized QAT checkpoint and frozen as usual; stock PPL and F16 PPL are measured on that checkpoint. Whether Gemma 4 E4B counts as "dense 7B-class" is still open with the owner.*
 
+*Added 2026-11-19: Gemma 4 E4B is not a subject (owner, 2026-11-19). Reason, in the owner's words: "it is hard to see it as 'dense 7B-class'. In compute and intelligence it is about a 4.5B dense model; in storage and memory, about an 8B model." It sits outside the 6.0 to 8.5 billion definition above on the quantity that matters for speed, so the question left open in the previous note is closed.*
+
 ## Arithmetic (*estimated*; campaign 2 `feasibility.md` §1)
 
 - Decode reads every weight once per token. A 7.5 B model at Q4_0 is about 4.0 GB per token; at about 2.5 bits per
