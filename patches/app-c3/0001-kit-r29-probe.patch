@@ -1,0 +1,252 @@
+diff --git a/lib/device.dart b/lib/device.dart
+index fb91598..be9f808 100644
+--- a/lib/device.dart
++++ b/lib/device.dart
+@@ -484,6 +484,32 @@ class DeviceProfile {
+     }
+   }
+ 
++  /// Kit r29 (c3 0001-probe): runs one probe block of the runtime (llama_vollie_probe; off unless VOLLIE_PROBE is set) and
++  /// returns rc (bytes, -1 = off, -2 = unknown block), the c3-probe lines, and the call's milliseconds. Blocks for
++  /// seconds to minutes: call it from an isolate.
++  static Map<String, Object?> c3Probe(String block, String dir) {
++    final t0 = DateTime.now();
++    const cap = 1 << 18;
++    Pointer<Uint8> b = nullptr, d = nullptr, out = nullptr;
++    try {
++      final f = DynamicLibrary.open('libllama.so').lookupFunction<Int32 Function(Pointer<Uint8>, Pointer<Uint8>, Pointer<Uint8>, IntPtr),
++          int Function(Pointer<Uint8>, Pointer<Uint8>, Pointer<Uint8>, int)>('llama_vollie_probe');
++      b = _cString(block);
++      d = _cString(dir);
++      out = _malloc!(cap);
++      out.value = 0;
++      final rc = f(b, d, out, cap);
++      final text = rc > 0 ? String.fromCharCodes(out.asTypedList(rc)) : '';
++      return {'rc': rc, 'lines': [for (final l in text.split('\n')) if (l.isNotEmpty) l], 'native_ms': DateTime.now().difference(t0).inMilliseconds};
++    } catch (e) {
++      return {'error': '$e', 'native_ms': DateTime.now().difference(t0).inMilliseconds};
++    } finally {
++      if (b != nullptr) _free!(b);
++      if (d != nullptr) _free!(d);
++      if (out != nullptr) _free!(out);
++    }
++  }
++
+   /// Kit r28: the touch helper's last pass (it blocks until the pass is done), then the helper ends. pages = pages the
+   /// last pass touched, -1 = no helper ran.
+   static Map<String, Object?> touchEnd() {
+diff --git a/lib/research.dart b/lib/research.dart
+index 4cf7d2e..bd2ad15 100644
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -46,8 +46,8 @@ typedef RunSpec = ({String id, String model, String proto, String group, String
+ /// power saving and thermal status), T-D's smaps match by inode, the session label (deep-sleeping list) and the power-save
+ /// state read at the start, and T-A's cap probe ([capProbe], no model).
+ extension Research on Assistant {
+-  static const kit = 'r28';
+-  static const app = '1.28.0+28';
++  static const kit = 'r29';
++  static const app = '1.29.0+29';
+ 
+   /// r28: the owner's label for the session, chosen on the start screen before the kit can start (memo-31 §7: session A
+   /// with Samsung's deep-sleeping list, session B without). Recorded in the report and in every cap probe.
+@@ -776,15 +776,15 @@ extension Research on Assistant {
+ 
+   /// Copies the last kit report (plain JSON) into the phone's Downloads folder (MediaStore; Android 10+). Returns the
+   /// name it was saved under, or throws.
+-  Future<String> saveResearchToDownloads({bool probe = false}) async {
+-    final r = _prefs.getString(probe ? Research.probeKey : Assistant._researchKey);
+-    final dir = _kitDir;
++  Future<String> saveResearchToDownloads({bool probe = false, bool c3 = false}) async {
++    final r = _prefs.getString(c3 ? Research.c3ProbeKey : probe ? Research.probeKey : Assistant._researchKey);
++    final dir = _kitDir ?? (c3 ? Directory.systemTemp.path : null);
+     if (r == null || dir == null) throw StateError('no report');
+     String started = 'report';
+     try {
+       started = ((jsonDecode(r) as Map)['started'] as String).replaceAll(':', '').substring(0, 15);
+     } catch (_) {}
+-    final name = '${probe ? 'vollie-capprobe' : 'vollie-research'}-${Research.kit}-$started.json';
++    final name = '${c3 ? 'vollie-c3probe' : probe ? 'vollie-capprobe' : 'vollie-research'}-${Research.kit}-$started.json';
+     final tmp = File('$dir/$name');
+     tmp.writeAsStringSync(r);
+     try {
+@@ -881,6 +881,105 @@ extension Research on Assistant {
+     }
+   }
+ 
++  /// Kit r29 (campaign 3 memo-02 §6, patches/llama.cpp-c3/0001-probe): the c3 device probe, no model run. Blocks in the
++  /// order P2 (dense read rate, stock q4_0 gemv, hot sdot ceiling, column and skip-list kernels at 60 % kept), X1
++  /// (multi-stream), X2 (GPU read rate, CPU + GPU together), P1 (resident capacity; scratch file in the internal kit
++  /// folder, deleted at the end). Before each block: the r16 gate (headroom below [Assistant.coolHeadroom], read every
++  /// 5 s, at most 90 s). The model is unloaded first. VOLLIE_PROBE is set only around the native calls.
++  static const c3ProbeKey = 'c3_probe_report';
++  static const c3Blocks = ['p2', 'x1', 'x2', 'p1'];
++  String? get c3ProbeReport => _prefs.getString(Research.c3ProbeKey);
++
++  Future<void> c3Probe() async {
++    if (isBusy || optimizing != null || researching) return;
++    if (Research.deepSleep.value == null) {
++      kitNote = 'c3 probe: choose the session label (deep-sleeping list on or off) first.';
++      _kitChanged();
++      return;
++    }
++    if ((await DeviceProfile.battery()).plugged) {
++      kitNote = 'c3 probe: unplug the charger first.';
++      _kitChanged();
++      return;
++    }
++    researching = true;
++    kitNote = null;
++    _stopTest = false;
++    await DeviceProfile.keepScreenOn(true);
++    final started = DateTime.now();
++    final unloaded = _loadedPath?.split('/').last;
++    if (_loadedPath != null) await unload();
++    const ch = MethodChannel('vollie/downloads');
++    final st = Map<String, Object?>.from(await ch.invokeMethod<Map>('kitStorage') ?? const {});
++    final dir = '${st['internal']}/kit-models';
++    try {
++      Directory(dir).createSync(recursive: true);
++    } catch (_) {}
++    final p0 = await DeviceProfile.powerState();
++    final label = Research.powerLabel(p0);
++    final b0 = await DeviceProfile.battery();
++    final blocks = <Map<String, Object?>>[];
++    try {
++      for (final blk in Research.c3Blocks) {
++        if (_stopTest) break;
++        final g0 = DateTime.now();
++        final series = <List<num?>>[];
++        var timeout = true;
++        while (!_stopTest) {
++          final h = (await DeviceProfile.thermal()).headroom;
++          final ms = DateTime.now().difference(g0).inMilliseconds;
++          series.add([ms, h == null ? null : (h * 1000).round() / 1000]);
++          if (h != null && h < Assistant.coolHeadroom) {
++            timeout = false;
++            break;
++          }
++          if (ms >= Research.gateWait.inMilliseconds) break;
++          _researchStatus('${label == 'power-save on' ? 'POWER SAVING IS ON · ' : ''}c3 probe · $blk · cooling: headroom '
++              '${h == null ? '?' : (h * 100).round()}% (gate ${(Assistant.coolHeadroom * 100).round()}%), ${ms ~/ 1000} s');
++          await Future<void>.delayed(Research.gatePoll);
++        }
++        _researchStatus('c3 probe · $blk running (do not touch the phone)');
++        final pw = await DeviceProfile.powerState();
++        final bt = await DeviceProfile.battery();
++        setNativeEnv('VOLLIE_PROBE', '1');
++        final t0 = DateTime.now();
++        final r = await Isolate.run(() => DeviceProfile.c3Probe(blk, dir));
++        unsetNativeEnv('VOLLIE_PROBE');
++        blocks.add({
++          'block': blk, 'gate': {'below': Assistant.coolHeadroom, 'timeout': timeout, 'series': series},
++          'power_before': pw, 'battery_c_before': bt.tempC, 'plugged_before': bt.plugged,
++          'ms': DateTime.now().difference(t0).inMilliseconds, 'battery_c_after': (await DeviceProfile.battery()).tempC, ...r,
++        });
++      }
++    } finally {
++      unsetNativeEnv('VOLLIE_PROBE');
++      final report = <String, Object?>{
++        'kind': 'c3_probe', 'kit': Research.kit, 'app': Research.app, 'started': started.toIso8601String(),
++        'finished': DateTime.now().toIso8601String(), 'stopped_early': _stopTest,
++        'session_label': Research.sessionLabel, 'deep_sleeping_list': Research.deepSleep.value,
++        'power_start': p0, 'label': label, 'power_end': await DeviceProfile.powerState(),
++        'battery_c_start': b0.tempC, 'plugged_start': b0.plugged, 'model_unloaded': unloaded,
++        'kernel_release': DeviceProfile.unameRelease(), 'probe_dir': dir,
++        'free_start': st['internalFree'],
++        'design': 'campaign 3 memo-02 §6 with the lead\'s six fixes: blocks ${Research.c3Blocks.join(' ')}; r16 gate before '
++            'each block; each P2 / X1 / X2 cell 1 s warm-up + 2 s measured; P1 steps 2.7 3.0 3.4 4.2 4.6 GB, 20 passes or '
++            '45 s per arm, PROT_READ then PROT_EXEC',
++        'blocks': blocks,
++      };
++      final js = jsonEncode(report);
++      await _prefs.setString(Research.c3ProbeKey, js);
++      try {
++        File('$dir/c3probe-${Research.kit}-${started.toIso8601String().replaceAll(':', '').substring(0, 15)}.json')
++            .writeAsStringSync(js);
++      } catch (_) {}
++      await DeviceProfile.keepScreenOn(false);
++      researching = false;
++      optimizing = null;
++      kitNote = 'c3 probe done ($label, ${Research.sessionLabel}). Save it to Downloads and send the file.';
++      _kitChanged();
++    }
++  }
++
+   Future<void> researchRun() async {
+     if (_loadedPath == null || isBusy || optimizing != null || researching) return;
+     final dir = _kitDir!;
+diff --git a/lib/settings_screen.dart b/lib/settings_screen.dart
+index caeb39a..8a4dd75 100644
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -411,7 +411,7 @@ class _PerformanceCard extends StatelessWidget {
+           builder: (_, v, __) => OutlinedButton.icon(
+             onPressed: busy || optimizing || v == null ? null : assistant.capProbe,
+             icon: const Icon(Icons.speed_rounded),
+-            label: const Text('Run cap probe r28 (6 min, no model)'),
++            label: const Text('Run cap probe r29 (6 min, no model)'),
+           ),
+         ),
+       if (!assistant.researching && assistant.capProbeReport != null)
+@@ -428,6 +428,29 @@ class _PerformanceCard extends StatelessWidget {
+           icon: const Icon(Icons.save_alt_rounded),
+           label: const Text('Save cap probe to Downloads'),
+         ),
++      if (!assistant.researching)
++        ValueListenableBuilder<bool?>(
++          valueListenable: Research.deepSleep,
++          builder: (_, v, __) => OutlinedButton.icon(
++            onPressed: busy || optimizing || v == null ? null : assistant.c3Probe,
++            icon: const Icon(Icons.memory_rounded),
++            label: const Text('Run c3 probe r29 (5 to 20 min, no model)'),
++          ),
++        ),
++      if (!assistant.researching && assistant.c3ProbeReport != null)
++        TextButton.icon(
++          onPressed: () async {
++            final m = ScaffoldMessenger.of(context);
++            try {
++              final where = await assistant.saveResearchToDownloads(c3: true);
++              m.showSnackBar(SnackBar(content: Text('Saved to $where. Send that file.')));
++            } catch (e) {
++              m.showSnackBar(SnackBar(content: Text('Could not save the file ($e).')));
++            }
++          },
++          icon: const Icon(Icons.save_alt_rounded),
++          label: const Text('Save c3 probe to Downloads'),
++        ),
+       // Research kit r27: the models of Research.kitModels (memo-30); the kit's own files are fetched here first.
+       if (!assistant.kitModelReady)
+         assistant.researching
+@@ -439,7 +462,7 @@ class _PerformanceCard extends StatelessWidget {
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.downloadKitModels,
+                 icon: const Icon(Icons.download_rounded),
+-                label: Text('Download kit r28 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
++                label: Text('Download kit r29 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
+                     '(${(assistant.kitMissingBytes / 1e9).toStringAsFixed(1)} GB, Wi-Fi)'),
+               ),
+       if (assistant.kitModelReady)
+@@ -454,7 +477,7 @@ class _PerformanceCard extends StatelessWidget {
+                 builder: (_, v, __) => OutlinedButton.icon(
+                   onPressed: busy || optimizing || v == null ? null : assistant.researchRun,
+                   icon: const Icon(Icons.science_rounded),
+-                  label: Text(v == null ? 'Run research kit r28: choose the session label first' : 'Run research kit r28 (~50-110 min)'),
++                  label: Text(v == null ? 'Run research kit r29: choose the session label first' : 'Run research kit r29 (R68 run list, ~50-110 min)'),
+                 ),
+               ),
+       if (assistant.kitModelReady && !assistant.researching)
+diff --git a/pubspec.yaml b/pubspec.yaml
+index f148080..f306377 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@ name: vollie
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.28.0+28
++version: 1.29.0+29
+ 
+ environment:
+   sdk: ^3.10.7

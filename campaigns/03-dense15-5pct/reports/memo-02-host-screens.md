@@ -151,7 +151,7 @@ three decimals (the rule is per element). Both settings are inside the margin at
   (memo-01 H3) was Mistral 35 to 40 %, Qwen2.5 about 35 %: met.
 - **What generalised (both models):** the `gate`/`up` input is the sensitive group and the `down` input the
   tolerant one (50 % on `down` alone costs about 1 %); attention inputs take 40 % for about 1 %. Keeping the first
-  1 or 8 tokens dense does **not** help on either model at 16 chunks (it is worse in 7 of 8 cells); the position
+  1 or 8 tokens dense does **not** help on either model at 16 chunks (it is worse in 7 of 8 cells [*correction 2026-11-19 (Ebony): 12 of 16 cells, N = 1 and 8 at four levels on two models; worse in every cell up to 40 %, better only at 50 %*]); the position
   rule is not needed.
 - **What did not generalise:** the level. Qwen2.5 is about 5 points less tolerant than Mistral. The 16-chunk grid
   also overstated Qwen2.5's cost at 40 % (+7.2 % on 16 chunks against +4.5 % on 40), so 16 chunks rank cells but
@@ -278,7 +278,7 @@ python3 -I tools/c3_colskip.py calib lab/llama.cpp-c3/build/bin <rwkv7 gguf> lab
 - Not measured: the union of nonzero channels over 32 decode tokens (H5's question, for residency), RWKV-7's stock
   PPL, and the same count on a Q8_0 file.
 
-## 6. Device probe kit design (P1, P2, X1, X2): design only, not built
+## 6. Device probe kit design (P1, P2, X1, X2): built 2026-11-19 as kit r29 (see §6.1)
 
 Lead's memo-03 §5: one kit, about 15 phone-minutes, built after the host screens. This is the design; nothing below
 is built or measured. It starts from campaign 2's kit r28 (same package line, run protocol, r16 cool-down gate,
@@ -308,6 +308,53 @@ What each block decides: P1 the largest body that can be read every token (memo-
 6 to 8.5 B body fits); P2 the read rate r that sets H6's kill line (memo-03 §5) and reopens R20 under 28 GB/s; X1 and
 X2 whether a CPU + GPU split (memo-03 §2 rank 1) or multi-stream GEMV (rank 2) has bus headroom to use.
 
+### 6.1 Build (2026-11-19), with the lead's six fixes
+
+The design above was approved; the build differs from it as follows (the table above is kept as written).
+
+- **Runtime:** `patches/llama.cpp-c3/0001-probe.patch`, on top of the r28 runtime (`patches/llama.cpp` 0001-0003 +
+  `patches/llama.cpp-c1-olmoe` 0001-0012). The probe is a libllama call, `llama_vollie_probe(block, dir, out, cap)`,
+  not a backend-init hook: the kit calls it per block, so the r16 gate can run between blocks. Off unless
+  `VOLLIE_PROBE` is set: it returns -1 and does nothing. It is a new file only, so nothing on the model path changes.
+- **Identity (*host*, Mistral Q4_0):** with the knob unset, `llama-perplexity` running values are identical to the r28
+  runtime and to stock `620d2225c`:
+  - `-b 512`, 4 chunks: [1]5.2873 [2]5.4066 [3]6.3280 [4]7.0083;
+  - `-ub 32`, 4 chunks: [1]5.3060 [2]5.4174 [3]6.3351 [4]7.0187;
+  - `-ub 1`, 2 chunks: [1]5.2980 [2]5.4042.
+  With `VOLLIE_PROBE=1` at `-b 512`, also identical. Logs: `lab/c3/logs/ident-probe-*.txt`.
+- **The six fixes:**
+  1. P1 steps are 2.7, 3.0, 3.4, 4.2 and 4.6 GB. The scratch file is written once at the largest step that leaves
+     0.5 GB free.
+  2. P2 adds an X1 + 2 A78 cell (`7,4-5`). The read and q4x4 sets are 4, 4-5, 4-6, 7, 7+4-5, 4-7, and 0-6.
+  3. `p2hot` working sets: A78 256 KB, X1 512 KB, A55 64 KB (half of each class's L2).
+  4. Every P2, X1 and X2 cell runs 1 s of warm-up, then 2 s measured. The CPU and GPU share one window in `x1gpu`.
+  5. New P2 rows `p2col`:
+     - an on-phone identity check: the H6 column kernel and the H6b skip-list kernel against the stock kernel,
+       memcmp on one 1024 x 4096 matrix at 60 % kept;
+     - then stock, column and skip-list cells at 60 % kept, on 1 A78 and on 3 A78. The parser prints column/stock and
+       skip/stock per touched weight.
+  6. `x1gpu` lines name `gpu_kern=read|q4` and `cpu_kern=q4x4`. Both GPU kernels are run together with the CPU.
+- **App:** `patches/app-c3/0001-kit-r29-probe.patch`, the button "Run c3 probe r29". The R68 run list is unchanged.
+- **APK:** `lab/dist-c3/vollie-c3-probe-r29-1.29.0-29.apk`, 16,430,946 B, sha256
+  `02736b568503624fa036f86c994c5407516605522f1db901ed2f0d58b866eaf9`. It is package `com.insaneutils.vollie.c2`,
+  versionCode 29, so it installs over r28. Build record: `lab/dist-c3/BUILD-r29.txt`.
+  - The APK's `libllama.so` exports `llama_vollie_probe`.
+  - The CPU module's sha256 differs from r28's although no CPU-module source changed. Builds are not byte-reproducible
+    (the temporary build path is embedded), so the per-chunk check above is the identity evidence.
+  - Not uploaded, not committed.
+- **Parser:** `tools/c3_probe_parse.py`, whose `--selftest` passes. A host functional run of all four blocks went
+  through the parser (`lab/c3/probe-host.json`; host numbers mean nothing for the phone). On the host the
+  `PROT_EXEC` file mapping fails, which is expected on macOS. The Apple GPU ran through the same OpenCL path.
+- **Phone time (*estimated*):**
+  - P2: 23 cells x 3 s plus fills, about 75 s.
+  - X1: 9 s.
+  - X2: about 15 s.
+  - P1: write 4.6 GB in about 4 s, then 5 steps x 2 maps x 20 passes, capped at 45 s per map. That is about 40 s if
+    resident, at worst 7.5 min.
+  - Gates: 0 to 6 min.
+  - **Total: about 4 to 6 min typical, at worst about 16 min**, under the 20 min limit.
+  - The six fixes add about 1 min: X1 + 2 A78 6 s, warm-ups about 30 s, the column row about 20 s.
+
 ## 7. What closed, what stayed open (*host*; per model)
 
 | test | Mistral-7B-v0.3 | Qwen2.5-7B | generalised? |
@@ -325,7 +372,7 @@ screens leave open is column sparsity at 35 to 40 %, and it needs a kernel that 
 `sdot` per touched weight at those densities, against a break-even of 1.7 x to 3.5 x depending on the phone's read
 rate. At the 19 GB/s *device* rate of campaign 1 that would at best hold the token time roughly level (*estimated*:
 dense = 4.0 GB / 19 GB/s = 210 ms read, about 110 to 130 ms of `sdot` compute from memo-01's 7.6 to 9.3 tok/s cap;
-at 40 % sparsity 2.4 GB = 126 ms read but 0.6 × 2.6 = 1.6 times the compute, about 180 to 210 ms, if the host
+at 40 % sparsity 2.4 GB = 126 ms read [*correction 2026-11-19 (Ebony): the column layout still reads every scale, so 40 % sparsity reads 64 % of the bytes (2,048 + 0.6 × 16,384 of 18,432 B per chunk), about 2.6 GB and 135 ms, not 60 %*] but 0.6 × 2.6 = 1.6 times the compute, about 180 to 210 ms, if the host
 ratio carries to the A78); it does not open a path to 15 tok/s on a 4 GB body. The P2 read
 rate decides whether it is worth building.
 
@@ -337,3 +384,103 @@ rate decides whether it is worth building.
 - The device probe kit (§6): designed, not built. The host screens are done; building it (runtime knob, kit page,
   parser, APK) is the next code task once the lead confirms the design.
 - Full-set (all chunks) PPL of any cell: not run; every PPL here is 8, 16, 20 or 40 chunks.
+
+## 8. H3b and H6b: block-granular input sparsity (lead's idea, added 2026-11-19; *host*)
+
+### 8.1 H6b: skip-list and block-major kernels (*host*, single thread, other jobs paused during the run)
+
+Tool: `tools/c3_colkern_bench.c` (extended). The new kernels are:
+- **skip list:** the stock `ggml_gemv_q4_0_4x4_q8_0` loop visits only the kept input blocks, in the stock layout.
+- **block-major:** the same 4x4 groups stored `[block][row group]`. A dropped input block is then N/4 x 72 B
+  contiguous. Blocks are outer and row groups inner, with one float accumulator per row; per row the blocks are
+  still added in increasing order with the stock float step.
+
+"Lines touched" is the fraction of the matrix's distinct 64-byte lines that the kept blocks cover, counted exactly
+for each layout. Blocks were dropped at random positions.
+
+```sh
+clang -O3 -march=armv8.2-a+dotprod+fp16 -o lab/c3/bench/colkern1024 tools/c3_colkern_bench.c
+lab/c3/bench/colkern1024 14336 4096 30; lab/c3/bench/colkern1024 4096 14336 30     # log: lab/c3/logs/h6b-blockskip.log
+```
+
+**Both kernels are bit-identical to the stock kernel** fed x with the dropped blocks zeroed (memcmp of all outputs),
+at every kept fraction, on both shapes.
+
+| kept (realised), 14336 x 4096 | skip list: time / dense | per touched weight | lines touched | block-major: time / dense | per touched weight | lines touched |
+|---|---|---|---|---|---|---|
+| 1.00 | 1.02 | 1.02 | 1.000 | 0.93 | 0.93 | 1.000 |
+| 0.91 | 0.92 | 1.01 | 0.979 | 0.85 | 0.93 | 0.914 |
+| 0.67 | 0.70 | 1.04 | 0.868 | 0.63 | 0.93 | 0.672 |
+| 0.64 | 0.68 | 1.06 | 0.812 | 0.60 | 0.93 | 0.641 |
+| 0.52 | 0.56 | 1.09 | 0.729 | 0.48 | 0.93 | 0.516 |
+
+The 4096 x 14336 shape gives the same picture: skip list 1.01 to 1.18 per touched weight, block-major 0.93 to 0.95.
+
+Reading (*host*):
+- **The lead's cost prediction holds.** The skip list costs 1.01 to 1.09 x per touched weight on the stock layout,
+  against 2.2 to 3.0 x for the exact column kernel (§4).
+- **Ebony's byte correction holds in direction.** In the stock layout, at 64 % of blocks kept, the kept blocks still
+  touch 81 % of the lines. That saves about half of the skipped bytes at 64-byte line granularity, not all of them.
+  The phone's prefetchers and DRAM bursts may fetch more than the lines read, so the real saving can be lower; the
+  `p2col kern=skip` row of the probe measures the stock-layout case.
+- **The block-major layout touches exactly the kept fraction** of the lines. It is bit-identical and runs at 0.93 x
+  per touched weight on the host. It is the layout question of Y1 (a derived, file-backed layout).
+
+
+### 8.2 H3b: block-granular input sparsity, PPL (*host*, 40 chunks of wikitext-2 test, Q4_0 files)
+
+Method: same cb_eval tool and test chunks as §3. Thresholds are quantiles of the per-block L2 norm (`b32:`/`b64:`
+arrays of `thr4-*.npz`, calibrated on wikitext-2 train, 16 chunks); a block whose norm is below the threshold is
+zeroed whole before the stock mat-mul, which is what a kernel that skips that input block computes. "q" is the
+train quantile; the realised zeroed fraction on the test text is given because it drifts above q on `down`
+(zeroing upstream changes later activations).
+
+```sh
+C3_BLOCK=32 tools/c3_h3_grid.sh lab/llama.cpp-c3/build/bin <model> lab/c3/thr4-<m>-q4_0.npz lab/c3/text/wiki.test.raw 40 <512|1> <log> <q>:<all|down>:<dense first N>
+#   logs lab/c3/logs/h3b-<m>-<b512|ub1>-40-blk<32|64>.log (RESULT + PERCHUNK lines); C3_BLOCK=64 for 64-wide blocks
+```
+
+Stock: Mistral 5.8844 (`-b 512`) / 5.8810 (`-ub 1`); Qwen2.5 6.9575 / 6.9607. Pass line +4.5 % (budget +5 %, §3).
+
+| cell (block 32 unless stated) | Mistral `-b 512` | realised (down / gu / o / qkv) | Qwen2.5 `-b 512` | realised |
+|---|---|---|---|---|
+| all, q 0.02 | +7.76 % | .025 / .016 / .031 / .016 | +20.89 % | .029 / .018 / .006 / .016 |
+| all, q 0.05 | +7.30 % (`-ub 1` +7.27 %) | .066 / .038 / .056 / .039 | +28.38 % (`-ub 1` +28.74 %) | .070 / .041 / .018 / .038 |
+| all, q 0.10 / 0.15 | +20.65 / +41.99 % | down .145 / .231 | +82.99 / +315.9 % | down .149 / .250 |
+| all, q 0.2 / 0.3 / 0.4 | +74.7 % / x12.7 / x274 | down .317 / .610 / .787 | x16.3 / x486 / x934 | down .374 / .612 / .662 |
+| all, q 0.02 / 0.05 / 0.10, dense first 1 | +12.56 / +4.12 / +18.14 % | down .020 / .055 / .125 | +2.11 / +5.59 / +36.90 % | down .024 / .066 / .147 |
+| `down` only, q 0.05 | **+1.82 %** | .052 | **+1.23 %** | .045 |
+| `down` only, q 0.10 | **+3.72 %** (`-ub 1` **+3.74 %**) | .099 | **+1.98 %** (`-ub 1` **+1.98 %**) | .087 |
+| `down` only, q 0.2 / 0.3 / 0.4 | +8.58 / +15.22 / +24.26 % | .187 / .270 / .352 | +4.79 / +9.15 / +15.57 % | .168 / .247 / .327 |
+| block 64, all, q 0.05 / 0.1 / 0.2 | +10.90 / +30.49 / +157.9 % | | +48.09 / +204.1 / x76.7 | |
+| block 64, `down` only, q 0.2 | +11.44 % | .181 | +6.95 % | .164 |
+
+(The "dense first 1" rows were measured in the order Mistral 0.02 / 0.05 / 0.10, then Qwen2.5; they keep position 0 of
+each chunk unsparsified.)
+
+Reading (*host*):
+- **Per-model frontier inside +4.5 % at both `-b 512` and `-ub 1`: `down` input only, Mistral about 10 % of `down`
+  blocks (+3.72 % / +3.74 %; 19 % fails at +8.58 %), Qwen2.5 about 9 % (+1.98 % / +1.98 %; 17 % is +4.79 %, inside
+  the budget but outside the margin).** Every all-groups cell fails on both models without the dense first token; with
+  it, the only all-groups cells inside the line are Mistral q 0.05 (+4.12 %, realised 3 to 5 %) and Qwen2.5 q 0.02
+  (+2.11 %, realised 1 to 2 %). Neither model holds block-32 sparsity of 20, 30 or 40 % on any group set; the
+  lead's 20/30/40 % cells are out by factors, not percent.
+- **What generalised:** block granularity is about ten times harsher than element granularity on both models
+  (element 35 to 40 % inside the line, §3.4; block about 2 to 5 % model-wide), as Ebony's energy argument predicted;
+  `down` is the tolerant group on both; 64-wide blocks are worse than 32 on both; `-ub 1` equals `-b 512` within
+  0.4 points on all four cells run at both.
+- **What did not generalise:** the first token. Keeping position 0 dense rescues Qwen2.5's low-q all-groups cells
+  (+20.9 → +2.1 % at q 0.02) but not Mistral's (+7.8 → +12.6 %). Mistral's all-groups cost is not even monotone in q
+  (q 0.02 is worse than q 0.05): it comes from single chunks; at q 0.02 with dense first 1 chunk 32 alone has
+  nll 5.84 against at most 2.51 for every other chunk. A rule whose cost is one blown-up chunk out of 40 is not
+  safe to ship at any setting this grid found; only the `down`-only cells are smooth in q on both models.
+- **Score against Ebony's pre-data prediction (memo-04 work, ebony-blocksparse §2.3):** all four groups, "3 to 10 %
+  on both models, Qwen2.5 lower": **missed low** (no all-groups cell passes on either model without the dense
+  first token; with it, about 3 to 5 % on Mistral and 1 to 2 % on Qwen2.5, the latter below the band); block 64
+  "about a point lower": worse than that (fails at q 0.05 on both). `down` alone, "10 to 25 %": **at the bottom of the
+  band** (about 10 % and 9 %). Chance of 20 % model-wide, 0.1: it did not happen.
+- **Price (*estimated*):** `down` is 26.9 % of a Mistral layer's weight bytes and 29.1 % of Qwen2.5's (shapes from
+  §1). The `down`-only frontier therefore skips about 2.7 % (Mistral) and 2.5 % (Qwen2.5) of the weight bytes, and only
+  in the block-major layout (§8.1); in the stock layout the skip list saves about half of that at line granularity.
+  That is under 3 % of token time either way. **Block-granular input sparsity is closed as a speed lever on both
+  models**; element-granular column sparsity (§3, §4) stays as it was.

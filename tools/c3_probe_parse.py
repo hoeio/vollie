@@ -1,0 +1,140 @@
+# Campaign 3: tabulates a c3 probe report (kit r29, "Save c3 probe to Downloads"; patches/llama.cpp-c3/0001-probe).
+# usage: python3 -I tools/c3_probe_parse.py <vollie-c3probe-r29-*.json>      python3 -I tools/c3_probe_parse.py --selftest
+# Every number it prints is *device* (from the phone's lines); the ratios are arithmetic on them. A cell whose workers did
+# not all stay on their cpu (cpu_ok < n) is marked '*' and should not be used for a claim.
+import json, re, statistics, sys
+
+
+def kv(line):
+    """'c3-probe: p2 kern=read cores=4-6 gbs=1.0 ...' -> ('p2', {'kern': 'read', ...})"""
+    body = line.split('c3-probe:', 1)[1].split()
+    return body[0], dict(t.split('=', 1) for t in body[1:] if '=' in t)
+
+
+def num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse(rep):
+    out = {'p2': [], 'p2hot': [], 'p2col': [], 'p2col_id': None, 'x1': [], 'x2': [], 'x1gpu': [], 'p1': [], 'p1_info': {},
+           'gates': [], 'errors': [], 'meta': {k: rep.get(k) for k in ('kit', 'app', 'started', 'label', 'session_label',
+                                                                          'deep_sleeping_list', 'stopped_early', 'model_unloaded')}}
+    for b in rep.get('blocks', []):
+        g = b.get('gate', {})
+        out['gates'].append((b.get('block'), g.get('timeout'), (g.get('series') or [[None, None]])[-1], b.get('ms'), b.get('rc')))
+        if 'error' in b:
+            out['errors'].append('%s: %s' % (b.get('block'), b['error']))
+        for line in b.get('lines', []):
+            if 'c3-probe:' not in line:
+                continue
+            tag, f = kv(line)
+            if line.split('c3-probe:', 1)[1].split()[1:2] == ['end']:
+                out['meta']['%s_s' % tag] = f.get('s')
+            elif 'error' in f:
+                out['errors'].append('%s %s' % (tag, ' '.join('%s=%s' % kv_ for kv_ in f.items())))
+            elif tag == 'p2col' and 'col_exact' in f:
+                out['p2col_id'] = f
+            elif tag == 'p1' and 'pass' in f:
+                out['p1'].append(f)
+            elif tag == 'p1':
+                out['p1_info'].update(f)
+            elif tag in out and isinstance(out[tag], list):
+                out[tag].append(f)
+    return out
+
+
+def okmark(f):
+    ok, n = (f.get('cpu_ok') or '0/0').split('/')
+    return '' if ok == '-1' or ok == n else '*'
+
+
+def report(p):
+    L = []
+    L.append('meta: ' + ', '.join('%s=%s' % kv_ for kv_ in p['meta'].items()))
+    for g in p['gates']:
+        L.append('gate %s: timeout=%s last=%s block_ms=%s rc=%s' % g)
+    for e in p['errors']:
+        L.append('ERROR ' + e)
+    L.append('\nP2 dense read rate (GB/s, device)')
+    L.append('| cores | read | q4x4 gemv | q4x4 ns/w | mhz (0/4/7) before->after |')
+    L.append('|---|---|---|---|---|')
+    rd = {f['cores']: f for f in p['p2'] if f.get('kern') == 'read'}
+    q4 = {f['cores']: f for f in p['p2'] if f.get('kern') == 'q4x4'}
+    for c in list(dict.fromkeys(list(rd) + list(q4))):
+        a, b = rd.get(c, {}), q4.get(c, {})
+        L.append('| %s | %s%s | %s%s | %s | %s |' % (c, a.get('gbs', '-'), okmark(a) if a else '', b.get('gbs', '-'), okmark(b) if b else '',
+                                                   b.get('ns_per_w', '-'), b.get('mhz', a.get('mhz', '-'))))
+    L.append('\nP2 hot sdot ceiling (one pinned thread, L2-resident)')
+    for f in p['p2hot']:
+        L.append('  %s (cpu %s, %s KB): %s ns/weight%s' % (f['core'], f['cpu'], f['ws_kb'], f['ns_per_w'], okmark(f)))
+    if p['p2col_id']:
+        i = p['p2col_id']
+        L.append('\nP2 column and skip-list kernels at keep %s: identity col_exact=%s skip_exact=%s (1 = bit-identical to the stock kernel); '
+                 'kept columns %s, kept blocks %s' % (i['keep'], i['col_exact'], i['skip_exact'], i['kept_cols'], i['kept_blocks']))
+    cols = {}
+    for f in p['p2col']:
+        cols.setdefault(f['cores'], {})[f['kern']] = f
+    for c, d in cols.items():
+        st = num(d.get('stock', {}).get('ns_per_touched_w'))
+        for k in ('col', 'skip'):
+            v = num(d.get(k, {}).get('ns_per_touched_w'))
+            if st and v:
+                L.append('  cores %s: %s / stock per touched weight = %.2f x (GB/s %s vs %s)%s' % (c, k, v / st, d[k]['gbs'], d['stock']['gbs'], okmark(d[k])))
+    L.append('\nX1 multi-stream, 3 A78')
+    for f in p['x1']:
+        L.append('  streams %s: %s GB/s%s' % (f['streams'], f['gbs'], okmark(f)))
+    L.append('\nX2 GPU and CPU + GPU')
+    for f in p['x2']:
+        L.append('  GPU alone, kern %s (%s): %s GB/s' % (f['kern'], f.get('device'), f['gbs']))
+    for f in p['x1gpu']:
+        L.append('  together, gpu_kern %s + cpu_kern %s on %s: cpu %s + gpu %s = %s GB/s%s' % (f['gpu_kern'], f['cpu_kern'], f['cores'], f['cpu_gbs'], f['gpu_gbs'], f['sum_gbs'], okmark(f)))
+    L.append('\nP1 resident capacity (%s)' % ', '.join('%s=%s' % kv_ for kv_ in p['p1_info'].items()))
+    L.append('| GB | map | passes | median s | median GB/s | last 5 GB/s (median) | majflt total | majflt last 5 | cached kB (last) | swapfree kB (last) | vmswap kB (last) |')
+    L.append('|---|---|---|---|---|---|---|---|---|---|---|')
+    steps = {}
+    for f in p['p1']:
+        steps.setdefault((f['n'], f['map']), []).append(f)
+    for (n, m), fs in steps.items():
+        s = [num(f['s']) for f in fs]; g = [num(f['gbs']) for f in fs]; mf = [int(f['majflt']) for f in fs]
+        L.append('| %s | %s | %d | %.3f | %.2f | %.2f | %d | %d | %s | %s | %s |' % (n, m, len(fs), statistics.median(s), statistics.median(g),
+                 statistics.median(g[-5:]), sum(mf), sum(mf[-5:]), fs[-1]['cached'], fs[-1]['swapfree'], fs[-1]['vmswap']))
+    return '\n'.join(L)
+
+
+SELFTEST = {'kit': 'r29', 'label': 'power-save off', 'blocks': [
+    {'block': 'p2', 'rc': 100, 'ms': 70000, 'gate': {'timeout': False, 'series': [[0, 0.5]]}, 'lines': [
+        'c3-probe: p2 kern=read cores=4-6 gbs=20.50 cpu_ok=3/3 mhz=1804/2419/2841->1804/2419/2841',
+        'c3-probe: p2 kern=q4x4 cores=4-6 gbs=18.00 ns_per_w=0.1000 cpu_ok=2/3 mhz=1/2/3->1/2/3',
+        'c3-probe: p2hot core=a55 cpu=0 ws_kb=63 ns_per_w=0.9000 cpu_ok=1/1 mhz=1/2/3->1/2/3',
+        'c3-probe: p2col identity keep=0.60 col_exact=1 skip_exact=1 kept_cols=0.608 kept_blocks=0.547',
+        'c3-probe: p2col kern=stock keep=0.60 cores=4 gbs=10.00 ns_per_touched_w=0.0500 cpu_ok=1/1 mhz=1/2/3->1/2/3',
+        'c3-probe: p2col kern=col keep=0.60 cores=4 gbs=4.00 ns_per_touched_w=0.1300 cpu_ok=1/1 mhz=1/2/3->1/2/3',
+        'c3-probe: p2col kern=skip keep=0.60 cores=4 gbs=8.00 ns_per_touched_w=0.0550 cpu_ok=1/1 mhz=1/2/3->1/2/3',
+        'c3-probe: p2 end s=70.1']},
+    {'block': 'x2', 'rc': -1, 'ms': 5, 'gate': {'timeout': True, 'series': [[90000, 0.8]]}, 'lines': ['c3-probe: x2 error=no_opencl']},
+    {'block': 'p1', 'rc': 100, 'ms': 9000, 'gate': {'timeout': False, 'series': []}, 'lines': [
+        'c3-probe: p1 free_gb=20.00 top_gb=4.6',
+        'c3-probe: p1 n=2.7 map=r pass=0 s=3.000 gbs=0.90 majflt=600000 cached=100 swapfree=5 vmswap=0',
+        'c3-probe: p1 n=2.7 map=r pass=1 s=0.150 gbs=18.00 majflt=0 cached=200 swapfree=5 vmswap=0']}]}
+
+
+def selftest():
+    p = parse(SELFTEST)
+    assert p['p2'][0]['gbs'] == '20.50' and okmark(p['p2'][0]) == '' and okmark(p['p2'][1]) == '*'
+    assert p['p2col_id']['col_exact'] == '1' and len(p['p2col']) == 3
+    assert p['errors'] == ['x2 error=no_opencl'] and p['meta']['p2_s'] == '70.1' and p['gates'][1][1] is True
+    r = report(p)
+    assert 'col / stock per touched weight = 2.60 x' in r and 'skip / stock per touched weight = 1.10 x' in r, r
+    assert '| 2.7 | r | 2 | 1.575 | 9.45 |' in r and '| 600000 | 600000 |' in r, r
+    assert 'a55 (cpu 0, 63 KB): 0.9000 ns/weight' in r
+    print('selftest ok')
+
+
+if __name__ == '__main__':
+    if sys.argv[1:] == ['--selftest']:
+        selftest()
+    else:
+        print(report(parse(json.load(open(sys.argv[1])))))

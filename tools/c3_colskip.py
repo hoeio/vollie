@@ -16,6 +16,7 @@
 #     oracle: r of the same layer (known only after the FFN ran: an upper bound for any predictor);
 #     prev: r of layer L-1 for the same token (causal, so the FFN of L need not be read). Layer 0 never skips under prev.
 # eval with table '-' (or sparsity 0) reproduces llama-perplexity: the identity check of this tool.
+# C3_BLOCK=32|64 (eval): H3b, block-granular sparsity, thresholds on the L2 norm of each input block (thr3 tables).
 import sys, os, re, time, json, ctypes as C, numpy as np, collections
 mode, libdir, model_path, text_path, n_chunks = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
 _src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dense_acts.py')).read(); exec(_src[_src.index('ggml = C.CDLL'):_src.index('# ---- stats')])
@@ -25,7 +26,8 @@ L.llama_vocab_get_add_bos.restype = C.c_bool; L.llama_vocab_get_add_bos.argtypes
 L.llama_vocab_bos.restype = C.c_int32; L.llama_vocab_bos.argtypes = [C.c_void_p]
 KIND = {'attn_q': 'qkv', 'attn_k': 'qkv', 'attn_v': 'qkv', 'attn_output': 'o', 'ffn_gate': 'gu', 'ffn_up': 'gu', 'ffn_down': 'down',
         'channel_mix_key': 'cmix_k', 'channel_mix_value': 'cmix_v'}   # RWKV-7: cmix_v's input is relu(k)^2 (H4 counts its exact zeros)
-QS = (0.2, 0.3, 0.35, 0.4, 0.45, 0.5, 0.6)   # tables store their own list as 'qs'
+CBLK = int(os.environ.get('C3_BLOCK', '0'))   # H3b: 0 = per element; 32 or 64 = whole input blocks (needs a table from this calib)
+QS = (0.02, 0.05, 0.08, 0.1, 0.15, 0.2, 0.3, 0.35, 0.4, 0.45, 0.5, 0.6)   # tables store their own list as 'qs'
 if mode == 'calib': UB, out_path, NT = 512, sys.argv[6], int(sys.argv[7]) if len(sys.argv) > 7 else 8
 elif mode == 'eval':
     UB, tab, SP, GROUPS, NDENSE = int(sys.argv[6]), sys.argv[7], float(sys.argv[8]), sys.argv[9], int(sys.argv[10]); NT = int(sys.argv[11]) if len(sys.argv) > 11 else 8
@@ -36,6 +38,7 @@ elif mode == 'eval':
     if tab != '-' and SP > 0:
         z = np.load(tab); ql = list(z['qs'] if 'qs' in z.files else (0.2, 0.3, 0.4, 0.5, 0.6))
         THR = {k: float(z[k][ql.index(GSP[k.split(':')[1]])]) for k in z.files if ':' in k and k.split(':')[1] in GSP and GSP[k.split(':')[1]] > 0}
+        if CBLK: THR = {k: float(z['b%d:%s' % (CBLK, k)][ql.index(GSP[k.split(':')[1]])]) for k in THR}   # H3b: block-norm thresholds
 elif mode == 'ablate': UB, AKIND, ALAYER = int(sys.argv[6]), sys.argv[7], sys.argv[8]; ASET = {'%s:%s' % (l, 'o' if AKIND == 'attn' else 'down') for l in ALAYER.split(',')}; NT = int(sys.argv[9]) if len(sys.argv) > 9 else 8
 else:
     UB, tab, RULE, SKF = int(sys.argv[6]), sys.argv[7], sys.argv[8], float(sys.argv[9]); NT = int(sys.argv[10]) if len(sys.argv) > 10 else 8
@@ -81,13 +84,18 @@ def cb(t, ask, ud):
     x = np.ctypeslib.as_array(C.cast(tt.data, C.POINTER(C.c_float)), shape=(tt.ne[1], tt.ne[0]))
     if mode == 'calib':
         ax = np.abs(x).ravel(); samp[k].append(ax[rng.integers(0, ax.size, 32768)].astype(np.float32))
+        for bw in (32, 64):   # H3b: L2 norm of each input block of bw columns (the Q4_0 block is 32 inputs)
+            if x.shape[1] % bw == 0: bn = np.sqrt((x.reshape(x.shape[0], -1, bw)**2).sum(2)).ravel(); samp['b%d:%s' % (bw, k)].append(bn[rng.integers(0, bn.size, 8192)].astype(np.float32))
         d = np.abs(x).reshape(x.shape[0], -1, 32).max(2, keepdims=True)/127; cnt[k.split(':')[1]][0] += ((np.abs(x).reshape(x.shape[0], -1, 32) < 0.5*d) | (x.reshape(x.shape[0], -1, 32) == 0)).sum(); cnt[k.split(':')[1]][1] += x.size
         z0 = (x == 0); cnt['exact0:' + k.split(':')[1]][0] += z0.sum(); cnt['exact0:' + k.split(':')[1]][1] += x.size
         cnt['exact0:' + k][0] += z0.sum(); cnt['exact0:' + k][1] += x.size
         return True
     first = max(0, NDENSE - pos0[0])   # rows of this ubatch at positions < NDENSE stay dense
     if first >= x.shape[0]: return True
-    xs = x[first:]; m = np.abs(xs) < THR[k]; np.putmask(xs, m, 0.0)
+    xs = x[first:]
+    if CBLK:   # H3b: zero whole input blocks whose L2 norm is below the threshold
+        xb = xs.reshape(xs.shape[0], -1, CBLK); mb = np.sqrt((xb**2).sum(2)) < THR[k]; xb[mb] = 0.0; m = np.repeat(mb, CBLK, axis=1)
+    else: m = np.abs(xs) < THR[k]; np.putmask(xs, m, 0.0)
     g = k.split(':')[1]; cnt[g][0] += m.sum(); cnt[g][1] += m.size
     return True
 cbf = CB(cb)
@@ -133,7 +141,7 @@ if mode == 'calib':
     print('exact float zeros per input: ' + ', '.join('%s %.4f' % (g[7:], z/n) for g, (z, n) in sorted(cnt.items(), key=lambda a: (a[0].split(':')[-1], int(a[0].split(':')[1]) if a[0].count(':') == 2 else -1)) if g.count(':') == 2))
 else:
     per_chunk = [float(v.mean()) for v in nll]
-    tag = ('sp %g groups %s dense_first %d' % (SP, ','.join(sorted(GROUPS)), NDENSE)) if mode == 'eval' else ('ablate %s layer %s' % (AKIND, ALAYER)) if mode == 'ablate' else ('ffnskip %s %g%s' % (RULE, SKF, ' dense_first %d' % FDENSE if FDENSE else ''))
+    tag = ('sp %g groups %s dense_first %d%s' % (SP, ','.join(sorted(GROUPS)), NDENSE, ' block %d' % CBLK if CBLK else '')) if mode == 'eval' else ('ablate %s layer %s' % (AKIND, ALAYER)) if mode == 'ablate' else ('ffnskip %s %g%s' % (RULE, SKF, ' dense_first %d' % FDENSE if FDENSE else ''))
     real = ', '.join('%s %.4f' % (g, z/max(n, 1)) for g, (z, n) in sorted(cnt.items()) if g != 'ablated')
     print('RESULT ub %d %s: PPL %.4f over %d chunks; realised zeroed fraction: %s' % (UB, tag, np.exp(np.concatenate(nll).mean()), n_chunks, real or '-'))
     print('PERCHUNK ' + json.dumps({'ub': UB, 'tag': tag, 'nll': per_chunk}))

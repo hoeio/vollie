@@ -13,7 +13,9 @@
 #            RUNTIME=stock tools/c2_build_kit.sh lab/llama.cpp-r28stock lab/app-c2 none   ("none": no series, 620d2225c as is)
 #   RUNTIME (default c2) goes into kit_build.json ("runtime": the app's run list follows it) and, unless c2, into the APK
 #   and BUILD file names (-research-<kit>-<runtime>).
-#   <app copy>: app 2.3.0+45 with patches/app-c2/*.patch applied in order.
+#   <app copy>: app 2.3.0+45 with patches/app-c2/*.patch applied in order (APP_SERIES: the app series dirs recorded in
+#   kit_build.json, default patches/app-c2; c3 kit r29: APP_SERIES="patches/app-c2 patches/app-c3").
+#   kit r29 (c3 probe): APP_SERIES="patches/app-c2 patches/app-c3" tools/c2_build_kit.sh lab/llama.cpp-c3k lab/app-c3 patches/llama.cpp patches/llama.cpp-c1-olmoe patches/llama.cpp-c3
 # out: lab/dist-c2/vollie-c2-<version>-research-<kit>.apk and BUILD-<kit>.txt; the app's assets/kit_build.json
 #      (llama.cpp commit, sha256 of every series patch, app patch and built library) goes into the kit's report.
 set -eu
@@ -45,7 +47,7 @@ sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 { printf '{"kit": "%s", "app": "%s", "runtime": "%s", "llama_cpp": "%s",\n "series": [' "$KIT" "$V" "$RT" "$(git -C "$SRC" rev-parse HEAD)"
   sep=; for p in $PATCHES; do printf '%s\n  {"file": "%s", "sha256": "%s"}' "$sep" "$(basename "$p")" "$(sha "$p")"; sep=,; done
   printf '],\n "app_patches": ['; sep=
-  for p in "$R"/patches/app-c2/0*.patch; do printf '%s\n  {"file": "%s", "sha256": "%s"}' "$sep" "$(basename "$p")" "$(sha "$p")"; sep=,; done
+  for p in $(for d in ${APP_SERIES:-patches/app-c2}; do ls "$R/$d"/0*.patch; done); do printf '%s\n  {"file": "%s", "sha256": "%s"}' "$sep" "$(basename "$p")" "$(sha "$p")"; sep=,; done
   printf '],\n "libs": {"libggml-cpu-android_armv8.2_2.so": "%s", "libllama.so": "%s"}}\n' \
     "$(sha "$M/libggml-cpu-android_armv8.2_2.so")" "$(sha "$M/libllama.so")"; } > "$APP/assets/kit_build.json"
 python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$APP/assets/kit_build.json"

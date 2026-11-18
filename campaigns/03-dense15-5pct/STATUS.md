@@ -5,10 +5,13 @@ R68's reports, the lead scores them and closes campaign 2.
 
 ## Next actions
 
-1. Tom runs host tests H1, H3, H6, H7 (memo-02 to come; test list in reports/memo-01-feasibility.md).
-2. Round 2 goes into memo-03: Bonnie prices Gemma 4 E4B and the strict-dense re-price; Ebony covers Adreno and
-   Hexagon and the read rate.
-3. After campaign 2 closes: a device probe of dense read rate and int8 ceiling with power saving off.
+1. R69 (device probe: read rate, compute ceiling, residency, GPU headroom) is pre-registered
+   (prereg/R69-probe-read-rate-capacity-gpu-device.md; probe patch patches/llama.cpp-c3/0001-probe.patch, app patch
+   patches/app-c3/0001-kit-r29-probe.patch). Next: the owner creates tag `prereg-R69`; the lead uploads probe kit r29
+   to `HoeioUser/vollie-kits` as `r29/`; the owner runs it after R68's reports are in and campaign 2 is closed.
+2. Tom's host tests H1, H3, H6, H7 are done (memo-02, including section 8). Element column sparsity stays open; the
+   phone's read rate (R69) decides.
+3. Round 2 (memo-03) is done; memo-04-work holds Bonnie's bands and Ebony's block-sparsity draft.
 
 ## Open owner decisions
 
@@ -33,3 +36,4 @@ Collected here; the owner asked not to be asked until the R68 JSON arrives.
 | 2026-11-19 | 4 (continued) | Owner rules Gemma 4 E4B out as a subject: "it is hard to see it as 'dense 7B-class'. In compute and intelligence it is about a 4.5B dense model; in storage and memory, about an 8B model." Lead's consequence: the subjects are Mistral-7B-Instruct-v0.3 and Qwen2.5-7B-Instruct, with reserves Llama-3.1-8B and Yi-1.5-6B. The memo-01 and memo-03 "opening" (E4B) is closed. RWKV-7 G1 is still open. The strict-dense estimates stay at <= about 12 tok/s (*estimated*, memo-03). |
 | 2026-11-19 | 4 (continued) | Owner rules RWKV-7 G1 out as a subject: "There is no need to include RWKV-7 G1; the subject models and their reserves are enough." The subject set is fixed: Mistral-7B-Instruct-v0.3 and Qwen2.5-7B-Instruct, with reserves Llama-3.1-8B and Yi-1.5-6B. The only open owner item left is calibration tables as runtime (the lead's provisional yes). |
 | 2026-11-19 | 4 (continued) | Owner decides calibration-derived tables (thresholds, hot-first orders) are data read at runtime but managed as derived artifacts attached to the weights, not as code. Lead's reading recorded in CAMPAIGN.md: sidecar file; committed generator script, served file and wikitext-2 train named in the header; model sha256 and own sha256 recorded; runtime refuses a model-sha mismatch; table sha256 listed next to the model's in every pre-registration; a new table needs its own PPL check at `-b 512` and `-ub 1`; served file unchanged. No owner decisions are open now. |
+| 2026-11-19 | 4 (continued) | memo-02 section 8 (*host*): block sparsity is closed as a speed lever on both models (down-only frontier 9 to 10 % of blocks, about 2.5 % of the bytes); the block-major skip-list kernel costs 0.93x per touched weight and is bit-identical; element column sparsity stays open. R69 pre-registered (probe kit r29; probe patch sha256 ac5c7057..., app patch a1c51b22...); kit upload follows, owner runs it after R68. |

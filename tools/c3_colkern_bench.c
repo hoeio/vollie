@@ -99,6 +99,60 @@ static void gemv_col(int N, int K, float * s, const uint8_t * wc, const block_q8
         memcpy(s + t * TR, accf, sizeof accf);
     }
 }
+// H6b: the stock 4x4 kernel with a skip list: only the kept input blocks (kb[0..nkb)) are visited. Same float step in
+// the same block order, so it equals the stock kernel fed x with the dropped blocks zeroed (isum 0 adds nothing).
+static void gemv_stock_skip(int n, float * s, const void * vx, const void * vy, int nc, const int * kb, int nkb) {
+    const int nb = n / QK; const block_q4_0x4 * base = (const block_q4_0x4 *) vx; const block_q8_0 * xa = (const block_q8_0 *) vy;
+    for (int c = 0; c < nc; c += 4) {
+        const block_q4_0x4 * row = base + (size_t)(c / 4) * nb; float32x4_t acc = vdupq_n_f32(0);
+        for (int q = 0; q < nkb; q++) {
+            const int b = kb[q]; const block_q4_0x4 * b_ptr = row + b; const block_q8_0 * a_ptr = xa + b;
+            int8x16_t b0 = vld1q_s8((const int8_t *) b_ptr->qs), b1 = vld1q_s8((const int8_t *) b_ptr->qs + 16);
+            int8x16_t b2 = vld1q_s8((const int8_t *) b_ptr->qs + 32), b3 = vld1q_s8((const int8_t *) b_ptr->qs + 48);
+            float16x4_t bd = vld1_f16((const __fp16 *) b_ptr->d);
+            int8x16_t a0 = vld1q_s8(a_ptr->qs), a1 = vld1q_s8(a_ptr->qs + 16);
+            float16x4_t ad = vld1_dup_f16((const __fp16 *) &a_ptr->d);
+            int32x4_t ret = vdupq_n_s32(0);
+            ret = vdotq_laneq_s32(ret, b0 << 4, a0, 0); ret = vdotq_laneq_s32(ret, b1 << 4, a0, 1);
+            ret = vdotq_laneq_s32(ret, b2 << 4, a0, 2); ret = vdotq_laneq_s32(ret, b3 << 4, a0, 3);
+            ret = vdotq_laneq_s32(ret, b0 & 0xf0U, a1, 0); ret = vdotq_laneq_s32(ret, b1 & 0xf0U, a1, 1);
+            ret = vdotq_laneq_s32(ret, b2 & 0xf0U, a1, 2); ret = vdotq_laneq_s32(ret, b3 & 0xf0U, a1, 3);
+            acc = vfmaq_f32(acc, vcvtq_n_f32_s32(ret, 4), vmulq_f32(vcvt_f32_f16(ad), vcvt_f32_f16(bd)));
+        }
+        vst1q_f32(s, acc); s += 4;
+    }
+}
+// H6b block-major: the same 4x4 groups stored [block][row group], so one dropped input block is N/4 * 72 contiguous bytes.
+// Blocks outer (kept only), row groups inner, one float accumulator per row in L1/L2: per row the blocks are still
+// added in increasing order with the stock float step, so the result is the stock kernel's to the bit.
+static void gemv_blockmajor(int n, float * s, const block_q4_0x4 * wb, const block_q8_0 * xa, int nc, const int * kb, int nkb) {
+    const int ng = nc / 4; (void) n;
+    for (int g = 0; g < ng; g++) vst1q_f32(s + 4 * g, vdupq_n_f32(0));
+    for (int q = 0; q < nkb; q++) {
+        const int b = kb[q]; const block_q4_0x4 * col = wb + (size_t) b * ng; const block_q8_0 * a_ptr = xa + b;
+        const int8x16_t a0 = vld1q_s8(a_ptr->qs), a1 = vld1q_s8(a_ptr->qs + 16); const float32x4_t ad = vcvt_f32_f16(vld1_dup_f16((const __fp16 *) &a_ptr->d));
+        for (int g = 0; g < ng; g++) {
+            const block_q4_0x4 * b_ptr = col + g;
+            int8x16_t b0 = vld1q_s8((const int8_t *) b_ptr->qs), b1 = vld1q_s8((const int8_t *) b_ptr->qs + 16);
+            int8x16_t b2 = vld1q_s8((const int8_t *) b_ptr->qs + 32), b3 = vld1q_s8((const int8_t *) b_ptr->qs + 48);
+            int32x4_t ret = vdupq_n_s32(0);
+            ret = vdotq_laneq_s32(ret, b0 << 4, a0, 0); ret = vdotq_laneq_s32(ret, b1 << 4, a0, 1);
+            ret = vdotq_laneq_s32(ret, b2 << 4, a0, 2); ret = vdotq_laneq_s32(ret, b3 << 4, a0, 3);
+            ret = vdotq_laneq_s32(ret, b0 & 0xf0U, a1, 0); ret = vdotq_laneq_s32(ret, b1 & 0xf0U, a1, 1);
+            ret = vdotq_laneq_s32(ret, b2 & 0xf0U, a1, 2); ret = vdotq_laneq_s32(ret, b3 & 0xf0U, a1, 3);
+            vst1q_f32(s + 4 * g, vfmaq_f32(vld1q_f32(s + 4 * g), vcvtq_n_f32_s32(ret, 4), vmulq_f32(ad, vcvt_f32_f16(vld1_f16((const __fp16 *) b_ptr->d)))));
+        }
+    }
+}
+// distinct 64-byte lines touched by the kept blocks, row-group-major (stock order) or block-major
+static double lines_touched(int nb, int ng, const int * kb, int nkb, int blockmajor) {
+    const size_t tot = ((size_t) nb * ng * sizeof(block_q4_0x4) + 63) / 64; unsigned char * seen = calloc(tot, 1); size_t cnt = 0;
+    for (int g = 0; g < ng; g++) for (int q = 0; q < nkb; q++) {
+        const size_t off = (blockmajor ? (size_t) kb[q] * ng + g : (size_t) g * nb + kb[q]) * sizeof(block_q4_0x4);
+        for (size_t l = off / 64; l <= (off + sizeof(block_q4_0x4) - 1) / 64; l++) if (!seen[l]) { seen[l] = 1; cnt++; }
+    }
+    free(seen); return (double) cnt / tot;
+}
 static double now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec + ts.tv_nsec * 1e-9; }
 int main(int argc, char ** argv) {
     const int N = argc > 1 ? atoi(argv[1]) : 14336, K = argc > 2 ? atoi(argv[2]) : 4096, reps = argc > 3 ? atoi(argv[3]) : 50, nb = K / QK;
@@ -129,6 +183,27 @@ int main(int argc, char ** argv) {
         const double d = (double) tot / K;
         printf("density %.2f (realised %.3f): bit-identical to stock(zeroed x) %s; stock %.3f ms, column %.3f ms; column/stock(dense) %.3f; cost per touched weight %.2f x stock\n",
                dens[di], d, same ? "YES" : "NO", ts * 1e3, tc * 1e3, tc / t_stock, tc / (d * t_stock));
+    }
+    // H6b: block-granular skip (whole 32-input blocks), kept fraction 1.0 / 0.7 / 0.6 / 0.5, random blocks
+    const double kf[] = { 1.0, 0.9, 0.7, 0.6, 0.5 }; int * kb = malloc(sizeof(int) * nb);
+    block_q4_0x4 * wbm = malloc(sizeof(block_q4_0x4) * (size_t) N * nb / 4);   // block-major copy of the same groups
+    for (int g = 0; g < N / 4; g++) for (int b = 0; b < nb; b++) wbm[(size_t) b * (N / 4) + g] = w4[(size_t) g * nb + b];
+    for (int di = 0; di < 5; di++) {
+        memcpy(xz, x, sizeof(block_q8_0) * nb); int nkb = 0;
+        for (int b = 0; b < nb; b++) {
+            if (kf[di] == 1.0 || (double) rand() / RAND_MAX < kf[di]) kb[nkb++] = b;
+            else { xz[b].d = (__fp16) 0.0f; memset(xz[b].qs, 0, 32); }   // a dropped block quantises to d = 0, qs = 0
+        }
+        gemv_stock(K, ys, w4, xz, N); gemv_stock_skip(K, yc, w4, x, N, kb, nkb);
+        const int same = memcmp(ys, yc, 4 * N) == 0;
+        double t0 = now(); for (int r = 0; r < reps; r++) gemv_stock_skip(K, yc, w4, x, N, kb, nkb); double tk = (now() - t0) / reps;
+        const double d = (double) nkb / nb;
+        printf("block-skip kept %.2f (realised %.3f): bit-identical to stock(zeroed blocks) %s; skip-list %.3f ms; /stock(dense) %.3f; cost per touched weight %.2f x stock; lines touched %.3f of dense\n",
+               kf[di], d, same ? "YES" : "NO", tk * 1e3, tk / t_stock, tk / (d * t_stock), lines_touched(nb, N / 4, kb, nkb, 0));
+        gemv_blockmajor(K, yc, wbm, x, N, kb, nkb); const int same2 = memcmp(ys, yc, 4 * N) == 0;
+        t0 = now(); for (int r = 0; r < reps; r++) gemv_blockmajor(K, yc, wbm, x, N, kb, nkb); double tb = (now() - t0) / reps;
+        printf("block-major kept %.2f (realised %.3f): bit-identical to stock(zeroed blocks) %s; %.3f ms; /stock(dense) %.3f; cost per touched weight %.2f x stock; lines touched %.3f of dense\n",
+               kf[di], d, same2 ? "YES" : "NO", tb * 1e3, tb / t_stock, tb / (d * t_stock), lines_touched(nb, N / 4, kb, nkb, 1));
     }
     return 0;
 }
