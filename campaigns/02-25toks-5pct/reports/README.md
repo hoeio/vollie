@@ -814,6 +814,59 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
 
 - **Dated correction, 2026-11-18 (Annie, books audit against `r26_2026-11-18.json` and the parser):** every figure above matches the parser output. One labelling slip in `results.csv`: the two R66 rows carry `ppl` and `ppl_vs_stock_pct` (9.5120 / +2.58 for Granite, 11.7159 / 0.00 for OLMoE) under the label *device*. Those two columns are **host** values copied from R61 (KleidiAI build, `-ub 1`; R62's rows say so in their notes), not measured in R66; the *device* figures of R66 are the effect numbers in the notes column. The rows are not edited.
 
+### R67 Runtime thread pin with a persistent pool, and the model mapped PROT_EXEC, 2 × 2 on Granite and OLMoE (kit r27)
+
+- **Date:** 2026-11-18, from 17:56 local. **Label:** *device*. Pre-registration:
+  [prereg/R67-pin-pool-and-exec-map-two-models-device.md](../prereg/R67-pin-pool-and-exec-map-two-models-device.md)
+  (commit `847acfd`). **Source:** [device/r27_2026-11-18.json](device/r27_2026-11-18.json) (sha256
+  `0ee086ce…ae82333`), read with `tools/c2_research_parse.py`; the wait-length split and `Cached` count below
+  are the lead's arithmetic on the same file.
+- **Checks:** model and library hashes equal the build (series 0001-0011, app 0001-0011, no OpenCL); every
+  quad holds the four cells; kv on in every run; texts equal in all four cells (Granite `13584df0`, OLMoE
+  `f8a9fdc4`); no charger. **Not void.** Bench condition: deep-sleeping list (owner).
+- **Storage check (session start):** internal `/data/data/<pkg>` f2fs `rw,nosuid,nodev,noatime`, all four probe
+  calls errno 0: **pass** (predicted p = 0.7). External `/storage/emulated/0/Android/data`: not mounted noexec,
+  but `mprotect` and `mmap` with exec return errno 13 (EACCES): **refused**, as predicted (p = 0.8). Both models
+  copied in (10.2 s and 52.6 s, sha256 OK); 6.2 GB of the 15.6 GB free used.
+- **Phone state:** cap `2419/2841` in the profiled runs (R64 and R66 read 2,035 there; the cause of the change
+  is not known: instrument changes of this kit, a cooler phone, or the deep-sleeping list); gates were reached
+  in many runs (R66: none). `Cached` at least 2.4 GB before 15 of 16 Granite runs. Levels are not compared with
+  R66 (instrument changed, §1).
+- **Mechanisms.** pin: every P run's workers had mask `0xf0`, ran on the pool (528 of 528 graphs per model), 0
+  runs with a worker on cpus 0-3; in p runs a worker was on cpus 0-3 in 6 of 8 (Granite) and 4 of 8 (OLMoE)
+  runs: **hit** (≥ 2 of 8). exec: `r-xs`, errno 0, `where=api` in 8 of 8 X runs per model: **hit**; `mprotect`
+  took 80-164 ms, before the gate.
+- **pin (P − p), paired over 4 quads:**
+  - **OLMoE: +1.94 ± 0.69 tok/s, pass** (2.8 × SE); decode −3.9 ± 1.5 ms/token; bands **hit**.
+  - **Granite: −0.28 ± 0.78 tok/s, "pin restored, speed not shown"**; tok/s band **hit**, decode +4.2 ± 5.1
+    (band +1 to −6): **miss**.
+- **exec (X − x), paired over 4 quads:**
+  - Pre-registered criterion (median file MB lost in the wait lower by at least 25 %): Granite 160 against 762
+    (−79 %), OLMoE 6 against 308 (−98 %): **met on both** → by §4 **"residency shown, speed not shown"** on both
+    (tok/s Granite +2.46 ± 2.20, OLMoE −0.71 ± 1.53, neither beyond 2 × SE). Bands for the loss (−30 %, 0 to
+    −60 %): **miss** on both (larger). tok/s bands: Granite **miss** (high), OLMoE **hit**.
+  - **Reading that weakens the pass (lead, not pre-registered):** X runs had more zero-length waits (gate
+    already met at the start: Granite 3 of 8 against 1 of 8, OLMoE 4 of 8 against 0 of 8), and a zero wait
+    loses nothing. Over waits of 60 s or more only, the median loss is 713 against 783 MB (Granite, n 5 / 7,
+    −9 %) and 527 against 836 MB (OLMoE, n 2 / 5); the median loss per second of wait is 1.8 against 8.7 MB/s
+    (Granite) and 0.7 against 3.5 MB/s (OLMoE). The criterion as written is met; how much of it is the mapping
+    and how much the wait length is not resolved by this session. The next exec test must score the loss per
+    second of wait, or over fixed-length waits.
+  - TTFT: OLMoE −419 ± 298, Granite −124 ± 236 ms (descriptive).
+- **Interaction (cell means, tok/s):** Granite px 19.53, Px 19.70, pX 22.44, PX 21.72; OLMoE px 22.17, Px 24.32,
+  pX 21.67, PX 23.41. Descriptive: on Granite the exec column carries the gain, on OLMoE the pin column.
+- **T1:** `c2-sched` and `smaps` readable in 16 of 16 runs per model; but smaps' model Rss reads 0 MB in every
+  run while mincore reads 1.9-2.7 GB resident, so the mapped-against-resident split is **not usable** as built
+  (a parser or kit field error; to fix before it is used).
+- **Generalisation:** pin helped OLMoE and not Granite; exec's loss reduction appears on both, with the wait-
+  length caveat. "pin helps both by a similar amount": **miss**. "exec helps OLMoE more than Granite": **miss**
+  (the speed signal, unresolved, is on Granite).
+- **What it means (§7):** pin stays on (pass on OLMoE; protocol correction on Granite). exec stays on
+  ("residency shown"), with the caveat above; Y1 b (read-back through the mapping) is next for it, and its test
+  scores loss per second of wait. Not a goal claim: OLMoE's P runs had a median of 25.03 tok/s and the PX cell
+  25.23 (n 4), with the bench condition and a 2,419/2,841 cap; that is material for a claim round under the
+  claim rule, not a claim.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-28, code audit of the kit app and runtime: thread pin lost in gated runs, per-run waste](memo-28-code-audit.md);
 [memo-29, joint round (Bonnie and Ebony): TEST list T1-T11 and TRY list Y1-Y12 for Tom; working files in `memo-29-work/`](memo-29-joint-test-and-try-lists.md);
