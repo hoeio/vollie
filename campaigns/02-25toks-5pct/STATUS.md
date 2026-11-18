@@ -59,6 +59,8 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 
 ## Next actions, in order
 
+**Update 2026-11-18:** the claim round waits for memo-31 (joint research by Bonnie and Ebony; see the session log). Nothing below is superseded otherwise.
+
 **Waiting on the owner (2026-11-16):** kit r24 handed over; R63 pre-registered
 ([prereg](prereg/R63-gate-rule-and-numerics-two-models-device.md), kit and fault analysis in
 [memo-23](reports/memo-23-kit-r24.md)). APK `lab/dist-c2/vollie-c2-1.24.0+24-research-r24.apk` (sha256
@@ -335,3 +337,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-18 | 4 (continued) | Owner created 15 annotated tags on 2026-11-18, retroactively, each on the commit that first added the pre-registration file: `goal1-final` (`686f17d`) and `prereg-R51` to `prereg-R66` except R57 and R59 (no pre-registration file; R59 was a host PPL, R57 a same-day control). The commit date, not the tag date, is the evidence of timing; each tag message says so. Checked against the remote by the lead. `CLAUDE.md` corrected. New pre-registrations still need their tag before a device run. |
 | 2026-11-18 | 4 (continued) | Tom: kit r27 built (patches 0010 pool+pin, 0011 exec map; app 0011; parser r27; memo-30); host identity equal for pool, exec and both on both models, macOS and Linux aarch64. R67 pre-registered (pin and exec as a balanced 2x2 per quad, both models). |
 | 2026-11-18 | 4 (continued) | R67 scored from kit r27 (raw report stored): internal storage allows exec mapping, external refuses (EACCES); pin pass on OLMoE (+1.94 +/- 0.69), restored but not shown on Granite; exec meets its wait-loss criterion on both (residency shown, speed not shown) but X runs had more zero-length waits (lead's reading); texts identical; cap read 2419/2841 (was 2035); smaps mapped field reads 0 (to fix). OLMoE P runs median 25.03 tok/s (not a claim). Next: fix the smaps field, Y1 b read-back with loss per wait-second, owner decision on a claim round. |
+| 2026-11-18 | 4 (continued) | Owner asked for a claim (verdict) round only with reasonable confidence. Lead judged confidence insufficient: OLMoE R67 pin-on scored runs median 25.03 tok/s (*device*), 4 of 8 at or above 25.0; the draft claim rule needs the median of 10 plain runs >= 25.0; open: the deep-sleeping bench condition, the unexplained cap change (2035 to 2419/2841), and slow runs at 17 to 19 tok/s. So no claim round yet. Joint research round memo-31 started (Bonnie: P(pass), margin, lever pricing, claim design; Ebony: slow-tail cause, clock-cap mechanism, new levers, review); drafts in `reports/memo-31-work/` (not yet committed). |
