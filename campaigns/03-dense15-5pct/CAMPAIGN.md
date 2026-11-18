@@ -60,3 +60,5 @@ open and is finished first (R68).
 3. Which runtime sparsity methods fit the budget at both `-b 512` and `-ub 1` (host screens).
 4. The prompt set for multi-token methods, if any are tried.
 5. R-numbers continue from campaign 2's last entry.
+
+*Added 2026-11-19: RWKV-7 G1 is not a subject (owner, 2026-11-19): "There is no need to include RWKV-7 G1; the subject models and their reserves are enough."*
