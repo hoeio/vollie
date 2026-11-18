@@ -34,6 +34,8 @@ open and is finished first (R68).
 - Runs on llama.cpp at the campaign's base commit, or at a later base that the lead proposes and the owner accepts.
 - At least two models from different families; each stays a full subject (COMMON_RULES).
 
+*Added 2026-11-19: Owner, 2026-11-19: "Only unquantized QAT checkpoints count as stock weights." Lead's reading: a publisher's unquantized QAT checkpoint (for example Google's Gemma QAT release in BF16/F16) is stock weights for campaign 3; pre-quantized QAT files (such as a publisher's Q4_0 GGUF) are not. The served file is quantized by us from the unquantized QAT checkpoint and frozen as usual; stock PPL and F16 PPL are measured on that checkpoint. Whether Gemma 4 E4B counts as "dense 7B-class" is still open with the owner.*
+
 ## Arithmetic (*estimated*; campaign 2 `feasibility.md` §1)
 
 - Decode reads every weight once per token. A 7.5 B model at Q4_0 is about 4.0 GB per token; at about 2.5 bits per
