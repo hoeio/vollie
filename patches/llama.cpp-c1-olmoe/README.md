@@ -287,3 +287,9 @@ container): `tools/c2_kvclear_tag_test.cpp` tags a 64 MB anonymous mapping with 
 the tagged range and passes on the untagged one, `madvise` succeeds, every byte reads zero, 67,104,768 B
 released; `llama-impl.cpp` compiles on macOS and Linux. Not yet run on the phone; per-chunk identity on the
 full build still to be repeated with the kit tree.
+
+Note 2026-11-18 (Tom, kit r26 tree `lab/llama.cpp-c1r26` = 620d2225c + `patches/llama.cpp/0001-0003` + `0001-0009`;
+0009 applies on 0008): per-chunk identity of 0008 + 0009 repeated, `VOLLIE_KV_DONTNEED=1` against unset, kit off env,
+`-c 512`, 20 chunks at `-b 512` and `-b 512 -ub 32`, 8 at `-b 512 -ub 1`, both models: equal on macOS (clear path `os`)
+and in the Linux aarch64 container (`why=ok` in every clear); greedy texts (n_ctx 4096, q8_0, three clears per process)
+equal off and on on both systems; the tagged-pointer test passes in the container (*host*; memo-27 §2).

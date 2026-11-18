@@ -779,6 +779,7 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   plateau); OLMoE off 18.47 / 20.91, num 21.88 / 21.06.
 
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
+[memo-27, kit r26 (kv clear on the untagged address; one arm per model, r16 gate, kv in ABBA quads)](memo-27-kit-r26.md);
 [memo-21, unconventional levers priced on both models (owner's list and new directions)](memo-21-unconventional-levers.md);
 [memo-22, kit r23 (head knob at load, cheap hold, threads 3 against 4)](memo-22-kit-r23.md);
 [memo-23, kit r24 (plateau gate rule, charger guard, swap counters) and why runs fault: zram swap-ins](memo-23-kit-r24.md);

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Campaign 2 research-kit report parser (kits r17 to r25; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
-memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md, memo-19-kit-r21.md, memo-20-kit-r22.md, memo-22-kit-r23.md, memo-23-kit-r24.md and memo-26-kit-r25.md).
+"""Campaign 2 research-kit report parser (kits r17 to r26; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
+memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md, memo-19-kit-r21.md, memo-20-kit-r22.md, memo-22-kit-r23.md, memo-23-kit-r24.md, memo-26-kit-r25.md and memo-27-kit-r26.md).
 Standard library only.
 
 usage: python3 -I tools/c2_research_parse.py <report.json | clipboard text "c2gz:..."> [--min-mhz 1800]
@@ -63,7 +63,16 @@ checks (id suffix against env, kv outside scored runs, the c2-kvclear lines per 
 released = 0 in a kv run or > 0 in a run without kv, greedy text kv against plain per arm); per model kv minus plain,
 paired within block x gate rule x arm and Welch over all runs, with medians, for pre-prompt major faults (run majflt
 minus the c2-io window, memo-24 §A2.2), pswpin start -> first chunk, TTFT, decode graph ms/token (c2-io), tok/s, VmSwap
-at run end and MB released; a mechanical R64 §4 readout; then r24's tables pooled over kv and on plain runs only."""
+at run end and MB released; a mechanical R64 §4 readout; then r24's tables pooled over kv and on plain runs only. A kit
+r25b report (r25's app, libllama with c1-olmoe 0009) carries tag= in its c2-kvclear lines; then the r26 mechanism lines
+follow (R65 §4).
+
+Kit r26 (memo-27): one arm per model (Granite num, OLMoE off), r16's gate only, the kv factor in two ABBA quads per
+block. r24's checks plus: arms per model, gate rules, kv id suffix and placement, c2-kvclear lines without tag=, the void
+check (released > 0 without kv) and the kv runs releasing 0, texts kv against plain; then per model kv minus plain
+paired per ABBA quad and Welch (r25's metrics) with an R65 §4 effect readout, the mechanism lines (kv runs with why=ok
+in every clear line, why and tag counts per kind), r24's idle baseline and zones, one stats line per model, arm and kv,
+charger runs, swap per gated run and the hold table."""
 import argparse
 import base64
 import gzip
@@ -1063,33 +1072,16 @@ def r24_tables(r, proto='r24', sel=None, label='', extras=True):
     if not runs:
         return []
     models = r21_models(r)
-    flagged = lambda x: bool(x.get('plugged_run') or x.get('plugged'))
     sc = lambda m, a=None, g=None: [x for x in runs if x.get('model') == m and x.get('phase') == 'on'
                                     and (a is None or x.get('arm') == a) and (g is None or x.get('gate_rule') == g)
                                     and (sel is None or sel(x))]
     eff = quad_effect if sel is None else lambda q: quad_sel_effect(q, sel)
-    out = []
-    base = (r.get('idle_baseline') or {}).get('samples') or []
-    if base and extras:
-        out.append('idle baseline before the first run (ms, headroom, battery C, plugged, status): ' +
-                   ' '.join(str(b) for b in base))
-    zs = [z for z in r.get('thermal_zones') or [] if z.get('temp') is not None]
-    if zs and extras:
-        out.append('thermal zones at the start: ' + ', '.join(f"{z.get('type')}={z.get('temp')}" for z in zs))
+    out = extras_head(r) if extras else []
     out.append(f'kit {proto}{label}, scored runs (phase on), per model, arm and gate rule (*device*):')
     for m in models:
         for a in ('off', 'num'):
             for g in ('r16', 'plateau'):
-                v = sc(m, a, g)
-                st_ = r22_stats(v)
-                out.append(f"  {m} {a} {g:7}: n {st_['n']} (flagged {sum(map(flagged, v))}) tok/s {fmt(st_['tps'])} "
-                           f"[{fmt(st_['tps_min'])}..{fmt(st_['tps_max'])}] | wait s {fmt(med((x.get('wait_ms') or 0) / 1000 for x in v), 0)} "
-                           f"ends {sorted(x.get('wait_end') or '-' for x in v)} | heat at start {fmt(med(x.get('heat') for x in v), 3)} | "
-                           f"res before MB {fmt(st_['res_before'], 0)} lost in wait {fmt(st_['wait_lost_mb'], 0)} | decode majflt "
-                           f"{fmt(st_['dec_majflt'], 0)} inblock MB {fmt(st_['dec_inblock_mb'], 0)} | pswpin prefill / decode "
-                           f"{fmt(med(vm_delta(x, 'vmstat_before', 'vmstat_first', 'pswpin') for x in v), 0)} / "
-                           f"{fmt(med(vm_delta(x, 'vmstat_first', 'vmstat_after', 'pswpin') for x in v), 0)} | VmSwap before MB "
-                           f"{fmt(med(memv(x.get('mem_before'), 'swap') for x in v), 0)} | hold cpu ms {fmt(st_['hold_cpu_ms'], 0)}")
+                out.append(stats_line(f"  {m} {a} {g:7}", sc(m, a, g)))
     out.append('num minus off, mean over ABBA quads of mean(num) - mean(off), tok/s ± SE (flag-free = quads without a flagged run)'
                + ('' if sel is None else ' [only the selected runs of each quad: one num, one off]') + ':')
     for m in models:
@@ -1116,8 +1108,42 @@ def r24_tables(r, proto='r24', sel=None, label='', extras=True):
                     dd.append(st.mean(u) - st.mean(v))
             parts.append(f"{name} {fmt_se(dd)}, runs {welch([f(x) for x in sc(m, None, 'plateau')], [f(x) for x in sc(m, None, 'r16')], d)}")
         out.append(f"  {m}: " + ' | '.join(parts))
-    if not extras:
-        return out
+    return out + extras_tail(runs) if extras else out
+
+
+def flagged(x):
+    return bool(x.get('plugged_run') or x.get('plugged'))
+
+
+def extras_head(r):
+    """r24: the idle baseline and the readable thermal zones at the start."""
+    out = []
+    base = (r.get('idle_baseline') or {}).get('samples') or []
+    if base:
+        out.append('idle baseline before the first run (ms, headroom, battery C, plugged, status): ' +
+                   ' '.join(str(b) for b in base))
+    zs = [z for z in r.get('thermal_zones') or [] if z.get('temp') is not None]
+    if zs:
+        out.append('thermal zones at the start: ' + ', '.join(f"{z.get('type')}={z.get('temp')}" for z in zs))
+    return out
+
+
+def stats_line(head, v):
+    """r24's one-line summary of a set of scored runs."""
+    st_ = r22_stats(v)
+    return (f"{head}: n {st_['n']} (flagged {sum(map(flagged, v))}) tok/s {fmt(st_['tps'])} "
+            f"[{fmt(st_['tps_min'])}..{fmt(st_['tps_max'])}] | wait s {fmt(med((x.get('wait_ms') or 0) / 1000 for x in v), 0)} "
+            f"ends {sorted(x.get('wait_end') or '-' for x in v)} | heat at start {fmt(med(x.get('heat') for x in v), 3)} | "
+            f"res before MB {fmt(st_['res_before'], 0)} lost in wait {fmt(st_['wait_lost_mb'], 0)} | decode majflt "
+            f"{fmt(st_['dec_majflt'], 0)} inblock MB {fmt(st_['dec_inblock_mb'], 0)} | pswpin prefill / decode "
+            f"{fmt(med(vm_delta(x, 'vmstat_before', 'vmstat_first', 'pswpin') for x in v), 0)} / "
+            f"{fmt(med(vm_delta(x, 'vmstat_first', 'vmstat_after', 'pswpin') for x in v), 0)} | VmSwap before MB "
+            f"{fmt(med(memv(x.get('mem_before'), 'swap') for x in v), 0)} | hold cpu ms {fmt(st_['hold_cpu_ms'], 0)}")
+
+
+def extras_tail(runs):
+    """r24: charger runs, swap and faults per gated run, then r23's hold table."""
+    out = []
     plug = [x for x in runs if flagged(x)]
     out.append(f"runs with a charger at their start or end: {len(plug)}" +
                ''.join(f"\n  {x.get('pos')} {x.get('run_tag')} plugged before {x.get('plugged')} after {x.get('plugged_after')} "
@@ -1240,7 +1266,112 @@ def r25_tables(r):
         return []
     return (r25_kv(r) + ["R63's gate and num comparisons, kv on and off pooled:"] + r24_tables(r, 'r25', label=' (kv pooled)')
             + ["R63's gate and num comparisons, plain runs only:"]
-            + r24_tables(r, 'r25', sel=lambda x: not kv_on(x), label=' (plain only)', extras=False))
+            + r24_tables(r, 'r25', sel=lambda x: not kv_on(x), label=' (plain only)', extras=False)
+            + (kv_mech([x for x in r.get('runs', []) if x.get('proto') == 'r25'], r21_models(r))
+               if any(c[2] is not None for x in r.get('runs', []) for c in kvtags_of(x)) else []))
+
+
+# kit r26 (memo-27): one arm per model (Granite num, OLMoE off), r16's gate only, the kv factor in two ABBA quads per
+# block (on off off on / off on on off; even blocks the reverse); c1-olmoe 0009 adds tag=0x.. to the c2-kvclear line.
+TAG_RE = re.compile(r' tag=0x([0-9a-fA-F]+)')
+
+
+def kvtags_of(x):
+    """The row's c2-kvclear lines as [(kind, why, tag)]; tag None on lines without tag= (0008, kits before r25b)."""
+    return [(m.group(2), m.group(6), None if t is None else '0x' + t.group(1).lower())
+            for l in x.get('c2') or [] for m in [KVCLEAR_RE.search(l)] if m and m.group(1) == x.get('run_tag', m.group(1))
+            for t in [TAG_RE.search(l)]]
+
+
+def kv_mech(runs, models):
+    """Mechanism per model (R65 §4): kv runs whose every clear line says why=ok; why and tag counts per kind."""
+    out = ['kv mechanism per model: kv runs with why=ok in every c2-kvclear line; lines per (kind, why) and (kind, tag), '
+           'kv runs / plain runs (*device*):']
+    for m in models:
+        rs = [x for x in runs if x.get('model') == m and x.get('phase') == 'on']
+        kv, pl = [x for x in rs if kv_on(x)], [x for x in rs if not kv_on(x)]
+        ok = [x for x in kv if kvtags_of(x) and all(c[1] == 'ok' for c in kvtags_of(x))]
+        cnt = lambda v, i: dict(sorted({k: sum(1 for x in v for c in kvtags_of(x) if (c[0], c[i]) == k)
+                                        for k in {(c[0], c[i]) for x in v for c in kvtags_of(x)}}.items(), key=str))
+        out.append(f"  {m}: why=ok in every line {len(ok)} of {len(kv)} kv runs (not: {','.join(x.get('run_tag') for x in kv if x not in ok) or 'none'})"
+                   f" | why kv {cnt(kv, 1)} plain {cnt(pl, 1)} | tag kv {cnt(kv, 2)} plain {cnt(pl, 2)} | released MB per kv run "
+                   f"median {fmt(med(released_mb(x) for x in kv), 1)} min {fmt(min((released_mb(x) or 0 for x in kv), default=None), 1)}")
+    return out
+
+
+def r26_checks(r):
+    out = r24_checks(r)
+    runs = [x for x in r.get('runs', []) if x.get('proto') == 'r26']
+    arm = (r.get('models') or {})
+    bad_arm = [x.get('run_tag') for x in runs if (arm.get(x.get('model')) or {}).get('arm') not in (None, x.get('arm'))]
+    rules = sorted({x.get('gate_rule') for x in runs if x.get('gate')}, key=str)
+    bad_id = [x.get('run_tag') for x in runs if kv_on(x) != str(x.get('id', '')).endswith('_kv')]
+    outside = [x.get('run_tag') for x in runs if kv_on(x) and x.get('phase') != 'on']
+    nokv = [x.get('run_tag') for x in runs if kv_on(x) and not (released_mb(x) or 0) > 0]
+    leak = [x.get('run_tag') for x in runs if not kv_on(x) and (released_mb(x) or 0) > 0]
+    noline = [x.get('run_tag') for x in runs if not kvclear_of(x)]
+    notag = [x.get('run_tag') for x in runs if any(c[2] is None for c in kvtags_of(x))]
+    out.append(f"r26: arms per model { {m: sorted({str(x.get('arm')) for x in runs if x.get('model') == m}) for m in r21_models(r)} }, arm != report "
+               f"in {','.join(bad_arm) or 'none'}; gate rules of gated runs {rules}; kv id suffix != env in {','.join(bad_id) or 'none'}; "
+               f"kv outside scored runs {','.join(outside) or 'none'}; rows without a c2-kvclear line {','.join(noline) or 'none'}; "
+               f"lines without tag= in {','.join(notag) or 'none'}")
+    out.append(f"r26 void check: released > 0 in a run without kv: {','.join(leak) or 'none'} -> {'VOID' if leak else 'ok'}; "
+               f"kv runs releasing 0 (mechanism miss): {','.join(nokv) or 'none'}")
+    for m in r21_models(r):
+        parts = []
+        for a in sorted({x.get('arm') for x in runs if x.get('model') == m}, key=str):
+            t = {kv: {md5(x['text'])[:8] for x in runs if x.get('model') == m and x.get('arm') == a and kv_on(x) == kv
+                      and x.get('text') is not None} for kv in (True, False)}
+            same = len(t[True] | t[False]) == 1
+            parts.append(f"{a} kv {sorted(t[True])} plain {sorted(t[False])}: {'same' if same else 'DIFFER (kill rule)'}")
+        out.append(f"{m} (r26) texts kv against plain: " + '; '.join(parts))
+    return out
+
+
+def kv_quads(rs):
+    """One block's scored runs in list order: the ABBA quads of the kv factor (on off off on or off on on off)."""
+    qs = [rs[i:i + 4] for i in range(0, len(rs) - 3, 4)]
+    return [q for q in qs if [kv_on(x) for x in q] in ([True, False, False, True], [False, True, True, False])]
+
+
+def r26_kv(r):
+    runs = [x for x in r.get('runs', []) if x.get('proto') == 'r26' and x.get('phase') == 'on']
+    out = ['kv factor (r26), per model: kv minus plain; paired = per ABBA quad mean(kv) - mean(plain), mean ± SE over '
+           'quads; Welch = all kv runs against all plain runs; medians kv / plain (*device*):']
+    for m in r21_models(r):
+        rs = [x for x in runs if x.get('model') == m]
+        qs = [q for g in r23_blocks(rs, m) for q in kv_quads([x for x in rs if x.get('group') == g])]
+        kv, pl = [x for x in rs if kv_on(x)], [x for x in rs if not kv_on(x)]
+        out.append(f"  {m}: {len(kv)} kv and {len(pl)} plain scored runs, {len(qs)} ABBA quads, "
+                   f"{len(rs) - 4 * len(qs)} scored runs outside a quad")
+        eff = lambda q, f: None if None in [f(x) for x in q] else st.mean(f(x) for x in q if kv_on(x)) - st.mean(f(x) for x in q if not kv_on(x))
+        for name, f, d in KV_METRICS:
+            out.append(f"    {name}: paired {fmt_se([eff(q, f) for q in qs], d)} | Welch {welch([f(x) for x in kv], [f(x) for x in pl], d)} | "
+                       f"median {fmt(med(f(x) for x in kv), d)} / {fmt(med(f(x) for x in pl), d)}")
+        fq = [v for v in (eff(q, pre_prompt_majflt) for q in qs) if v is not None]
+        tq = [v for v in (eff(q, lambda x: x.get('ttft_ms')) for q in qs) if v is not None]
+        fm = st.mean(fq) if fq else None
+        tm, tse = (st.mean(tq), st.stdev(tq) / len(tq) ** 0.5) if len(tq) > 1 else (None, None)
+        ttft = 'n/a' if tm is None else 'lower > 2 SE' if tm < -2 * tse else 'HIGHER > 2 SE (kill)' if tm > 2 * tse else 'within 2 SE'
+        out.append(f"    effect readout (R65 §4 wording, paired over quads): pre-prompt majflt mean {fmt(fm, 0)}: "
+                   f"{'lower' if fm is not None and fm < 0 else 'not lower'}; TTFT {'-' if tm is None else f'{tm:+.1f} ± {tse:.1f} ms'}: "
+                   f"{ttft} -> {'pass' if fm is not None and fm < 0 and tm is not None and tm < -2 * tse else 'kill' if tm is not None and tm > 2 * tse else 'unresolved'}")
+    return out
+
+
+def r26_tables(r):
+    runs = [x for x in r.get('runs', []) if x.get('proto') == 'r26']
+    if not runs:
+        return []
+    models = r21_models(r)
+    out = r26_kv(r) + kv_mech(runs, models) + extras_head(r)
+    out.append('kit r26, scored runs (phase on), per model, arm and kv (*device*):')
+    for m in models:
+        for a in sorted({x.get('arm') for x in runs if x.get('model') == m}, key=str):
+            for kv in (True, False):
+                out.append(stats_line(f"  {m} {a} {'kv' if kv else 'plain'}",
+                                      [x for x in runs if x.get('model') == m and x.get('arm') == a and x.get('phase') == 'on' and kv_on(x) == kv]))
+    return out + extras_tail(runs)
 
 
 def main(argv=None):
@@ -1268,7 +1399,8 @@ def main(argv=None):
     parts = (r21_checks(r), r21_tables(r)) if r.get('kit') == 'r21' else (r22_checks(r), r22_tables(r, o.wait_s)) \
         if r.get('kit') == 'r22' else (r23_checks(r), r23_tables(r)) if r.get('kit') == 'r23' \
         else (r24_checks(r), r24_tables(r)) if r.get('kit') == 'r24' \
-        else (r25_checks(r), r25_tables(r)) if r.get('kit') == 'r25' else (
+        else (r25_checks(r), r25_tables(r)) if r.get('kit') == 'r25' \
+        else (r26_checks(r), r26_tables(r)) if r.get('kit') == 'r26' else (
         checks(r, o.prompt), identity(r), groups(r, o.min_mhz, o.fault_run), ab(r, o.min_mhz, o.sigma),
         r16_compare(r, r16), waits(r), warm(r))
     for part in parts:
@@ -1635,6 +1767,56 @@ def selftest():
     assert v.endswith('-> VOID') and 'kv run: granite_off_pl.0;' in v and 'without kv: granite_num_pl.1 ' in v, v
     r25['runs'][2]['text'] = 'other'
     assert any(l.startswith('granite (r25) texts') and 'off kv' in l and 'DIFFER (kill rule)' in l for l in r25_checks(r25))
+    # r26: one arm per model (granite num, olmoe off), r16 only, kv in ABBA quads (odd blocks on off off on, off on on off;
+    # even blocks the reverse); kv lines carry tag=0xb4, plain lines tag=0x00 (0009). kv effects as in r25's synthetic rows.
+    arm26 = {'granite': 'num', 'olmoe': 'off'}
+    def row26(m, g, i, kv=False, phase='on', first=False):
+        x = row25(m, g, arm26[m], i, 'r16' if phase != 'warmup' else 'none', kv, phase, first)
+        x['proto'] = 'r26'
+        x['c2'] = [l + (f" tag={'0xb4' if kv else '0x00'}" if l.startswith('c2-kvclear') else '') for l in x['c2']]
+        return x
+    r26 = dict(r24, kit='r26', runs=[], models={m: {'arm': a} for m, a in arm26.items()})
+    for b, m in enumerate(['granite', 'olmoe', 'olmoe', 'granite'], 1):
+        r26['runs'] += [row26(m, f'b{b}', 90 + k, False, 'warmup', k == 0) for k in range(2)]
+        pat = [True, False, False, True, False, True, True, False]
+        r26['runs'] += [row26(m, f'b{b}', j, kv if b % 2 else not kv) for j, kv in enumerate(pat)]
+        r26['runs'] += [row26(m, f'b{b}', 8 + k, False, 'prof') for k in range(2)]
+    r26['specs'] = list({x['id']: {'id': x['id'], 'gate_rule': x['gate_rule']} for x in r26['runs']}.values())
+    assert kvtags_of(r26['runs'][2]) == [('kv', 'ok', '0xb4'), ('rs', 'ok', '0xb4')]
+    assert kvtags_of(r25['runs'][4])[0][2] is None  # r25 lines without tag=
+    c = r26_checks(r26)
+    assert any(l.startswith("r26: arms per model {'granite': ['num'], 'olmoe': ['off']}, arm != report in none; gate rules of "
+                            "gated runs ['r16']; kv id suffix != env in none; kv outside scored runs none; rows without a "
+                            "c2-kvclear line none; lines without tag= in none") for l in c), c
+    assert any(l.startswith('r26 void check: released > 0 in a run without kv: none -> ok; kv runs releasing 0 (mechanism '
+                            'miss): none') for l in c), c
+    assert any(l.startswith('olmoe (r26) texts kv against plain: off kv') and l.endswith(': same') for l in c), c
+    t = r26_tables(r26)
+    i = t.index(next(l for l in t if l.startswith('  granite: 8 kv and 8 plain scored runs, 4 ABBA quads, 0 scored runs outside')))
+    assert t[i + 1].startswith('    pre-prompt majflt: paired -39500 ± 0 (n 4)') and 'median 500 / 40000' in t[i + 1], t[i + 1]
+    assert t[i + 3].startswith('    TTFT ms: paired -150.0 ± 0.0 (n 4)'), t[i + 3]  # the +10 * (i % 4) drift cancels in ABBA
+    assert t[i + 7].startswith('    released MB: paired +75.9 ± 0.0 (n 4)'), t[i + 7]
+    assert t[i + 8].endswith('-> pass') and 'pre-prompt majflt mean -39500: lower' in t[i + 8], t[i + 8]
+    mech = next(l for l in t if l.startswith('  olmoe: why=ok'))
+    assert mech.startswith('  olmoe: why=ok in every line 8 of 8 kv runs (not: none)') and "tag kv {('kv', '0xb4'): 8} plain "\
+        "{('kv', '0x00'): 8}" in mech and 'released MB per kv run median 285.2' in mech, mech
+    assert any(l.startswith('  granite num kv: n 8 (flagged 0) tok/s 19.00') for l in t), t
+    assert any(l.startswith('  olmoe off plain: n 8 (flagged 0) tok/s 17.00') for l in t), t
+    assert any(l.startswith('hold cost per gated run') for l in t), t
+    # a kv run whose clear falls back (why=map, tag kept): mechanism and release lines name it; a plain run releasing: void
+    r26['runs'][2]['c2'] = [l.replace('released=17821696 why=ok', 'released=0 why=map') for l in r26['runs'][2]['c2']]
+    r26['runs'][3]['c2'][-1] = r26['runs'][3]['c2'][-1].replace('released=0', 'released=4096')
+    t = r26_tables(r26)
+    mech = next(l for l in t if l.startswith('  granite: why=ok'))
+    assert '7 of 8 kv runs (not: granite_num_r16.0)' in mech and "('kv', 'map'): 1" in mech, mech
+    v = next(l for l in r26_checks(r26) if l.startswith('r26 void check'))
+    assert 'without kv: granite_num_r16.1 -> VOID' in v, v
+    r26['runs'][4]['c2'] = [l.split(' tag=')[0] if l.startswith('c2-kvclear') else l for l in r26['runs'][4]['c2']]
+    assert any('lines without tag= in granite_num_r16.2' in l for l in r26_checks(r26))
+    # r25 report with tag= lines (kit r25b): the mechanism lines follow r25's tables; without tag= they do not
+    assert not any(l.startswith('kv mechanism per model') for l in r25_tables(r25))
+    r25b = dict(r25, runs=[dict(x, c2=[l + ' tag=0xb4' if l.startswith('c2-kvclear') else l for l in x['c2']]) for x in r25['runs']])
+    assert any(l.startswith('kv mechanism per model') for l in r25_tables(r25b))
     # the plateau gate, as the app's unit test (R62's pos 4 and 6 series, every 5 s)
     p4 = [0.873, 0.873, 0.873, 0.873, 0.802, 0.788, 0.755, 0.741, 0.721, 0.735, 0.725, 0.735, 0.748, 0.764, 0.77]
     p6 = [0.725, 0.767, 0.789, 0.81, 0.833, 0.833, 0.808, 0.778, 0.753, 0.741, 0.717, 0.737, 0.753, 0.776, 0.79]

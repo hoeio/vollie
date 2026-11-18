@@ -181,3 +181,16 @@ Design, run list and owner steps: `campaigns/02-25toks-5pct/reports/memo-26-kit-
   warm-ups or profiled runs. Run id suffix `_kv`, spec field `kv`, report `kv_rule`.
 - `VOLLIE_KV_DONTNEED` and 0007's `VOLLIE_PRIOR`, `_N`, `_J` added to the knobs cleared before every run.
 - The runtime's `c2-kvclear` lines are tagged with `run=` and filed into the row's runtime lines like `c2-io-blk`.
+
+## 0010-kit-r26.patch (on top of 0009)
+
+Kit r26 (version 1.26.0+26). Runtime `patches/llama.cpp-c1-olmoe/0001-0009` (0009: the kv clear on the untagged
+address, R64). Same package and debug key: installs as an update over r25 / r25b. Design, run list and owner steps:
+`campaigns/02-25toks-5pct/reports/memo-27-kit-r26.md`.
+
+- **One arm per model** (`Research.armOf`): Granite `num`, OLMoE `off`, in every run of their blocks (warm-ups, scored,
+  profiled). OLMoE keeps its load env `VOLLIE_HEAD2_REPACK=1`, so its off arm is r23-r25's. Report `arm_rule`, `models.<m>.arm`.
+- **r16's gate only** in every gated run (no plateau factor; the plateau code and its report fields stay, unused).
+- **kv factor in two ABBA quads per block:** on off off on, off on on off in odd blocks, the reverse in even ones; 8 kv
+  and 8 plain scored runs per model; never in warm-ups and profiled runs (two per block, the model's arm). `proto: r26`.
+- Every recorded field of r25 is kept.
