@@ -99,3 +99,8 @@ Questions left open by this round, priced so that no exotic lever is dropped une
 - The Hexagon 780 (v68) NPU through QNN or ggml-hexagon.
 - Gemma 4 E4B in detail: llama.cpp support, PLE bytes, residency.
 - Anything else that reads fewer bytes per token without changing the file.
+
+*Correction 2026-11-18 (lead, from Ebony's round-2 draft, memo-03 §4): §7 attributes campaign 1's Adreno 660
+OpenCL numbers (0.7 to 2.9 tok/s, device) to MoE models. They ran on the base `620d2225c` with the fast kernels
+disabled for the E031.38 compiler, and no model is recorded beside them; the one attributed run was dense
+Qwen3.5-4B. Also, "the CPU already saturates the DRAM" was never measured.*
