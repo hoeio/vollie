@@ -73,12 +73,13 @@ Vollie runs a sparse (mixture-of-experts) LLM on a 2021 phone CPU (Samsung Galax
 
 ## The team (subagents)
 
-The work is done by four subagents defined in `.claude/agents/`. The main session acts as the lead and delegates.
+The work is done by five subagents defined in `.claude/agents/`. The main session acts as the lead and delegates.
 
 | agent | role | model (pinned) |
 |---|---|---|
 | clyde | lead: plans, pre-registrations, verdicts, talks to the owner | `claude-opus-5-5` |
 | bonnie | research: sources, memos, lever pricing, prediction bands | `claude-fable-5-2` |
+| ebony | research (Bonnie's peer): recent papers, other runtimes, new ideas; reviews Bonnie's pricing | `claude-fable-5-2` |
 | tom | code: patches, kernels, scripts, host checks | `claude-opus-5-5` |
 | annie | git and books: commits, ledger, links, number audits | `claude-sonnet-5-5` |
 
@@ -88,6 +89,9 @@ The work is done by four subagents defined in `.claude/agents/`. The main sessio
   `CLAUDE_CODE_SUBAGENT_MODEL` overrides the `model` field when set; leave it unset).
 - Owner, 2026-11-16: Bonnie runs on `claude-fable-5-2` (research is the hardest pricing work); the lead (clyde and
   the main session) runs on `claude-opus-5-5`.
+- Owner, 2026-11-18: Ebony added (`claude-fable-5-2`). Bonnie and Ebony research jointly; each joint round ends
+  in a memo with a test list and a try list, which the lead hands to Tom. Annie records every hand-off and result
+  in git (commits, memo index, results.csv, STATUS log).
 
 ## Working in the repository
 
