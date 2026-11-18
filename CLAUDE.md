@@ -115,7 +115,7 @@ The work is done by five subagents defined in `.claude/agents/`. The main sessio
 
 - Reading a public repository needs no attachment; pushing needs the repository attached with push access.
 - Pushing **tags** was refused (HTTP 403) from the cloud session, and the GitHub GraphQL API is blocked (use the REST
-  API). The owner creates tags (`goal1-final` at `686f17d` is still to be created; `prereg-R<n>` tags likewise).
+  API). The owner creates tags. *Correction 2026-11-18: `goal1-final` (at `686f17d`) and `prereg-R51` to `prereg-R66` (except R57 and R59, which have no pre-registration file) now exist, created by the owner on 2026-11-18 on the commits that first added each pre-registration; new `prereg-R<n>` tags are still the owner's to create.*
 - Running repository scripts (for example `tools/research_parse.py`) was blocked by the session's safety classifier
   as external code. Reading the data with your own short code worked; ask the owner to run repository tools.
 - The cloud workspace reaches only allowlisted hosts. Large model downloads (GGUF, F16) and full wikitext-2
