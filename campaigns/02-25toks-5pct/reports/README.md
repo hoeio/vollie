@@ -815,6 +815,7 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
 - **Dated correction, 2026-11-18 (Annie, books audit against `r26_2026-11-18.json` and the parser):** every figure above matches the parser output. One labelling slip in `results.csv`: the two R66 rows carry `ppl` and `ppl_vs_stock_pct` (9.5120 / +2.58 for Granite, 11.7159 / 0.00 for OLMoE) under the label *device*. Those two columns are **host** values copied from R61 (KleidiAI build, `-ub 1`; R62's rows say so in their notes), not measured in R66; the *device* figures of R66 are the effect numbers in the notes column. The rows are not edited.
 
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
+[memo-29, joint round (Bonnie and Ebony): TEST list T1-T11 and TRY list Y1-Y12 for Tom; working files in `memo-29-work/`](memo-29-joint-test-and-try-lists.md);
 [memo-27, kit r26 (kv clear on the untagged address; one arm per model, r16 gate, kv in ABBA quads)](memo-27-kit-r26.md);
 [memo-26, kit r25 (kit r24 plus the kv clear by MADV_DONTNEED, patch 0008; kv in ABBA pairs)](memo-26-kit-r25.md);
 [memo-25, routing prior toward recently used experts (patch 0007), host study, not an R-entry](memo-25-routing-prior-host.md);
