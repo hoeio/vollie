@@ -219,3 +219,19 @@ storage step and owner steps: `campaigns/02-25toks-5pct/reports/memo-30-kit-r27.
   `ru` (getrusage start / first chunk / end), `smaps_before` / `smaps_after`, `exec_sync`, `context_rule`, `pin_rule`,
   `exec_rule`, `design`, `instrument_changes`.
 - New MethodChannel call `kitStorage` (MainActivity.kt): internal and external folders and their free bytes.
+
+## 0012-kit-r28.patch (on top of 0011)
+
+Kit r28 (version 1.28.0+28), memo-31's tests and tries plus the lead's additions of 2026-11-18. Design, run lists and
+fields: `campaigns/02-25toks-5pct/reports/memo-32-kit-r28.md`.
+
+- R68 run list on the c2 runtime (c1-olmoe 0001-0012): per model a claim-format block of 10 runs (pin + exec), then a
+  block of four touch x nice quads (Williams rows), then OLMoE's num arm (MASS=900 + head 1024) as a claim-format block
+  with touch and nice. Blocks O G O G O; two warm-ups per block; no profiled runs.
+- Reference APKs from the same code (`RUNTIME=c1|stock tools/c2_build_kit.sh ...`): `assets/kit_build.json` carries
+  `runtime`, and the run list follows it (10 claim-format runs per model, Granite then OLMoE).
+- Touch calls (`llama_vollie_touch_begin` with the hold's wanted set before the gate wait, `llama_vollie_touch_end` after
+  the hold), T-B per-run fields (`power`, `workers_after`, `proc_before` / `proc_after`), T-D smaps match by inode,
+  session label (deep-sleeping list, required before the kit or the probe can start), power-save state at start and end
+  (read only, warning when on), and T-A's cap probe (`capProbe`, six minutes, no model run, its own report and "Save cap
+  probe to Downloads"). Kotlin: a read-only `powerState` channel method.

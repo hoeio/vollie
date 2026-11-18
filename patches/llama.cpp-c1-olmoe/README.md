@@ -333,3 +333,26 @@ unpinned one. Changes `ggml/src/ggml-cpu/ggml-cpu.c` (CPU module) and `common/co
   exec_maps=<now executable> bytes=<mapped> calls=<mprotect calls> fails=<failed> errno=<last> us=<time of the calls>
   where=api|decode prot=<perms>:<lines>,...` (`/proc/self/maps` lines overlapping the fragments; `n/a` without procfs).
 - Host checks and what is not verified: [memo-30](../../campaigns/02-25toks-5pct/reports/memo-30-kit-r27.md) §2.
+
+## 0012-c2-touch-nice (2026-11-18, kit r28, memo-31 TRY 1 and 2; bit-identical, knobs `VOLLIE_TOUCH=1`, `VOLLIE_TOUCH_S=<s>`, `VOLLIE_NICE=<n>`)
+
+- **`VOLLIE_TOUCH=1`** (`libllama.so`, `src/llama-mmap.cpp`, on 0011's mapping registry): the exported
+  `extern "C" int llama_vollie_touch_begin(const unsigned char * want, size_t n)` starts one helper thread, restricted to
+  cpus 0-3, that reads one byte per page of the registered model mappings every `VOLLIE_TOUCH_S` seconds (default 12; 0
+  or less: no periodic pass) and once more when `extern "C" long long llama_vollie_touch_end(void)` is called; `end`
+  blocks until that last pass is done and returns the pages it touched. Page set: `want` (one byte per file page,
+  nonzero = touch; the kit passes the hold's wanted set), else the pages resident at `begin` (mincore, Linux), else
+  every page (`src=want|resident|all`). `begin` returns 0 (started), -1 (knob not 1: nothing runs), -2 (no mapping).
+  Each pass holds the registry's mutex, so an unload waits for it. Reads only.
+- **`VOLLIE_NICE=<n>`** (CPU module, `ggml-cpu.c`, on 0010's pool; Linux; pool graphs only, so with `VOLLIE_POOL=1`):
+  every thread of a pool graph (0 = the caller) compares `getpriority` on its tid with `n` at each graph start and calls
+  `setpriority` when it differs; a thread whose set failed is not asked again in that run. With the knob unset, every
+  thread whose value this patch changed gets its first value back (by tid, at the next graph start).
+- **Host-only knob** `VOLLIE_TOUCH_HOST=1` (`common/common.cpp`, not in the APK's libraries): the tools start the touch
+  helper after the model load and leave it running, so `llama-perplexity` shows that touches beside the graphs change no
+  value.
+- **Kit lines:** `c2-touch run=<id> pass=<k> final=0|1 src=<set> at_ms=<since begin> set=<pages in the set>
+  pages=<touched> ms=<pass time> cpu=<cpu> majflt=<thread majors in the pass> minflt=<minors> sum=<checksum byte>`, one
+  per pass; `c2-nice run=<id> want=<n|-> pool=0|1 restored=<ok>/<failed> w<i>=<tid>:<value read back>:s<sets>:f<failed
+  sets>:e<last errno>`, per prompt when the knob was set or a restore was done (with `GGML_C2_IO=1`).
+- Host checks and what is not verified: [memo-32](../../campaigns/02-25toks-5pct/reports/memo-32-kit-r28.md) §2.

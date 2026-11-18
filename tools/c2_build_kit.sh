@@ -8,13 +8,19 @@
 #   kit r20: tools/c2_build_kit.sh <tree> lab/app-c2 patches/llama.cpp patches/llama.cpp-c1-olmoe
 #   kit r27: tools/c2_build_kit.sh lab/llama.cpp-c1r27 lab/app-c2 patches/llama.cpp patches/llama.cpp-c1-olmoe
 #            (c1-olmoe 0001-0011; 0010 also touches common/common.cpp, a host-check knob not in the APK's libraries)
+#   kit r28: tools/c2_build_kit.sh lab/llama.cpp-c1r28 lab/app-c2 patches/llama.cpp patches/llama.cpp-c1-olmoe   (c1-olmoe 0001-0012)
+#   kit r28 reference APKs (memo-32): RUNTIME=c1 tools/c2_build_kit.sh lab/llama.cpp-r28c1 lab/app-c2 patches/llama.cpp
+#            RUNTIME=stock tools/c2_build_kit.sh lab/llama.cpp-r28stock lab/app-c2 none   ("none": no series, 620d2225c as is)
+#   RUNTIME (default c2) goes into kit_build.json ("runtime": the app's run list follows it) and, unless c2, into the APK
+#   and BUILD file names (-research-<kit>-<runtime>).
 #   <app copy>: app 2.3.0+45 with patches/app-c2/*.patch applied in order.
 # out: lab/dist-c2/vollie-c2-<version>-research-<kit>.apk and BUILD-<kit>.txt; the app's assets/kit_build.json
 #      (llama.cpp commit, sha256 of every series patch, app patch and built library) goes into the kit's report.
 set -eu
 R=$(cd "$(dirname "$0")/.." && pwd); SRC=$(cd "$1" && pwd); APP=$(cd "$2" && pwd)
 shift 2; [ $# -gt 0 ] || set -- "$R/patches/llama.cpp-c2"
-PATCHES=; for d in "$@"; do d=$(cd "$d" && pwd); PATCHES="$PATCHES $(ls "$d"/0*.patch | tr '\n' ' ')"; done
+RT=${RUNTIME:-c2}
+PATCHES=; for d in "$@"; do [ "$d" = none ] && continue; d=$(cd "$d" && pwd); PATCHES="$PATCHES $(ls "$d"/0*.patch | tr '\n' ' ')"; done
 M=$R/lab/device-bin/c2/app-module; O=$R/lab/dist-c2
 V=$(sed -n 's/^version: //p' "$APP/pubspec.yaml"); KIT=$(sed -n "s/.*static const kit = '\(.*\)';/\1/p" "$APP/lib/research.dart")
 grep -q "applicationIdSuffix \".c2\"" "$APP/android/app/build.gradle" || { echo "app copy lacks the .c2 suffix: apply patches/app-c2 first"; exit 2; }
@@ -24,7 +30,7 @@ command -v ninja >/dev/null || PATH=$HOME/Library/Android/sdk/cmake/3.22.1/bin:$
 # 1. The tree must be exactly HEAD + the series: apply the series to a clean export of HEAD and compare every touched file.
 X=$(mktemp -d); git -C "$SRC" archive HEAD | tar -x -C "$X"
 for p in $PATCHES; do (cd "$X" && git apply "$p") || { echo "series patch does not apply: $p"; exit 1; }; done
-files=$(cat $PATCHES | sed -n 's#^+++ b/##p' | sort -u)
+files=$([ -z "$PATCHES" ] || cat $PATCHES | sed -n 's#^+++ b/##p' | sort -u)
 [ "$files" = "$(git -C "$SRC" diff --name-only | sort -u)" ] || { echo "the tree's changed files differ from the series'"; exit 1; }
 for f in $files; do cmp -s "$X/$f" "$SRC/$f" || { echo "tree differs from the series: $f"; exit 1; }; done
 rm -rf "$X"
@@ -36,7 +42,7 @@ cp "$M/libggml-cpu-android_armv8.2_2.so" "$J/"; cp "$M/libllama.so" "$B/"
 
 # 3. Build record for the report.
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
-{ printf '{"kit": "%s", "app": "%s", "llama_cpp": "%s",\n "series": [' "$KIT" "$V" "$(git -C "$SRC" rev-parse HEAD)"
+{ printf '{"kit": "%s", "app": "%s", "runtime": "%s", "llama_cpp": "%s",\n "series": [' "$KIT" "$V" "$RT" "$(git -C "$SRC" rev-parse HEAD)"
   sep=; for p in $PATCHES; do printf '%s\n  {"file": "%s", "sha256": "%s"}' "$sep" "$(basename "$p")" "$(sha "$p")"; sep=,; done
   printf '],\n "app_patches": ['; sep=
   for p in "$R"/patches/app-c2/0*.patch; do printf '%s\n  {"file": "%s", "sha256": "%s"}' "$sep" "$(basename "$p")" "$(sha "$p")"; sep=,; done
@@ -53,8 +59,8 @@ for f in "$M/libllama.so" "$M/libggml-cpu-android_armv8.2_2.so"; do
   cmp -s "$X/lib/arm64-v8a/$b" "$f" || { echo "MISMATCH: the APK's $b is not the one just built"; exit 1; }; done
 unzip -o -q "$A" assets/flutter_assets/assets/kit_build.json -d "$X"
 cmp -s "$X/assets/flutter_assets/assets/kit_build.json" "$APP/assets/kit_build.json" || { echo "MISMATCH: kit_build.json"; exit 1; }
-rm -rf "$X"; mkdir -p "$O"; D=$O/vollie-c2-$V-research-$KIT.apk; cp "$A" "$D"
+rm -rf "$X"; mkdir -p "$O"; N=$KIT; [ "$RT" = c2 ] || N=$KIT-$RT; D=$O/vollie-c2-$V-research-$N.apk; cp "$A" "$D"
 { echo "apk $(basename "$D") $(wc -c < "$D" | tr -d ' ') B sha256 $(sha "$D")"
   cat "$APP/assets/kit_build.json"
-  unzip -l "$D" | awk '$4 ~ /^lib\/arm64-v8a\// {print $1, $4}'; } > "$O/BUILD-$KIT.txt"
-cat "$O/BUILD-$KIT.txt"
+  unzip -l "$D" | awk '$4 ~ /^lib\/arm64-v8a\// {print $1, $4}'; } > "$O/BUILD-$N.txt"
+cat "$O/BUILD-$N.txt"

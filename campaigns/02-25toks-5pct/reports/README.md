@@ -867,9 +867,17 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   25.23 (n 4), with the bench condition and a 2,419/2,841 cap; that is material for a claim round under the
   claim rule, not a claim.
 
+### R68 Claim-format rehearsal: touch x nice, campaign-1 and stock references, power saving off (kit r28)
+
+- **Status:** pre-registered; not yet run. **Label:** *device* (when run). Pre-registration:
+  [prereg/R68-rehearsal-touch-nice-references-device.md](../prereg/R68-rehearsal-touch-nice-references-device.md).
+  Kit r28 is three APKs (c2, c1, stock); their hashes are in the pre-registration. Sessions A, B and R and the T-A
+  probes are described there; no result exists yet. Memo: [memo-32](memo-32-kit-r28.md).
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-28, code audit of the kit app and runtime: thread pin lost in gated runs, per-run waste](memo-28-code-audit.md);
 [memo-29, joint round (Bonnie and Ebony): TEST list T1-T11 and TRY list Y1-Y12 for Tom; working files in `memo-29-work/`](memo-29-joint-test-and-try-lists.md);
+[memo-32, kit r28 (three APKs c2, c1, stock; touch x nice; T-A probes; sessions A, B, R)](memo-32-kit-r28.md);
 [memo-31, joint round (Bonnie and Ebony): claim confidence not sufficient; tail types A and B; go rule; TEST list T-A..T-E and TRY list for kit r28; working files in `memo-31-work/`](memo-31-claim-confidence.md);
 [memo-30, kit r27 (persistent pool + per-thread mask, patch 0010; PROT_EXEC model mapping, patch 0011; pin x exec 2x2 per quad; internal-storage exec check and copy; T1, T3 riders)](memo-30-kit-r27.md);
 [memo-27, kit r26 (kv clear on the untagged address; one arm per model, r16 gate, kv in ABBA quads)](memo-27-kit-r26.md);

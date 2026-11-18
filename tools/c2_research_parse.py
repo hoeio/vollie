@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Campaign 2 research-kit report parser (kits r17 to r27; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
-memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md, memo-19-kit-r21.md, memo-20-kit-r22.md, memo-22-kit-r23.md, memo-23-kit-r24.md, memo-26-kit-r25.md, memo-27-kit-r26.md and memo-30-kit-r27.md).
+"""Campaign 2 research-kit report parser (kits r17 to r28; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
+memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md, memo-19-kit-r21.md, memo-20-kit-r22.md, memo-22-kit-r23.md, memo-23-kit-r24.md, memo-26-kit-r25.md, memo-27-kit-r26.md, memo-30-kit-r27.md and memo-32-kit-r28.md).
 Standard library only.
 
 usage: python3 -I tools/c2_research_parse.py <report.json | clipboard text "c2gz:..."> [--min-mhz 1800]
@@ -1523,6 +1523,11 @@ def r27_checks(r):
         same = len(set().union(*t.values())) == 1 if t else False
         out.append(f"{m} (r27) texts per cell: {dict(sorted((k, sorted(v)) for k, v in t.items()))}: "
                    f"{'same' if same else 'DIFFER (kill rule)'}")
+    return out + storage_lines(r)
+
+
+def storage_lines(r):
+    out = []
     sto = r.get('storage') or {}
     ic, ec = sto.get('internal_check') or {}, sto.get('external_check') or {}
     mrow = lambda c: (c.get('mount') or {})
@@ -1540,13 +1545,13 @@ def r27_checks(r):
     return out
 
 
-def r27_factor(rs, qs, on, name):
+def r27_factor(rs, qs, on, name, metrics=None):
     out = []
     eff = lambda q, f: None if None in [f(x) for x in q] or len({on(x) for x in q}) < 2 else \
         st.mean(f(x) for x in q if on(x)) - st.mean(f(x) for x in q if not on(x))
     a, b = [x for x in rs if on(x)], [x for x in rs if not on(x)]
     out.append(f"    {name}: {len(a)} on, {len(b)} off, {len(qs)} quads")
-    for mn, f, d in R27_METRICS:
+    for mn, f, d in metrics or R27_METRICS:
         out.append(f"      {mn}: paired {fmt_se([eff(q, f) for q in qs], d)} | Welch {welch([f(x) for x in a], [f(x) for x in b], d)} | "
                    f"median {fmt(med(f(x) for x in a), d)} / {fmt(med(f(x) for x in b), d)}")
     return out
@@ -1643,6 +1648,196 @@ def r27_tables(r):
             out.append(stats_line(f"  {m} {c}", [x for x in scored if x.get('model') == m and cell_of(x) == c]))
     return out + extras_tail(runs)
 
+# kit r28 (memo-32): R68's rehearsal (claim-format blocks, touch x nice quads, c1-olmoe 0012) and the reference runtimes
+TOUCH_RE = re.compile(r'c2-touch run=(\S+) pass=(\d+) final=(\d) src=(\w+) at_ms=(\d+) set=(\d+) pages=(\d+) ms=([\d.]+) '
+                      r'cpu=(-?\d+) majflt=(-?\d+) minflt=(-?\d+)')
+NICE_RE = re.compile(r'c2-nice run=(\S+) want=(\S+) pool=(\d) restored=(\d+)/(\d+)')
+NICEW_RE = re.compile(r' w(\d+)=(-?\d+):(-?\d+):s(\d+):f(\d+):e(\d+)')
+
+
+def touch_on(x):
+    return 'VOLLIE_TOUCH' in (x.get('env') or env_of(x))
+
+
+def nice_on(x):
+    return 'VOLLIE_NICE' in (x.get('env') or env_of(x))
+
+
+def cell28(x):
+    return ('T' if touch_on(x) else 't') + ('N' if nice_on(x) else 'n')
+
+
+def touch_of(x):
+    """The row's c2-touch passes: [(pass, final, src, at_ms, set, pages, ms, cpu, majflt, minflt)]."""
+    return [(int(m.group(2)), m.group(3) == '1', m.group(4), int(m.group(5)), int(m.group(6)), int(m.group(7)),
+             float(m.group(8)), int(m.group(9)), int(m.group(10)), int(m.group(11)))
+            for l in x.get('c2') or [] for m in [TOUCH_RE.search(l)] if m and m.group(1) == x.get('run_tag', m.group(1))]
+
+
+def touch_final(x, i):
+    f = [p for p in touch_of(x) if p[1]]
+    return f[-1][i] if f else None
+
+
+def nice_of(x):
+    """The row's last c2-nice line: want, restored ok / failed, workers [(i, tid, value, sets, fails, errno)]."""
+    for l in reversed(x.get('c2') or []):
+        m = NICE_RE.search(l)
+        if m and m.group(1) == x.get('run_tag', m.group(1)):
+            return {'want': m.group(2), 'restored': (int(m.group(4)), int(m.group(5))),
+                    'workers': [tuple(int(g) for g in w.groups()) for w in NICEW_RE.finditer(l[m.end():])]}
+    return None
+
+
+def smaps_model28(x, k):
+    """T-D: the model's smaps Rss MB (r28 matches by inode); when it reads 0 or is missing, RssFile from mem_before."""
+    v = smaps_model(x, k)
+    if v:
+        return v
+    return memv(x.get('mem_before' if k == 'smaps_before' else 'mem_after'), 'file')
+
+
+def power_label(p):
+    p = p or {}
+    lp = p.get('lowPower')
+    return 'on' if p.get('powerSave') is True or (isinstance(lp, int) and lp > 0) else 'off' if p.get('powerSave') is False else '?'
+
+
+def cap7(x, k='cap_before'):
+    m = re.search(r'cap=(\d+)/(\d+)', x.get(k) or '')
+    return int(m.group(2)) if m else None
+
+
+R28_METRICS = [m for m in R27_METRICS if not m[0].startswith('mapped before')] + [
+    ('model Rss before MB (smaps by inode, else RssFile)', lambda x: smaps_model28(x, 'smaps_before'), 0),
+    ('touch final pass ms', lambda x: touch_final(x, 6), 1), ('touch final pass majflt', lambda x: touch_final(x, 8), 0)]
+
+
+def r28_runs(r, phase=None):
+    return [x for x in r.get('runs', []) if x.get('proto') == 'r28' and (phase is None or x.get('phase') == phase)]
+
+
+def r28_checks(r):
+    out = r24_checks(r)
+    runs = r28_runs(r)
+    rt = r.get('runtime', (r.get('build') or {}).get('runtime', 'c2'))
+    out.append(f"r28: runtime {rt}; session {r.get('session_label')}; power at start {power_label(r.get('power_start'))} "
+               f"({r.get('power_start')}), session_power {r.get('session_power')}; at end {power_label(r.get('power_end'))}; "
+               f"runs with power saving on {sum(1 for x in runs if power_label(x.get('power')) == 'on')} of {len(runs)}")
+    sid = lambda x: str(x.get('id', ''))
+    bad_id = [x.get('run_tag') for x in runs if x.get('phase') == 'on' and x.get('block') == 'quad' and (
+        ('_touch' in sid(x)) != touch_on(x) or ('_nice' in sid(x)) != nice_on(x))]
+    nopx = [x.get('run_tag') for x in runs if rt == 'c2' and not (pin_on(x) and exec_on(x) and kv_on(x))]
+    badq = []
+    for g in sorted({x.get('group') for x in runs if x.get('block') == 'quad'}, key=lambda g: int(str(g).lstrip('b') or 0)):
+        for k, q in enumerate(r27_quads([x for x in runs if x.get('group') == g and x.get('phase') == 'on'])):
+            if sorted(cell28(x) for x in q) != ['TN', 'Tn', 'tN', 'tn']:
+                badq.append(f"{g}q{k + 1}({''.join(cell28(x) for x in q)})")
+    out.append(f"r28: gate rules {sorted({x.get('gate_rule') for x in runs if x.get('gate')}, key=str)}; id suffix != env in "
+               f"{','.join(bad_id) or 'none'}; c2 runs without pin + exec + kv {','.join(nopx) or 'none'}; quads without the four "
+               f"cells {','.join(badq) or 'none'}")
+    for m in r21_models(r):
+        for arm in sorted({str(x.get('arm')) for x in runs if x.get('model') == m}):
+            t = {md5(x['text'])[:8] for x in runs if x.get('model') == m and str(x.get('arm')) == arm and x.get('text') is not None}
+            out.append(f"{m} {arm} (r28) texts: {sorted(t)}: {'same' if len(t) == 1 else 'DIFFER (kill rule)'}")
+    return out + storage_lines(r)
+
+
+def r28_tables(r):
+    runs = r28_runs(r)
+    if not runs:
+        return []
+    scored = [x for x in runs if x.get('phase') == 'on']
+    out = ['r28 claim-format blocks (*device*): per block n, median tok/s, runs below 25.0, cap7 before (min..max), power '
+           'saving on (runs); then per position: tok/s, wait end, rq wait ms/token, decode majflt, cap7:']
+    for g in sorted({x.get('group') for x in scored if x.get('block') in ('claim', 'ref')}, key=lambda g: int(str(g).lstrip('b') or 0)):
+        v = [x for x in scored if x.get('group') == g]
+        tps = [x.get('decode_tps') for x in v if x.get('decode_tps') is not None]
+        caps = [c for c in (cap7(x) for x in v) if c]
+        out.append(f"  {g} {v[0].get('model')} {v[0].get('arm')} ({v[0].get('id')}): n {len(v)}, median {fmt(med(tps))}, below 25.0 "
+                   f"{sum(1 for y in tps if y < 25.0)}, cap7 {min(caps) if caps else '-'}..{max(caps) if caps else '-'}, "
+                   f"power-save on {sum(1 for x in v if power_label(x.get('power')) == 'on')}")
+        out.append('    ' + ' '.join(f"{i + 1}:{fmt(x.get('decode_tps'))}/{(x.get('wait_end') or '-')[0]}/{fmt(wq_ms_tok(x), 1)}/"
+                                     f"{(io_of(x) or {}).get('dec_majflt')}/{cap7(x)}" for i, x in enumerate(v)))
+        out.append(stats_line('    ', v))
+    qb = [x for x in scored if x.get('block') == 'quad']
+    if qb:
+        out.append('r28 factors per model (quad blocks): on minus off; paired = per quad mean(on) - mean(off), mean ± SE over '
+                   'quads; Welch = all quad runs (*device*):')
+        for m in r21_models(r):
+            rs = [x for x in qb if x.get('model') == m]
+            qs = [q for g in r23_blocks(rs, m) for q in r27_quads([x for x in rs if x.get('group') == g])]
+            if rs:
+                out.append(f"  {m}: {len(rs)} quad runs, {len(qs)} quads")
+                out += r27_factor(rs, qs, touch_on, 'touch (T - t)', R28_METRICS)
+                out += r27_factor(rs, qs, nice_on, 'nice (N - n)', R28_METRICS)
+    out.append('r28 touch per model and level (gated runs): runs with a final pass | src | final pages / set | final ms | '
+               'final majflt / minflt | passes per run | begin rc (*device*):')
+    for m in r21_models(r):
+        for lv in (True, False):
+            v = [x for x in runs if x.get('model') == m and x.get('gate') and touch_on(x) == lv]
+            if not v:
+                continue
+            fin = [touch_final(x, 0) is not None for x in v]
+            rc = {}
+            for x in v:
+                k = str((x.get('touch_begin') or {}).get('rc', (x.get('touch_begin') or {}).get('error', 'none')))[:40]
+                rc[k] = rc.get(k, 0) + 1
+            out.append(f"  {m} {'T' if lv else 't'}: {sum(fin)} of {len(v)} | {sorted({touch_final(x, 2) for x in v if touch_final(x, 2)})} | "
+                       f"{fmt(med(touch_final(x, 5) for x in v), 0)} / {fmt(med(touch_final(x, 4) for x in v), 0)} | "
+                       f"{fmt(med(touch_final(x, 6) for x in v), 1)} | {fmt(med(touch_final(x, 8) for x in v), 0)} / "
+                       f"{fmt(med(touch_final(x, 9) for x in v), 0)} | {fmt(med(len(touch_of(x)) for x in v), 0)} | rc {rc}")
+    out.append('r28 nice per model and level: runs with a c2-nice line | values read back (thread count) | sets / fails | '
+               'errnos | restores ok / failed | workers_after nice values (*device*):')
+    for m in r21_models(r):
+        for lv in (True, False):
+            v = [x for x in runs if x.get('model') == m and nice_on(x) == lv]
+            if not v:
+                continue
+            ns = [nice_of(x) for x in v]
+            have = [n for n in ns if n]
+            vals, errs, wa = {}, {}, {}
+            for n in have:
+                for w in n['workers']:
+                    vals[w[2]] = vals.get(w[2], 0) + 1
+                    if w[5]:
+                        errs[w[5]] = errs.get(w[5], 0) + 1
+            for x in v:
+                for th in x.get('workers_after') or []:
+                    wa[th[1]] = wa.get(th[1], 0) + 1
+            out.append(f"  {m} {'N' if lv else 'n'}: {len(have)} of {len(v)} | {dict(sorted(vals.items()))} | "
+                       f"{sum(w[3] for n in have for w in n['workers'])} / {sum(w[4] for n in have for w in n['workers'])} | "
+                       f"{errs or 'none'} | {sum(n['restored'][0] for n in have)} / {sum(n['restored'][1] for n in have)} | "
+                       f"{dict(sorted(wa.items(), key=lambda kv: str(kv[0])))}")
+    out.append('r28 T-B per model (scored runs): /proc/stat readable (runs) | cpus 4-7 delta ticks user / system / irq+softirq '
+               '(median per run) | loadavg readable | thermal status before (runs) | worker policies after (*device*):')
+    for m in r21_models(r):
+        v = [x for x in scored if x.get('model') == m]
+        def d(x, i):
+            a, b = (x.get('proc_before') or {}).get('cpu'), (x.get('proc_after') or {}).get('cpu')
+            if not a or not b:
+                return None
+            return sum(b[c][i] - a[c][i] for c in (f'cpu{k}' for k in BIG) if c in a and c in b) if isinstance(i, int) else \
+                sum(b[c][j] - a[c][j] for c in (f'cpu{k}' for k in BIG) if c in a and c in b for j in i)
+        sts, pol = {}, {}
+        for x in v:
+            s_ = (x.get('power') or {}).get('status')
+            sts[s_] = sts.get(s_, 0) + 1
+            for th in x.get('workers_after') or []:
+                pol[th[3]] = pol.get(th[3], 0) + 1
+        out.append(f"  {m}: {sum(1 for x in v if (x.get('proc_before') or {}).get('cpu'))} of {len(v)} | "
+                   f"{fmt(med(d(x, 0) for x in v), 0)} / {fmt(med(d(x, 2) for x in v), 0)} / {fmt(med(d(x, (5, 6)) for x in v), 0)} | "
+                   f"{sum(1 for x in v if (x.get('proc_before') or {}).get('loadavg'))} | {dict(sorted(sts.items(), key=str))} | "
+                   f"{dict(sorted(pol.items(), key=str))}")
+    out.append('r28 T-D per model (scored runs, medians): smaps model Rss MB before (by inode) | RssFile before | mincore '
+               'resident before | runs where smaps model Rss > 0 (*device*):')
+    for m in r21_models(r):
+        v = [x for x in scored if x.get('model') == m]
+        out.append(f"  {m}: {fmt(med(smaps_model(x, 'smaps_before') for x in v), 0)} | {fmt(med(memv(x.get('mem_before'), 'file') for x in v), 0)}"
+                   f" | {fmt(med(res_mb(x) for x in v), 0)} | {sum(1 for x in v if smaps_model(x, 'smaps_before'))} of {len(v)}")
+    out += extras_head(r)
+    return out + extras_tail(runs)
+
 
 def main(argv=None):
     a = argparse.ArgumentParser()
@@ -1671,7 +1866,8 @@ def main(argv=None):
         else (r24_checks(r), r24_tables(r)) if r.get('kit') == 'r24' \
         else (r25_checks(r), r25_tables(r)) if r.get('kit') == 'r25' \
         else (r26_checks(r), r26_tables(r)) if r.get('kit') == 'r26' \
-        else (r27_checks(r), r27_tables(r)) if r.get('kit') == 'r27' else (
+        else (r27_checks(r), r27_tables(r)) if r.get('kit') == 'r27' \
+        else (r28_checks(r), r28_tables(r)) if r.get('kit') == 'r28' else (
         checks(r, o.prompt), identity(r), groups(r, o.min_mhz, o.fault_run), ab(r, o.min_mhz, o.sigma),
         r16_compare(r, r16), waits(r), warm(r))
     for part in parts:
@@ -2156,6 +2352,62 @@ def selftest():
     assert any(l == '    exec live in 8 of 8 X scored runs; executable in x runs (VOID) ' + xr['run_tag'] for l in r27_tables(r27))
     r27['runs'][2]['text'] = 'other'
     assert any(l.startswith('granite (r27) texts per cell') and l.endswith('DIFFER (kill rule)') for l in r27_checks(r27))
+    # r28: claim blocks O G, quad blocks O G (touch x nice, Williams rows), OLMoE num claim block; synthetic effects:
+    # touch +0.4 tok/s, nice +0.8; smaps model by inode in olmoe rows, 0 in granite rows (RssFile fallback)
+    def row28(m, g, i, arm, block, tc, nc, phase='on'):
+        x = row27(m, g, i, True, True, phase, phase == 'warmup' and i == 90)
+        sfx = '_wu' if phase == 'warmup' else ('_claim' if block == 'claim' else '_q' + ('_touch' if tc else '') + ('_nice' if nc else ''))
+        tag = f"{m}_{arm}{sfx}.{i}"
+        x['c2'] = [l.replace(f"run={x['run_tag']} ", f'run={tag} ') for l in x['c2']]
+        env = {**x['env'], **({'VOLLIE_TOUCH': '1', 'VOLLIE_TOUCH_S': '12'} if tc else {}), **({'VOLLIE_NICE': '-10'} if nc else {})}
+        x.update({'proto': 'r28', 'id': f"{m}_{arm}{sfx}", 'run_tag': tag, 'env': env, 'env_set': env, 'arm': arm, 'block': block,
+                  'decode_tps': 24.0 + (0.4 if tc else 0) + (0.8 if nc else 0), 'power': {'powerSave': False, 'lowPower': 0, 'status': 0},
+                  'cap_before': 'cap=2419/2841', 'mem_before': 'avail=2638MB cached=2447MB swapfree=0MB anon=480MB file=2900MB swap=437MB',
+                  'smaps_before': {'model': [3000000, 2950000 if m == 'olmoe' else 0, 0, 0]},
+                  'touch_begin': {'rc': 0 if tc else -1}, 'touch_end': {'pages': 700000 if tc else -1},
+                  'workers_after': [[101, -10 if nc else 0, 110 if nc else 120, 0, 4, '0::/']],
+                  'proc_before': {'cpu': {f'cpu{k}': [0] * 7 for k in range(8)}, 'loadavg': '1 1 1 1/1 1'},
+                  'proc_after': {'cpu': {f'cpu{k}': [100, 0, 10, 0, 0, 1, 2] for k in range(8)}, 'loadavg': '1 1 1 1/1 1'}})
+        if tc:
+            x['c2'].append(f"c2-touch run={tag} pass=1 final=1 src=want at_ms=90000 set=700000 pages=700000 ms=800.0 cpu=2 majflt=5 minflt=3000 sum=1")
+        if nc:
+            x['c2'].append(f"c2-nice run={tag} want=-10 pool=1 restored=0/0 w0=101:-10:s1:f0:e0 w1=102:-10:s1:f0:e0 w2=103:-10:s1:f0:e0")
+        return x
+    r28 = dict(r27, kit='r28', runtime='c2', session_label='deep-sleeping list off', power_start={'powerSave': False, 'lowPower': 0},
+               power_end={'powerSave': False}, runs=[])
+    plan = [('olmoe', 'claim', 'off'), ('granite', 'claim', 'num'), ('olmoe', 'quad', 'off'), ('granite', 'quad', 'num'),
+            ('olmoe', 'claim', 'num')]
+    for b, (m, blk, arm) in enumerate(plan, 1):
+        mi = ['granite', 'olmoe'].index(m)
+        last = b == 5
+        r28['runs'] += [row28(m, f'b{b}', 90 + j, arm, blk, False, False, 'warmup') for j in range(2)]
+        if blk == 'claim':
+            r28['runs'] += [row28(m, f'b{b}', j, arm, blk, last, last) for j in range(10)]
+        else:
+            for k in range(4):
+                for j, c in enumerate(rows27[(k + 2 * mi) % 4]):
+                    r28['runs'].append(row28(m, f'b{b}', 4 * k + j, arm, blk, *cell27[c]))
+    r28['specs'] = list({x['id']: {'id': x['id'], 'gate_rule': x['gate_rule']} for x in r28['runs']}.values())
+    for x in r28['runs']:
+        x['text'] = 'The ocean' if x['arm'] != 'num' or x['model'] == 'granite' else 'The sea'
+    c = r28_checks(r28)
+    assert any(l.startswith('r28: runtime c2; session deep-sleeping list off; power at start off') and l.endswith('of 72') for l in c), c
+    assert any(l.startswith("r28: gate rules ['r16']; id suffix != env in none; c2 runs without pin + exec + kv none; quads "
+                            "without the four cells none") for l in c), c
+    assert any(l.startswith("olmoe num (r28) texts: ") and l.endswith(': same') for l in c), c
+    t = r28_tables(r28)
+    assert any(l.startswith('  b1 olmoe off (olmoe_off_claim): n 10, median 24.00, below 25.0 10, cap7 2841..2841') for l in t), t
+    assert any(l.startswith('  b5 olmoe num (olmoe_num_claim): n 10, median 25.20, below 25.0 0') for l in t), t
+    i = t.index('  olmoe: 16 quad runs, 4 quads')
+    assert t[i + 1] == '    touch (T - t): 8 on, 8 off, 4 quads', t[i + 1]
+    assert t[i + 2].startswith('      tok/s: paired +0.40 ± 0.00 (n 4)'), t[i + 2]
+    j = t.index('    nice (N - n): 8 on, 8 off, 4 quads', i)
+    assert t[j + 1].startswith('      tok/s: paired +0.80 ± 0.00 (n 4)'), t[j + 1]
+    assert any(l.startswith('  olmoe T: 18 of 18 | [\'want\'] | 700000 / 700000 | 800.0 | 5 / 3000 | 1 | rc {\'0\': 18}') for l in t), t
+    assert any(l.startswith('  granite N: 8 of 8 | {-10: 24} | 24 / 0 | none | 0 / 0 | {-10: 8}') for l in t), t
+    assert any(l.startswith('  olmoe: 36 of 36 | 400 / 40 / 12 | 36 |') for l in t), t
+    assert any(l == '  granite: 0 | 2900 | 2300 | 0 of 26' for l in t), t
+    assert smaps_model28(r28['runs'][14], 'smaps_before') == 2900 and smaps_model28(r28['runs'][2], 'smaps_before') == 2950
     # the plateau gate, as the app's unit test (R62's pos 4 and 6 series, every 5 s)
     p4 = [0.873, 0.873, 0.873, 0.873, 0.802, 0.788, 0.755, 0.741, 0.721, 0.735, 0.725, 0.735, 0.748, 0.764, 0.77]
     p6 = [0.725, 0.767, 0.789, 0.81, 0.833, 0.833, 0.808, 0.778, 0.753, 0.741, 0.717, 0.737, 0.753, 0.776, 0.79]

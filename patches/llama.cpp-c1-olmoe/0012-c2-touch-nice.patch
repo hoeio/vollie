@@ -1,0 +1,364 @@
+diff --git a/common/common.cpp b/common/common.cpp
+index a78c590..f4fc256 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -1236,6 +1236,8 @@ common_gguf_info common_get_gguf_info(const std::string & fname) {
+     return info;
+ }
+ 
++extern "C" int llama_vollie_touch_begin(const unsigned char * want, size_t n); // Vollie c2 (0012), llama-mmap.cpp
++
+ common_init_result::common_init_result(common_params & params, bool model_only) :
+     pimpl(new impl{}) {
+     auto mparams = common_model_params_to_llama(params);
+@@ -1384,6 +1386,12 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+     if (!(na && atoi(na) == 1)) {
+         pimpl->threadpools.init(lctx, params);
+     }
++    // Vollie c2 (0012, host checks only): VOLLIE_TOUCH_HOST=1 starts VOLLIE_TOUCH's helper for the whole run (no end call:
++    // it runs its passes beside the tool's graphs until exit), so llama-perplexity can show the touches change no value.
++    const char * th = getenv("VOLLIE_TOUCH_HOST");
++    if (th && atoi(th) == 1) {
++        fprintf(stderr, "c2-touch-host begin=%d\n", llama_vollie_touch_begin(nullptr, 0));
++    }
+ }
+ 
+ llama_model * common_init_result::model() {
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index bf2108a..5184802 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -6079,6 +6079,20 @@ static struct ggml_threadpool * ggml_c2_pool = NULL;
+ static int  ggml_c2_sched = 0;            // VOLLIE_SCHED=1
+ struct ggml_c2_thr_t0 { int ph; int64_t ex, wq, nv, ni; };
+ 
++// Vollie c2 (patches/llama.cpp-c1-olmoe/0012-c2-touch-nice.patch, bit-identical: scheduling priority only).
++// VOLLIE_NICE=<n> (Linux, persistent-pool graphs only, so with VOLLIE_POOL=1): every thread of the graph (0 = the caller)
++// compares its nice value (getpriority on its tid) with n at each graph start and sets it (setpriority) when it differs;
++// the pool's workers therefore set it once, at the first graph after the pool starts. A thread whose set failed is not
++// asked again (the errno is kept). Unset: every thread this patch changed gets its first value back (by tid, at the next
++// graph's start), so an "off" run after an "on" run runs at the old priority. With GGML_C2_IO=1, per prompt with the knob
++// set or a restore done, one "c2-nice" line: want, pool, restores done / failed and per thread index tid:value read
++// back:s<sets>:f<failed sets>:e<last errno>.
++struct ggml_c2_nice_slot { int tid, orig, saved, val, sets, fails, err, denied_tid; };
++static struct ggml_c2_nice_slot ggml_c2_nice[GGML_C2_THR];
++static int  ggml_c2_nice_on, ggml_c2_nice_want;   // VOLLIE_NICE at the graph's start
++static int  ggml_c2_nice_restored[2];             // per prompt: restores done, failed
++static char ggml_c2_nice_s[32] = "-";             // VOLLIE_NICE at the prompt's start
++
+ static void ggml_c2_thr_sample(struct ggml_c2_thr_t0 * t) {
+     t->ex = t->wq = t->nv = t->ni = -1;
+ #if defined(__linux__)
+@@ -6131,6 +6145,38 @@ static void ggml_c2_thr_begin(int ith, bool pool, struct ggml_c2_thr_t0 * t) {
+             err = 1;
+         }
+     }
++    if (pool && ggml_c2_nice_on) { // Vollie c2 (0012): VOLLIE_NICE
++        struct ggml_c2_nice_slot * s = &ggml_c2_nice[ith];
++        const int tid = (int) syscall(SYS_gettid);
++        if (s->saved && s->tid != tid) { // another calling thread took this index: give the old one its value back
++            ggml_c2_nice_restored[setpriority(PRIO_PROCESS, s->tid, s->orig) == 0 ? 0 : 1]++;
++            s->saved = 0;
++        }
++        if (s->denied_tid != tid) {
++            errno = 0;
++            int cur = getpriority(PRIO_PROCESS, tid);
++            if (errno == 0 && cur != ggml_c2_nice_want) {
++                if (setpriority(PRIO_PROCESS, tid, ggml_c2_nice_want) == 0) {
++                    if (!s->saved) { // the value to give back: the first one this patch changed
++                        s->orig = cur;
++                        s->saved = 1;
++                    }
++                    s->sets++;
++                } else {
++                    s->fails++;
++                    s->err = errno;
++                    s->denied_tid = tid;
++                }
++                errno = 0;
++                cur = getpriority(PRIO_PROCESS, tid);
++            }
++            if (errno) {
++                s->err = errno;
++            }
++            s->val = cur;
++        }
++        s->tid = tid;
++    }
+     cpu = sched_getcpu();
+ #endif
+     if (ph < 0) {
+@@ -6189,6 +6235,15 @@ static void ggml_c2_thr_flush(const char * run) {
+         }
+     }
+     fprintf(stderr, "%s\n", line);
++    if (strcmp(ggml_c2_nice_s, "-") != 0 || ggml_c2_nice_restored[0] + ggml_c2_nice_restored[1] > 0) { // Vollie c2 (0012)
++        len = snprintf(line, sizeof line, "c2-nice run=%s want=%s pool=%d restored=%d/%d", run, ggml_c2_nice_s, ggml_c2_thr_on,
++                       ggml_c2_nice_restored[0], ggml_c2_nice_restored[1]);
++        for (int i = 0; i < nt && len < (int) sizeof line - 96; i++) {
++            const struct ggml_c2_nice_slot * s = &ggml_c2_nice[i];
++            len += snprintf(line + len, sizeof line - len, " w%d=%d:%d:s%d:f%d:e%d", i, s->tid, s->val, s->sets, s->fails, s->err);
++        }
++        fprintf(stderr, "%s\n", line);
++    }
+     for (int ph = 0; ph < 2 && ggml_c2_sched; ph++) {
+         len = snprintf(line, sizeof line, "c2-sched run=%s phase=%s n=%d", run, ph ? "decode" : "prefill", ggml_c2_thr[0].ph[ph].ss);
+         for (int i = 0; i < nt && len < (int) sizeof line - 96; i++) {
+@@ -6207,6 +6262,12 @@ static void ggml_c2_thr_reset(void) {
+     const char * m = getenv("VOLLIE_CPUMASK"), * p = getenv("VOLLIE_POOL");
+     snprintf(ggml_c2_thr_mask, sizeof ggml_c2_thr_mask, "%s", m && *m ? m : "-");
+     ggml_c2_thr_on = p && atoi(p) == 1;
++    const char * n = getenv("VOLLIE_NICE"); // Vollie c2 (0012)
++    snprintf(ggml_c2_nice_s, sizeof ggml_c2_nice_s, "%s", n && *n ? n : "-");
++    ggml_c2_nice_restored[0] = ggml_c2_nice_restored[1] = 0;
++    for (int i = 0; i < GGML_C2_THR; i++) {
++        ggml_c2_nice[i].sets = ggml_c2_nice[i].fails = ggml_c2_nice[i].err = 0;
++    }
+ }
+ 
+ // VOLLIE_CPUMASK into ggml_c2_pool_want (parsed again only when the string changes).
+@@ -7429,6 +7490,20 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+         const char * pe = getenv("VOLLIE_POOL"), * se = getenv("VOLLIE_SCHED");
+         ggml_c2_sched = se && atoi(se) == 1;
+         ggml_c2_pool_masks(getenv("VOLLIE_CPUMASK"));
++        const char * ne = getenv("VOLLIE_NICE"); // Vollie c2 (0012)
++        ggml_c2_nice_on = ne && *ne;
++        ggml_c2_nice_want = ggml_c2_nice_on ? atoi(ne) : 0;
++#if defined(__linux__)
++        for (int i = 0; i < GGML_C2_THR && !ggml_c2_nice_on; i++) {
++            struct ggml_c2_nice_slot * s = &ggml_c2_nice[i];
++            if (s->saved) {
++                ggml_c2_nice_restored[setpriority(PRIO_PROCESS, s->tid, s->orig) == 0 ? 0 : 1]++;
++                s->saved = 0;
++                s->val = s->orig;
++            }
++            s->denied_tid = 0;
++        }
++#endif
+         if (threadpool == NULL && n_threads > 1 && pe && atoi(pe) == 1 && pthread_mutex_trylock(&c2_pool_mu) == 0) {
+             if (ggml_c2_pool && ggml_c2_pool->n_threads < n_threads) {
+                 ggml_threadpool_free(ggml_c2_pool);
+diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
+index a31e271..681aa5a 100644
+--- a/src/llama-mmap.cpp
++++ b/src/llama-mmap.cpp
+@@ -629,6 +629,219 @@ int llama_vollie_exec_sync(void) {
+     return llama_c2_exec_sync_impl("api");
+ }
+ 
++// Vollie c2 (patches/llama.cpp-c1-olmoe/0012-c2-touch-nice.patch, bit-identical: reads model bytes, writes nothing the
++// model computes with). VOLLIE_TOUCH=1: llama_vollie_touch_begin() starts one helper thread, restricted to cpus 0-3 (the
++// little cores of the SD888), that reads one byte per page of the model mappings registered by 0011 every VOLLIE_TOUCH_S
++// seconds (default 12; 0 or less = no periodic pass) and once more when llama_vollie_touch_end() is called; end() waits for
++// that last pass, so the run starts after it. Each read maps the page into this process (and reads it from storage if it
++// left the page cache), which is the state a decode wants (memo-31 TRY 1, Y1 b). The page set: the caller's vector (one
++// byte per file page, nonzero = touch; the kit passes the pages resident at the previous run's end), else the pages
++// resident now (mincore at begin), else every page of the mappings (src=want|resident|all). Without VOLLIE_TOUCH=1 both
++// calls return -1 and do nothing. One "c2-touch" line per pass: run id, pass number, final, set, the set's pages, pages
++// touched, ms, the cpu it ran on, and this thread's major / minor faults during the pass.
++#if defined(_POSIX_MAPPED_FILES)
++#include <chrono>
++#include <condition_variable>
++#include <thread>
++#include <vector>
++#if defined(__linux__)
++#include <sched.h>
++#include <sys/resource.h>
++#endif
++namespace {
++struct c2_touch_t {
++    std::thread             th;
++    std::mutex              mu;
++    std::condition_variable cv;
++    bool                    stop = false;
++    bool                    running = false;
++    std::vector<unsigned char> want;     // per file page; empty = every page of the mappings
++    std::string             src = "-";
++    std::string             run = "-";
++    int                     every_s = 12;
++    int64_t                 t0 = 0;
++    int                     passes = 0;
++    long long               last_pages = -1;
++    ~c2_touch_t();
++};
++c2_touch_t c2_touch; // after c2_exec_mu and c2_exec_maps: destroyed before them
++
++// One pass: under c2_exec_mu (an unload waits), one volatile byte read per page of the set. Returns pages touched.
++long long c2_touch_pass(bool final) {
++    const size_t ps = (size_t) sysconf(_SC_PAGESIZE);
++    const int64_t t0 = ggml_time_us();
++    long long pages = 0, set = 0;
++    long mj0 = 0, mn0 = 0, mj1 = 0, mn1 = 0;
++    int cpu = -1;
++#if defined(__linux__)
++    struct rusage ru;
++    if (getrusage(RUSAGE_THREAD, &ru) == 0) { mj0 = ru.ru_majflt; mn0 = ru.ru_minflt; }
++    cpu = sched_getcpu();
++#endif
++    unsigned sum = 0;
++    {
++        std::lock_guard<std::mutex> lk(c2_exec_mu);
++        for (const auto & m : c2_exec_maps) {
++            for (const auto & fr : *m.frags) {
++                for (size_t p = fr.first - fr.first % ps; p < fr.second; p += ps) {
++                    const size_t i = p / ps;
++                    if (!c2_touch.want.empty() && (i >= c2_touch.want.size() || !c2_touch.want[i])) {
++                        continue;
++                    }
++                    set++;
++                    if (p < fr.first) {
++                        continue; // the page's head is outside the fragment (unmapped)
++                    }
++                    sum += *(volatile const unsigned char *) ((const char *) m.addr + p);
++                    pages++;
++                }
++            }
++        }
++    }
++#if defined(__linux__)
++    if (getrusage(RUSAGE_THREAD, &ru) == 0) { mj1 = ru.ru_majflt; mn1 = ru.ru_minflt; }
++#endif
++    const int64_t t1 = ggml_time_us();
++    fprintf(stderr, "c2-touch run=%s pass=%d final=%d src=%s at_ms=%lld set=%lld pages=%lld ms=%.1f cpu=%d majflt=%ld minflt=%ld sum=%u\n",
++            c2_touch.run.c_str(), ++c2_touch.passes, final ? 1 : 0, c2_touch.src.c_str(), (long long) ((t0 - c2_touch.t0) / 1000),
++            set, pages, (t1 - t0) / 1000.0, cpu, mj1 - mj0, mn1 - mn0, sum & 0xff);
++    fflush(stderr);
++    return pages;
++}
++
++void c2_touch_main() {
++#if defined(__linux__)
++    cpu_set_t cs;
++    CPU_ZERO(&cs);
++    for (int c = 0; c < 4; c++) {
++        CPU_SET(c, &cs); // ponytail: cpus 0-3 = the SD888's little cores; a knob when a phone with another layout is tested
++    }
++    sched_setaffinity(0, sizeof cs, &cs);
++#endif
++    std::unique_lock<std::mutex> lk(c2_touch.mu);
++    while (!c2_touch.stop) {
++        if (c2_touch.every_s > 0) {
++            if (c2_touch.cv.wait_for(lk, std::chrono::seconds(c2_touch.every_s), [] { return c2_touch.stop; })) {
++                break;
++            }
++            lk.unlock();
++            c2_touch_pass(false);
++            lk.lock();
++        } else {
++            c2_touch.cv.wait(lk, [] { return c2_touch.stop; });
++        }
++    }
++    lk.unlock();
++    c2_touch.last_pages = c2_touch_pass(true);
++}
++
++long long c2_touch_end() {
++    {
++        std::lock_guard<std::mutex> lk(c2_touch.mu);
++        if (!c2_touch.running) {
++            return -1;
++        }
++        c2_touch.stop = true;
++    }
++    c2_touch.cv.notify_all();
++    c2_touch.th.join();
++    c2_touch.running = false;
++    return c2_touch.last_pages;
++}
++
++c2_touch_t::~c2_touch_t() {
++    if (running) {
++        c2_touch_end();
++    }
++}
++} // namespace
++
++extern "C" int llama_vollie_touch_begin(const unsigned char * want, size_t n);
++extern "C" long long llama_vollie_touch_end(void);
++
++// The kit's calls (Dart FFI): begin at the gate wait's start, end at its end (after the hold, before the run).
++// begin returns 0 when the helper started, -1 when VOLLIE_TOUCH is not 1, -2 when no model mapping is registered.
++extern "C"
++#if !defined(_WIN32)
++__attribute__((visibility("default")))
++#endif
++int llama_vollie_touch_begin(const unsigned char * want, size_t n) {
++    const char * e = getenv("VOLLIE_TOUCH");
++    if (!(e && atoi(e) == 1)) {
++        return -1;
++    }
++    c2_touch_end(); // a begin without an end: finish the previous helper first
++    std::vector<unsigned char> set;
++    std::string src;
++    {
++        std::lock_guard<std::mutex> lk(c2_exec_mu);
++        if (c2_exec_maps.empty()) {
++            return -2;
++        }
++        if (want && n > 0) {
++            set.assign(want, want + n);
++            src = "want";
++        } else {
++            src = "all";
++#if defined(__linux__)
++            // the pages resident now (the kit calls begin right after a run ends): mincore over each mapping
++            const size_t ps = (size_t) sysconf(_SC_PAGESIZE);
++            size_t pages = 0;
++            for (const auto & m : c2_exec_maps) {
++                for (const auto & fr : *m.frags) {
++                    pages = std::max(pages, (fr.second + ps - 1) / ps);
++                }
++            }
++            set.assign(pages, 0);
++            bool ok = true;
++            for (const auto & m : c2_exec_maps) {
++                for (const auto & fr : *m.frags) {
++                    const size_t a = fr.first - fr.first % ps;
++                    ok = ok && mincore((char *) m.addr + a, fr.second - a, set.data() + a / ps) == 0;
++                }
++            }
++            size_t res = 0;
++            for (auto & b : set) {
++                b &= 1;
++                res += b;
++            }
++            if (ok && res > 0) {
++                src = "resident";
++            } else {
++                set.clear();
++            }
++#endif
++        }
++    }
++    const char * s = getenv("VOLLIE_TOUCH_S");
++    const char * r = getenv("VOLLIE_RUN");
++    std::lock_guard<std::mutex> lk(c2_touch.mu);
++    c2_touch.want.swap(set);
++    c2_touch.src = src;
++    c2_touch.run = r && *r ? r : "-";
++    c2_touch.every_s = s && *s ? atoi(s) : 12;
++    c2_touch.t0 = ggml_time_us();
++    c2_touch.passes = 0;
++    c2_touch.last_pages = -1;
++    c2_touch.stop = false;
++    c2_touch.running = true;
++    c2_touch.th = std::thread(c2_touch_main);
++    return 0;
++}
++
++// The final pass (on the helper), then the helper exits; returns the pages it touched, -1 when no helper ran.
++extern "C"
++#if !defined(_WIN32)
++__attribute__((visibility("default")))
++#endif
++long long llama_vollie_touch_end(void) {
++    return c2_touch_end();
++}
++#else
++extern "C" int llama_vollie_touch_begin(const unsigned char *, size_t) { return -1; }
++extern "C" long long llama_vollie_touch_end(void) { return -1; }
++#endif
++
+ struct llama_mmap::impl {
+ #ifdef _POSIX_MAPPED_FILES
+     std::vector<std::pair<size_t, size_t>> mapped_fragments;

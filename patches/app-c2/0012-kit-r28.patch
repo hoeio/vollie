@@ -1,0 +1,962 @@
+diff --git a/lib/research.dart b/lib/research.dart
+index a6f8844..4cf7d2e 100644
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -1,8 +1,11 @@
+ part of 'assistant.dart';
+ 
+-/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-30-kit-r27.md).
++/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-32-kit-r28.md).
+ /// model: a [KitModel] id ([Research.kitModels]); the first spec of a group (block) reloads that model.
+-/// proto: 'r27' = r26's blocks (G O O G, one arm per model, r16's gate) with the kv clear in every run and two factors per
++/// proto: 'r28' = R68's rehearsal (memo-31 §7, memo-32): per model a claim-format block (10 gated runs, pin + exec, the
++///      model's arm), then a block of four quads of touch (VOLLIE_TOUCH, c1-olmoe 0012) x nice (VOLLIE_NICE, 0012), pin + exec
++///      in every run; OLMoE last a claim-format block in its num arm (MASS=900 + head 1024, R61) with touch and nice.
++///      block: 'claim' or 'quad' (spec field). r27 = r26's blocks (G O O G, one arm per model, r16's gate) with the kv clear in every run and two factors per
+ ///      model, pin (VOLLIE_POOL + VOLLIE_CPUMASK, c1-olmoe 0010) and exec (VOLLIE_EXEC_MAP, 0011), as a 2x2 in every quad
+ ///      of scored runs (memo-30; r26 = the kv factor in two ABBA quads per block, memo-27).
+ /// phase: 'warmup' (unscored), 'on' (scored) or 'prof' (profiled, not scored).
+@@ -26,7 +29,7 @@ typedef KitModel = ({String id, String name, String arch, String file, int bytes
+     List<int> experts});
+ 
+ typedef RunSpec = ({String id, String model, String proto, String group, String phase, String arm, String kind,
+-    Map<String, String> env, bool repack, int threads, int reps, int pause, bool gate, String gateRule, bool hold});
++    Map<String, String> env, bool repack, int threads, int reps, int pause, bool gate, String gateRule, bool hold, String block});
+ 
+ /// Research kit r27 (memo-30): r26 below plus c1-olmoe 0010 (persistent pool + per-thread mask) and 0011 (PROT_EXEC model
+ /// mapping), the kv clear in every run, pin x exec as a 2x2 per quad, the models copied to internal storage when it
+@@ -37,9 +40,30 @@ typedef RunSpec = ({String id, String model, String proto, String group, String
+ /// off), r16's gate only (no plateau factor), the kv factor in two ABBA quads per block. The models of [kitModels] in one
+ /// session, blocks in [blockOrder] (G O O G); 3 threads; hold (r23's rule) in every gated run; the kit pauses while a
+ /// charger is connected. One tap, one JSON report (clipboard, a file next to the models, and "Save to Downloads").
++/// Research kit r28 (memo-32): r27's runtime plus c1-olmoe 0012 (VOLLIE_TOUCH: a little-core helper touches the model's
++/// pages through the mapping during the gate wait and once at its end; VOLLIE_NICE: the pool's threads at nice -10), the
++/// R68 rehearsal design ([runs]), T-B's per-run fields (worker nice / policy / cgroup, /proc/stat and /proc/loadavg,
++/// power saving and thermal status), T-D's smaps match by inode, the session label (deep-sleeping list) and the power-save
++/// state read at the start, and T-A's cap probe ([capProbe], no model).
+ extension Research on Assistant {
+-  static const kit = 'r27';
+-  static const app = '1.27.0+27';
++  static const kit = 'r28';
++  static const app = '1.28.0+28';
++
++  /// r28: the owner's label for the session, chosen on the start screen before the kit can start (memo-31 §7: session A
++  /// with Samsung's deep-sleeping list, session B without). Recorded in the report and in every cap probe.
++  static final deepSleep = ValueNotifier<bool?>(null);
++  static String get sessionLabel =>
++      deepSleep.value == null ? 'unset' : 'deep-sleeping list ${deepSleep.value! ? 'on' : 'off'}';
++
++  /// r28 (owner, 2026-11-18): power saving was on in r13-r26 (capped at 2,035-2,150 MHz on cpu 7) and off in R67
++  /// (uncapped). The kit reads it at the start and in every run and never changes it.
++  static String powerLabel(Map<String, Object?> p) =>
++      p['powerSave'] == true || (p['lowPower'] is int && (p['lowPower'] as int) > 0)
++          ? 'power-save on'
++          : p['powerSave'] == false ? 'power-save off' : 'power-save unknown';
++
++  /// T-A's spinner (the probe's screen draws it while true).
++  static final probeSpinner = ValueNotifier<bool>(false);
+ 
+   /// Shown on the kit's start screen and kept in the report (R60: a banking app was running; R62: a charger was plugged
+   /// in during the last block).
+@@ -87,8 +111,6 @@ extension Research on Assistant {
+   /// r16's shipping settings without Granite's numerics (no GGML_EXPERT_SKIP, no GGML_HEAD2), for BOTH models: the
+   /// compiled defaults plus the app's tiny-op 262,144, expert read-ahead 1 and the sampler fast path.
+   static const _c1Ship = {'GGML_TINY_OP': '262144', 'GGML_EXPERT_IO': '1', 'VOLLIE_SAMPLER_BYPASS': '1'};
+-  /// campaign 1's per-token lines (r16): one `cpu-prof ab= tok=` line per decode token under an A/A label.
+-  static const _profOn = {'GGML_CPU_PROF': '1', 'GGML_CPU_AB_TOKEN': '1', 'GGML_CPU_AB': 'knob:MMID_FUSE+CHUNK2:1:1'};
+   /// The counters, in every run of both arms: one c2-io line per prompt (read_bytes, rchar, faults at the prompt's
+   /// start, its first decode token and its end).
+   static const _io = {'GGML_C2_IO': '1'};
+@@ -111,8 +133,13 @@ extension Research on Assistant {
+   static const execOn = {'VOLLIE_EXEC_MAP': '1'};
+   /// r27 (T1): per-thread schedstat and context switches in the runtime's c2-sched lines (0010), every run.
+   static const _sched = {'VOLLIE_SCHED': '1'};
+-  /// r27 (T3): the second profiled run of a block in block mode: one 14-op table over the 32 decode graphs.
+-  static const _profBlock = {'GGML_CPU_PROF': '1', 'GGML_CPU_AB': 'knob:MMID_FUSE+CHUNK2:1:1', 'GGML_CPU_AB_WARM': '32'};
++  /// r28, factor touch (c1-olmoe 0012, memo-31 TRY 1): the runtime's helper on cpus 0-3 reads one byte per page of the
++  /// wanted set (the pages resident at this model's previous run end, the hold's set) through the model mapping every
++  /// 12 s of the gate wait and once after the hold, before the run ([DeviceProfile.touchBegin] / [touchEnd]).
++  static const touchOn = {'VOLLIE_TOUCH': '1', 'VOLLIE_TOUCH_S': '12'};
++  /// r28, factor nice (0012, memo-31 TRY 2): the pool's threads (the caller included) at nice -10; value and errno read
++  /// back in the c2-nice line. Needs the pool (pin on in every r28 run).
++  static const niceOn = {'VOLLIE_NICE': '-10'};
+ 
+   /// r27: the four cells (pin, exec) and the order of each quad: a Williams square (every cell once per position over
+   /// four quads, every cell after every other once); pin runs P p p P or p P P p in every quad. Cells: 1 = P x,
+@@ -165,46 +192,89 @@ extension Research on Assistant {
+   /// r27 (memo-28 §2.6): the context of every kit load, fixed (4096 in every stored session so far, by the app's rule).
+   static const nCtx = 4096;
+ 
+-  /// r26: the one arm each model runs (R64): Granite num (pass, frozen: R62, R64), OLMoE off (R63 §4 parks MASS=900
+-  /// after three rounds without a shown gain). OLMoE keeps its load env (VOLLIE_HEAD2_REPACK=1), so its off arm is r23-r25's.
+-  static const armOf = {'granite': 'num', 'olmoe': 'off'};
++  /// r28 (lead, 2026-11-18): the runtime this APK carries, from assets/kit_build.json ("runtime"; set by
++  /// tools/c2_build_kit.sh, RUNTIME=c2|c1|stock): 'c2' = c1-olmoe 0001-0012 (R68's rehearsal, [blockPlan]); 'c1' =
++  /// campaign 1's shipped runtime (patches/llama.cpp 0001-0003 on 620d2225c, commit 686f17d); 'stock' = 620d2225c with
++  /// no patch. The two reference runtimes run [refPlan]. Read by [researchRun] before the run list is used.
++  static String runtime = 'c2';
+ 
+-  /// One block (r27): load, two unscored warm-ups (no gate, no hold), 8 scored runs in two quads, then two profiled
+-  /// runs (token lines, then T3's block table); every run of a block is in the model's arm ([armOf]) with the kv clear;
+-  /// every run but the warm-ups has r16's gate and holds. Each quad holds the four (pin, exec) cells in the order of one
+-  /// row of [quadOrders]: the model's k-th quad (k = 0..3 over its two blocks) takes row (k + 2 x model index) % 4.
+-  /// Warm-ups and profiled runs: pin on, exec off.
+-  static List<RunSpec> _block(int b, KitModel m) {
+-    final arm = armOf[m.id]!;
+-    RunSpec r(String phase, int reps, String rule, bool pin, bool exec, [bool block = false]) {
+-      final prof = phase == 'prof', wu = phase == 'warmup';
++  /// r28 reference blocks (lead, 2026-11-18): per model 10 claim-format runs, r16's gate, the hold, 3 threads, the app's
++  /// DartWorker pin (the runtime pin and every c2 knob need c1-olmoe patches the reference runtimes do not have).
++  /// c1: Granite with campaign 1's shipped env (R49 / kit r16: Research.served 117 + head2 q4_0/2048 + sampler bypass,
++  /// plus the phone's saved tiny-op 262,144 and expert I/O 1); OLMoE with campaign 1's settings without numerics (kit
++  /// r19's c1_ship). stock: no env at all.
++  static const _c1Served = {
++    'GGML_TINY_OP': '262144', 'GGML_EXPERT_IO': '1', 'GGML_EXPERT_SKIP': '117', 'GGML_HEAD2': '2048', 'GGML_HEAD2_Q': 'q4_0',
++    'VOLLIE_SAMPLER_BYPASS': '1',
++  };
++  static Map<String, String> refEnv(String rt, String model) =>
++      rt == 'stock' ? const {} : model == 'granite' ? _c1Served : _c1Ship;
++  static List<RunSpec> _refBlock(int b, KitModel m, String rt) {
++    RunSpec r(String phase) {
++      final wu = phase == 'warmup';
++      return (
++        id: '${m.id}_$rt${wu ? '_wu' : '_claim'}', model: m.id, proto: 'r28', group: 'b$b', phase: phase, arm: rt,
++        kind: 'official32', env: refEnv(rt, m.id), repack: m.repack, threads: threads, reps: 1, pause: 0, gate: !wu,
++        gateRule: wu ? 'none' : 'r16', hold: !wu, block: 'ref',
++      );
++    }
++    return [r('warmup'), r('warmup'), for (var i = 0; i < claimRuns; i++) r('on')];
++  }
++  static const refPlan = ['granite', 'olmoe'];
++
++  /// r28: the four cells (touch, nice) use [cells]' layout and [quadOrders] (1 = T n, 2 = t N, 3 = T N, 4 = t n).
++  /// One block (r28): load, two unscored warm-ups (no gate, no hold, pin + exec), then either 10 gated claim-format runs
++  /// ([claimRuns], every run the same configuration) or four quads of the (touch, nice) cells, the model's quad k taking
++  /// row (k + 2 x model index) % 4 of [quadOrders] (per model and factor 8 on, 8 off). Every scored run: the block's arm,
++  /// kv clear, pin, exec, r16's gate and the hold. No profiled runs in r28 (time).
++  static const claimRuns = 10;
++  static List<RunSpec> _block(int b, KitModel m, String block, String arm, {bool touch = false, bool nice = false}) {
++    RunSpec r(String phase, bool tc, bool nc) {
++      final wu = phase == 'warmup';
+       final env = {
+-        ...m.settings, ..._io, ..._kv, ..._sched, if (arm == 'num') ...m.num, if (prof) ...(block ? _profBlock : _profOn),
+-        if (pin) ...pinOn, if (exec) ...execOn,
++        ...m.settings, ..._io, ..._kv, ..._sched, if (arm == 'num') ...m.num, ...pinOn, ...execOn,
++        if (tc) ...touchOn, if (nc) ...niceOn,
+       };
+       return (
+-        id: '${m.id}_$arm${prof ? (block ? '_profb' : '_prof') : wu ? '_wu' : '_r16${pin ? '_pin' : ''}${exec ? '_exec' : ''}'}',
+-        model: m.id, proto: 'r27',
+-        group: 'b$b', phase: phase, arm: arm, kind: prof ? 'profiled32' : 'official32', env: env,
+-        repack: m.repack, threads: threads, reps: reps, pause: 0, gate: !wu, gateRule: rule, hold: !wu,
++        id: '${m.id}_${arm}_${wu ? 'wu' : block == 'claim' ? 'claim' : 'q'}${!wu && block == 'quad' ? '${tc ? '_touch' : ''}${nc ? '_nice' : ''}' : ''}',
++        model: m.id, proto: 'r28',
++        group: 'b$b', phase: phase, arm: arm, kind: 'official32', env: env,
++        repack: m.repack, threads: threads, reps: 1, pause: 0, gate: !wu, gateRule: wu ? 'none' : 'r16', hold: !wu,
++        block: block,
+       );
+     }
+-    final k = blockOrder.take(b - 1).where((x) => x.id == m.id).length; // this model's earlier blocks
+     final mi = kitModels.indexWhere((x) => x.id == m.id);
+     return [
+-      r('warmup', 2, 'none', true, false),
+-      for (var j = 0; j < 2; j++)
+-        for (final c in quadOrders[(2 * k + j + 2 * mi) % 4]) r('on', 1, 'r16', cells[c]!.$1, cells[c]!.$2),
+-      r('prof', 1, 'r16', true, false),
+-      r('prof', 1, 'r16', true, false, true),
++      r('warmup', false, false),
++      r('warmup', false, false),
++      if (block == 'claim')
++        for (var i = 0; i < claimRuns; i++) r('on', touch, nice)
++      else
++        for (var k = 0; k < 4; k++)
++          for (final c in quadOrders[(k + 2 * mi) % 4]) r('on', cells[c]!.$1, cells[c]!.$2),
+     ];
+   }
+ 
+-  /// Block order: the table forward, then backward (two models: G O O G), so a drift of the day falls on every model.
+-  static final List<KitModel> blockOrder = [...kitModels, ...kitModels.reversed];
++  /// r28 block order (memo-31 §7, T-C): claim-format blocks O G, quad blocks O G, then OLMoE's num claim-format block.
++  static final List<({String model, String block, String arm, bool touch, bool nice})> blockPlan = [
++    (model: 'olmoe', block: 'claim', arm: 'off', touch: false, nice: false),
++    (model: 'granite', block: 'claim', arm: 'num', touch: false, nice: false),
++    (model: 'olmoe', block: 'quad', arm: 'off', touch: false, nice: false),
++    (model: 'granite', block: 'quad', arm: 'num', touch: false, nice: false),
++    (model: 'olmoe', block: 'claim', arm: 'num', touch: true, nice: true),
++  ];
++  static List<KitModel> get blockOrder =>
++      runtime == 'c2' ? [for (final p in blockPlan) models[p.model]!] : [for (final m in refPlan) models[m]!];
+ 
+-  /// THE RUN LIST, in order (memo-22 §4).
+-  static final List<RunSpec> runs = [for (var b = 0; b < blockOrder.length; b++) ..._block(b + 1, blockOrder[b])];
++  /// THE RUN LIST, in order (memo-32 §3), for this APK's [runtime].
++  static final List<RunSpec> _r68 = [
++    for (var b = 0; b < blockPlan.length; b++)
++      ..._block(b + 1, models[blockPlan[b].model]!, blockPlan[b].block, blockPlan[b].arm,
++          touch: blockPlan[b].touch, nice: blockPlan[b].nice),
++  ];
++  static List<RunSpec> get runs => runtime == 'c2'
++      ? _r68
++      : [for (var b = 0; b < refPlan.length; b++) ..._refBlock(b + 1, models[refPlan[b]]!, runtime)];
+ 
+   /// The routed-expert tensors (*_exps) of each file as [start, end) byte ranges, from the frozen files' tensor tables
+   /// (gguf-py: data offset, data offset + bytes, adjacent tensors merged); the residency counter splits the page cache
+@@ -303,6 +373,7 @@ extension Research on Assistant {
+     'VOLLIE_RUN', 'VOLLIE_LINES', 'VOLLIE_HEAD2', 'VOLLIE_HEAD2_BATCH', 'VOLLIE_HEAD2_CHECK', 'VOLLIE_HEAD2_REPACK',
+     'VOLLIE_PRIOR', 'VOLLIE_PRIOR_N', 'VOLLIE_PRIOR_J', 'VOLLIE_KV_DONTNEED',
+     'VOLLIE_POOL', 'VOLLIE_CPUMASK', 'VOLLIE_SCHED', 'VOLLIE_EXEC_MAP', 'VOLLIE_NO_ATTACH',
++    'VOLLIE_TOUCH', 'VOLLIE_TOUCH_S', 'VOLLIE_TOUCH_HOST', 'VOLLIE_NICE',
+   ];
+   static Set<String> get _knobs => {..._knownKnobs, for (final r in runs) ...r.env.keys, for (final m in kitModels) ...m.load.keys};
+ 
+@@ -324,6 +395,7 @@ extension Research on Assistant {
+         'threads': s.threads, 'reps': s.reps, 'pause_s': s.pause, 'gate': s.gate, 'gate_rule': s.gateRule, 'hold': s.hold,
+         'kv': s.env.containsKey('VOLLIE_KV_DONTNEED'),
+         'pin': s.env.containsKey('VOLLIE_POOL'), 'exec': s.env.containsKey('VOLLIE_EXEC_MAP'),
++        'touch': s.env.containsKey('VOLLIE_TOUCH'), 'nice': s.env.containsKey('VOLLIE_NICE'), 'block': s.block,
+       };
+ 
+   /// The native libraries this process has mapped (llama.cpp's), from /proc/self/maps.
+@@ -704,15 +776,15 @@ extension Research on Assistant {
+ 
+   /// Copies the last kit report (plain JSON) into the phone's Downloads folder (MediaStore; Android 10+). Returns the
+   /// name it was saved under, or throws.
+-  Future<String> saveResearchToDownloads() async {
+-    final r = _prefs.getString(Assistant._researchKey);
++  Future<String> saveResearchToDownloads({bool probe = false}) async {
++    final r = _prefs.getString(probe ? Research.probeKey : Assistant._researchKey);
+     final dir = _kitDir;
+     if (r == null || dir == null) throw StateError('no report');
+     String started = 'report';
+     try {
+       started = ((jsonDecode(r) as Map)['started'] as String).replaceAll(':', '').substring(0, 15);
+     } catch (_) {}
+-    final name = 'vollie-research-${Research.kit}-$started.json';
++    final name = '${probe ? 'vollie-capprobe' : 'vollie-research'}-${Research.kit}-$started.json';
+     final tmp = File('$dir/$name');
+     tmp.writeAsStringSync(r);
+     try {
+@@ -724,6 +796,91 @@ extension Research on Assistant {
+     }
+   }
+ 
++  /// r28, T-A (memo-31 §5): the cap probe, no model run. Once per second for [probeSeconds]: scaling_max_freq and
++  /// scaling_cur_freq of policies 0, 4 and 7, the headroom (every second sample: the API returns NaN when polled more than
++  /// once a second), power saving, thermal status, battery % and temperature. A spinner is drawn in minutes 1, 3 and 5
++  /// and not in 2, 4 and 6; the second half adds three spinning isolates pinned to cpus 4-7. Labelled by the session
++  /// label and the power-save state read at its start. Report: [Research.probeKey], a file next to the models, and
++  /// "Save cap probe to Downloads".
++  static const probeSeconds = 360;
++  static const probeKey = 'cap_probe_report';
++  String? get capProbeReport => _prefs.getString(Research.probeKey);
++
++  Future<void> capProbe() async {
++    if (isBusy || optimizing != null || researching) return;
++    if (Research.deepSleep.value == null) {
++      kitNote = 'Cap probe: choose the session label (deep-sleeping list on or off) first.';
++      _kitChanged();
++      return;
++    }
++    researching = true;
++    kitNote = null;
++    _stopTest = false;
++    await DeviceProfile.keepScreenOn(true);
++    final started = DateTime.now();
++    final p0 = await DeviceProfile.powerState();
++    final label = Research.powerLabel(p0);
++    int mhz(int p, String f) => (int.tryParse(DeviceProfile.sysRead('/sys/devices/system/cpu/cpufreq/policy$p/$f')) ?? 0) ~/ 1000;
++    final samples = <List<Object?>>[];
++    final spins = <Future<int>>[];
++    final half = Research.probeSeconds ~/ 2;
++    try {
++      for (var i = 0; i < Research.probeSeconds && !_stopTest; i++) {
++        final spinner = (i ~/ 60) % 2 == 0;
++        Research.probeSpinner.value = spinner;
++        if (i == half) {
++          final until = started.add(const Duration(seconds: Research.probeSeconds)).millisecondsSinceEpoch;
++          for (var k = 0; k < 3; k++) {
++            spins.add(Isolate.run(() => DeviceProfile.spinPinned(0xf0, until)));
++          }
++        }
++        final h = i.isEven ? (await DeviceProfile.thermal()).headroom : null;
++        final pw = await DeviceProfile.powerState();
++        final b = await DeviceProfile.battery();
++        samples.add([
++          DateTime.now().difference(started).inMilliseconds,
++          for (final p in [0, 4, 7]) mhz(p, 'scaling_max_freq'),
++          for (final p in [0, 4, 7]) mhz(p, 'scaling_cur_freq'),
++          h == null ? null : (h * 1000).round() / 1000, pw['status'], pw['powerSave'], pw['lowPower'], pw['level'], b.tempC,
++          b.plugged, spinner ? 1 : 0, i >= half ? 1 : 0,
++        ]);
++        _researchStatus('${label == 'power-save on' ? 'POWER SAVING IS ON · ' : ''}Cap probe · ${i ~/ 60}:'
++            '${(i % 60).toString().padLeft(2, '0')} of 6:00 · cap ${samples.last[2]}/${samples.last[3]} MHz');
++        final next = started.add(Duration(seconds: i + 1)).difference(DateTime.now());
++        if (next > Duration.zero) await Future<void>.delayed(next);
++      }
++    } finally {
++      Research.probeSpinner.value = false;
++      final spun = [for (final f in spins) await f];
++      final report = <String, Object?>{
++        'kind': 'cap_probe', 'kit': Research.kit, 'app': Research.app, 'started': started.toIso8601String(),
++        'finished': DateTime.now().toIso8601String(), 'stopped_early': _stopTest,
++        'session_label': Research.sessionLabel, 'deep_sleeping_list': Research.deepSleep.value,
++        'power_start': p0, 'label': label, 'power_end': await DeviceProfile.powerState(),
++        'model_loaded': _loadedPath?.split('/').last, 'kernel_release': DeviceProfile.unameRelease(),
++        'design': 'memo-31 T-A: 1 sample/s for ${Research.probeSeconds} s; spinner in odd minutes (1, 3, 5); from '
++            '${half}s three isolates spin on cpus 4-7 (mask 0xf0) to the end; headroom every second sample',
++        'fields': ['ms', 'max0', 'max4', 'max7', 'cur0', 'cur4', 'cur7', 'headroom', 'thermal_status', 'power_save',
++                   'low_power', 'battery_pct', 'battery_c', 'plugged', 'spinner', 'spin_load'],
++        'spin_affinity_rc': spun,
++        'samples': samples,
++      };
++      final js = jsonEncode(report);
++      await _prefs.setString(Research.probeKey, js);
++      try {
++        if (_kitDir != null) {
++          File('$_kitDir/capprobe-${Research.kit}-${started.toIso8601String().replaceAll(':', '').substring(0, 15)}.json')
++              .writeAsStringSync(js);
++        }
++      } catch (_) {}
++      await DeviceProfile.keepScreenOn(false);
++      researching = false;
++      optimizing = null;
++      kitNote = 'Cap probe done ($label, ${Research.sessionLabel}). Save it to Downloads and send the file.';
++      _kitChanged();
++    }
++  }
++
+   Future<void> researchRun() async {
+     if (_loadedPath == null || isBusy || optimizing != null || researching) return;
+     final dir = _kitDir!;
+@@ -734,12 +891,26 @@ extension Research on Assistant {
+       _kitChanged();
+       return;
+     }
++    if (Research.deepSleep.value == null) {
++      kitNote = 'Kit ${Research.kit}: choose the session label (deep-sleeping list on or off) first.';
++      _kitChanged();
++      return;
++    }
+     newChatKeepingHistory();
+     researching = true;
+     kitNote = null;
+     _stopTest = false;
+     await DeviceProfile.keepScreenOn(true);
+     final started = DateTime.now();
++    // r28 (owner, 2026-11-18): power saving read at the start, never changed; a session with it on is labelled so.
++    final power0 = await DeviceProfile.powerState();
++    final powerLabel = Research.powerLabel(power0);
++    // r28: which runtime this APK carries decides the run list (c2 = R68's rehearsal, c1 / stock = the reference blocks)
++    try {
++      Research.runtime = ((jsonDecode(await rootBundle.loadString('assets/kit_build.json')) as Map)['runtime'] as String?) ?? 'c2';
++    } catch (_) {
++      Research.runtime = 'c2';
++    }
+     // r27: the storage step first (exec check, internal copies), before the idle baseline and every warm-up.
+     final ({Map<String, String>? paths, Map<String, Object?> rec}) storage;
+     try {
+@@ -776,15 +947,29 @@ extension Research on Assistant {
+       'saved': {'write_threads': w, 'context': contextSize, 'reuse_prefix': Research.reusePrefix},
+       'context_rule': 'r27: n_ctx ${Research.nCtx} at every kit load (Research.nCtx), not the app\'s free-RAM rule',
+       'storage': storage.rec,
++      'session_label': Research.sessionLabel,
++      'deep_sleeping_list': Research.deepSleep.value,
++      'power_start': power0,
++      'session_power': powerLabel,
++      'touch_rule': 'factor touch (c1-olmoe 0012): on = ${Research.touchOn}; llama_vollie_touch_begin(the hold\'s wanted set) '
++          'right after exec_sync, before the gate wait (row touch_begin); llama_vollie_touch_end() after the hold, before '
++          'smaps_before (row touch_end: the last pass, which blocks until done); c2-touch lines per pass; called in every '
++          'gated run (rc -1 = knob unset, nothing done)',
++      'nice_rule': 'factor nice (c1-olmoe 0012): on = ${Research.niceOn}; every pool thread (the caller included) at each '
++          'graph start, set once when it differs; off restores the old value by tid; c2-nice line per prompt',
+       'pin_rule': 'factor pin (c1-olmoe 0010): on = ${Research.pinOn} (persistent pool, poll 0; every thread sets its '
+           'affinity to the mask at each graph start when it differs); off = no VOLLIE_POOL: a new worker pair per graph '
+           'that inherits the calling Dart thread\'s mask; the app\'s DartWorker pin in both; c2-pool line per prompt',
+       'exec_rule': 'factor exec (c1-olmoe 0011): on = ${Research.execOn}; applied by llama_vollie_exec_sync() right after '
+           'the run\'s env is set, before its gate wait (row exec_sync; the runtime\'s c2-exec line shows want, errno, the '
+           '/proc/self/maps protection); off = PROT_READ; void when storage.exec_factor is not "live"',
+-      'design': {'cells': {for (final e in Research.cells.entries) '${e.key}': {'pin': e.value.$1, 'exec': e.value.$2}},
++      'design': {'cells': {for (final e in Research.cells.entries) '${e.key}': {'touch': e.value.$1, 'nice': e.value.$2}},
+                  'quad_orders': Research.quadOrders,
+-                 'rule': "quad k (0..3) of a model takes row (k + 2 x model index) % 4; warm-ups and profiled runs pin on, exec off"},
++                 'blocks': [for (final b in Research.blockPlan) {'model': b.model, 'block': b.block, 'arm': b.arm,
++                            'touch': b.touch, 'nice': b.nice}],
++                 'claim_runs': Research.claimRuns,
++                 'rule': "r28: pin + exec in every run; claim blocks = claim_runs runs of one configuration; quad blocks = 4 "
++                     "quads, quad k (0..3) of a model takes row (k + 2 x model index) % 4; two warm-ups per block (no gate)"},
+       'instrument_changes': [
+         'kv clear (VOLLIE_KV_DONTNEED=1) in every run (R66)',
+         'n_ctx fixed at ${Research.nCtx}',
+@@ -797,6 +982,12 @@ extension Research on Assistant {
+         'native env strings freed; the log read from the last offset (memo-28 §3.5, 3.6, 3.8, 3.9)',
+         'T1 records: ru (getrusage start / first chunk / end), smaps_before / smaps_after',
+         'T3: the second profiled run per block in block mode (id _profb)',
++        'r28: no profiled runs; pin + exec in every run (factors are touch and nice)',
++        'r28 (T-D): smaps matches the model mapping by inode as well as path (smaps_*.inode)',
++        'r28 (T-B): power (power saving, low_power, thermal status, battery %) before every run; workers_after (DartWorker '
++            'threads: tid, nice, priority, policy, cpu, cgroup) after every run; proc_before / proc_after (/proc/stat cpu '
++            'rows and /proc/loadavg, or their errno) around every run',
++        'r28: session label (deep-sleeping list) and power-save state at the start and the end',
+       ],
+       'kernel': DeviceProfile.sysRead('/proc/version'),
+       'kernel_release': DeviceProfile.unameRelease(), // r23: uname(2) release; /proc/version reads empty in the app (r22)
+@@ -813,9 +1004,9 @@ extension Research on Assistant {
+           'run; r26: gate rule r16 in every gated run (no plateau factor); 3 threads in every run; the kit pauses '
+           'while a charger is connected (charger_rule); one arm per model (arm_rule); r27: kv clear in every run, factors '
+           'pin and exec (pin_rule, exec_rule, design)',
+-      'arm_rule': 'r26: each model runs one arm in every run of its blocks (warm-ups, scored, profiled): '
+-          '${Research.armOf.entries.map((e) => '${e.key} ${e.value}').join(', ')} (R64: Granite num passed; R63 §4 parks '
+-          'OLMoE MASS=900); OLMoE keeps its load env, so its off arm is r23-r25\'s',
++      'arm_rule': 'r28: the arm per block (design.blocks): Granite num in its blocks; OLMoE off in its claim and quad '
++          'blocks and num (MASS=900 + head 1024, R61 host 12.0927 / 12.0976 against the budget 12.3003) in its last claim '
++          'block; OLMoE keeps its load env (VOLLIE_HEAD2_REPACK=1)',
+       'kv_rule': 'r27: VOLLIE_KV_DONTNEED=1 in every run (R66). Before: scored runs alternate VOLLIE_KV_DONTNEED=1 (spec kv, id suffix _kv; c1-olmoe 0008, declared bit-identical): '
+           'llama_memory_clear(data) releases the KV / recurrent buffers\' page-aligned interior with MADV_DONTNEED instead '
+           'of a memset; one c2-kvclear line per buffer (kind kv / rs, bytes, released, why, us, tag); r26: c1-olmoe 0009 '
+@@ -860,7 +1051,7 @@ extension Research on Assistant {
+             'load': Research.models[m]!.load,
+             'settings': Research.models[m]!.settings,
+             'num': Research.models[m]!.num,
+-            'arm': Research.armOf[m],
++            'arms': {for (final b in Research.blockPlan) if (b.model == m) b.arm}.toList(),
+             'file': Research.models[m]!.file,
+             'bytes': File(paths[m]!).lengthSync(),
+             'expected_bytes': Research.models[m]!.bytes,
+@@ -878,10 +1069,12 @@ extension Research on Assistant {
+     } catch (e) {
+       notes.add('build info missing: $e');
+     }
++    report['runtime'] = Research.runtime;
+     Future<void> save() => _prefs.setString(Assistant._researchKey, jsonEncode(report));
+     void show(String s) {
+       final t = DateTime.now().difference(started).inSeconds;
+-      _researchStatus('Research ${Research.kit} · ${t ~/ 60}:${(t % 60).toString().padLeft(2, '0')} · $s');
++      final warn = powerLabel == 'power-save on' ? 'POWER SAVING IS ON (recorded as power-save on) · ' : '';
++      _researchStatus('${warn}Research ${Research.kit} · ${t ~/ 60}:${(t % 60).toString().padLeft(2, '0')} · $s');
+     }
+ 
+     // The runtime's lines, matched to rows by their run= id (VOLLIE_RUN): a prompt's c2-io line is printed when the
+@@ -946,7 +1139,7 @@ extension Research on Assistant {
+       Research.clearKnobs();
+       await _engine.unloadModel(); // frees the context: the last run's c2-io line is printed here
+       _loadedPath = path;
+-      final le = {...Research.loadEnv, ...m.load};
++      final le = Research.runtime == 'c2' ? {...Research.loadEnv, ...m.load} : const <String, String>{}; // r28: c2 knobs only on c2
+       le.forEach(setNativeEnv);
+       loadSeen = Research._envNow();
+       try {
+@@ -1137,6 +1330,8 @@ extension Research on Assistant {
+         row['env_set'] = Research._envNow();
+         // r27: VOLLIE_EXEC_MAP applied now, before the gate wait (the wait and the run have the run's protection)
+         row['exec_sync'] = DeviceProfile.execSync();
++        // r28: VOLLIE_TOUCH's helper from the wait's start (rc -1 when the knob is unset: nothing runs)
++        if (s.gate) row['touch_begin'] = DeviceProfile.touchBegin(lastVec[path]);
+         row['threads_loaded'] = [_loadedThreads, _loadedRead];
+         final c0 = DateTime.now();
+         final want = lastVec[path];
+@@ -1233,7 +1428,10 @@ extension Research on Assistant {
+             if (want == null) 'note': 'no previous run of this model: nothing to hold',
+           };
+         }
++        // r28: the touch helper's last pass, after the hold and before every pre-run read (blocks until the pass is done)
++        if (s.gate) row['touch_end'] = DeviceProfile.touchEnd();
+         show('${s.group} ${s.model} · ${s.id} ${i + 1}/${s.reps}');
++        row['power'] = await DeviceProfile.powerState(); // r28 (T-B)
+         row['smaps_before'] = DeviceProfile.smaps(path); // r27 (T1): mapped (smaps Rss) against resident (mincore)
+         row['res_before'] = !s.gate && lastRes != null ? lastRes : Research._residency(path);
+         if (!s.gate && lastRes != null) row['res_before_from'] = 'previous run end';
+@@ -1246,6 +1444,7 @@ extension Research on Assistant {
+         row['mhz_before'] = DeviceProfile.cpuMhz();
+         row['mem_before'] = DeviceProfile.memInfo();
+         harvest(row); // untagged lines since the last run belong to this row
++        row['proc_before'] = DeviceProfile.procStat(); // r28 (T-B)
+         final f0 = DeviceProfile.pageFaults();
+         final io0 = DeviceProfile.ioReadBytes();
+         final ru0 = DeviceProfile.rusage();
+@@ -1279,6 +1478,7 @@ extension Research on Assistant {
+         row['thread_samples'] = thr;
+         lastEnd = DateTime.now();
+         row['wall_ms'] = lastEnd!.difference(t0).inMilliseconds;
++        row['proc_after'] = DeviceProfile.procStat(); // r28 (T-B), first after the run
+         final f1 = DeviceProfile.pageFaults();
+         final io1 = DeviceProfile.ioReadBytes();
+         final ru1 = DeviceProfile.rusage();
+@@ -1289,6 +1489,7 @@ extension Research on Assistant {
+           pageSize = endVec.pageSize;
+         }
+         row['smaps_after'] = DeviceProfile.smaps(path); // r27 (T1)
++        row['workers_after'] = DeviceProfile.workerThreads(); // r28 (T-B): nice / policy / cgroup of the pool's threads
+         row['mhz_after'] = DeviceProfile.cpuMhz();
+         row['mem_after'] = DeviceProfile.memInfo();
+         row['cap_after'] = Research._caps();
+@@ -1362,6 +1563,7 @@ extension Research on Assistant {
+     } catch (e) {
+       notes.add('aborted: $e');
+     } finally {
++      DeviceProfile.touchEnd(); // r28: no helper outlives a stopped kit
+       Research.clearKnobs();
+       _repack = null;
+       // Free the context so the last run's c2-io line is printed, then file it.
+@@ -1385,6 +1587,7 @@ extension Research on Assistant {
+       report['finished'] = DateTime.now().toIso8601String();
+       report['stopped_early'] = _stopTest;
+       report['mem_end'] = DeviceProfile.memInfo();
++      report['power_end'] = await DeviceProfile.powerState();
+       await save();
+       try {
+         File('$dir/research-${Research.kit}-${started.toIso8601String().replaceAll(':', '').substring(0, 15)}.json')
+diff --git a/lib/assistant.dart b/lib/assistant.dart
+index becb012..96dbbde 100644
+--- a/lib/assistant.dart
++++ b/lib/assistant.dart
+@@ -1,6 +1,7 @@
+ import 'dart:async';
+ import 'dart:convert';
+ import 'dart:io';
++import 'dart:isolate';
+ import 'dart:math' as math;
+ 
+ import 'package:flutter/foundation.dart';
+diff --git a/lib/device.dart b/lib/device.dart
+index c484d31..fb91598 100644
+--- a/lib/device.dart
++++ b/lib/device.dart
+@@ -321,8 +321,11 @@ class DeviceProfile {
+   /// Kit r27 (T1): /proc/self/smaps summed: the mapping(s) of [modelPath] (size, Rss, Pss, Swap kB: "mapped" against
+   /// mincore's "resident") and the anonymous memory by mapping name ([anon:...], [heap], unnamed; the 12 largest by Rss +
+   /// Swap), file-backed rest, totals; ms = the read's wall time. An error text when unreadable.
++  /// Kit r28 (memo-31 T-D): the model's rows are matched by inode as well as by path: /proc/self/smaps prints the
++  /// mapping as /data/data/..., while the kit opens it as /data/user/0/... (R67: the model's Rss fell into file_rest).
+   static Map<String, Object?> smaps(String modelPath) {
+     final t0 = DateTime.now();
++    final ino = inode(modelPath);
+     try {
+       final groups = <String, List<int>>{}; // name -> [size, rss, pss, swap] kB
+       final model = [0, 0, 0, 0], file = [0, 0, 0, 0];
+@@ -332,7 +335,7 @@ class DeviceProfile {
+         if (head.hasMatch(l)) {
+           final f = l.split(RegExp(r'\s+'));
+           final n = f.length > 5 ? f.sublist(5).join(' ') : '';
+-          cur = n == modelPath
++          cur = n == modelPath || (ino != null && f.length > 4 && f[4] == '$ino')
+               ? model
+               : n.startsWith('/')
+                   ? file
+@@ -346,7 +349,7 @@ class DeviceProfile {
+       final named = groups.entries.toList()..sort((a, b) => (b.value[1] + b.value[3]).compareTo(a.value[1] + a.value[3]));
+       final anon = groups.values.fold<List<int>>([0, 0, 0, 0], (a, v) => [for (var i = 0; i < 4; i++) a[i] + v[i]]);
+       return {
+-        'fields': ['size_kb', 'rss_kb', 'pss_kb', 'swap_kb'], 'model': model, 'anon': anon, 'file_rest': file,
++        'fields': ['size_kb', 'rss_kb', 'pss_kb', 'swap_kb'], 'model': model, 'anon': anon, 'file_rest': file, 'inode': ino,
+         'anon_top': {for (final e in named.take(12)) e.key: e.value},
+         'ms': DateTime.now().difference(t0).inMilliseconds,
+       };
+@@ -368,6 +371,131 @@ class DeviceProfile {
+     }
+   }
+ 
++  /// Kit r28 (T-D): st_ino of [path] (stat(2); aarch64 struct stat: st_dev at 0, st_ino at 8). Null off Android.
++  static int? inode(String path) {
++    final libc = _libc;
++    if (libc == null) return null;
++    final stat = libc.lookupFunction<Int32 Function(Pointer<Uint8>, Pointer<Uint8>), int Function(Pointer<Uint8>, Pointer<Uint8>)>('stat');
++    final name = _cString(path), b = _malloc!(256);
++    try {
++      return stat(name, b) == 0 ? b.cast<Uint64>()[1] : null;
++    } finally {
++      _free!(name);
++      _free!(b);
++    }
++  }
++
++  /// Kit r28 (memo-31 T-A, T-B; owner 2026-11-18): power saving (PowerManager.isPowerSaveMode and Settings.Global
++  /// low_power, -1 = unset, -2 = unreadable), thermal status and battery %. Read only: the kit never changes them.
++  static Future<Map<String, Object?>> powerState() async {
++    try {
++      return Map<String, Object?>.from(await _channel.invokeMethod<Map>('powerState') ?? const {});
++    } on MissingPluginException {
++      return const {};
++    }
++  }
++
++  /// Kit r28 (T-B): this process's DartWorker threads (the app's inference threads and the ggml workers they start):
++  /// [tid, nice, priority, policy, cpu, cgroup] from /proc/self/task/TID/stat (fields 19, 18, 41, 39) and .../cgroup
++  /// (lines joined by ';'). Null when /proc/self/task cannot be read.
++  static List<List<Object?>>? workerThreads() {
++    try {
++      final out = <List<Object?>>[];
++      for (final t in Directory('/proc/self/task').listSync()) {
++        try {
++          if (!File('${t.path}/comm').readAsStringSync().startsWith('DartWorker')) continue;
++          final st = File('${t.path}/stat').readAsStringSync();
++          final f = st.substring(st.lastIndexOf(')') + 2).split(' '); // f[0] = field 3
++          String? cg;
++          try {
++            cg = File('${t.path}/cgroup').readAsLinesSync().join(';');
++          } on FileSystemException catch (e) {
++            cg = 'error: ${e.osError?.errorCode}';
++          }
++          out.add([int.parse(t.path.split('/').last), int.tryParse(f[16]), int.tryParse(f[15]),
++                   f.length > 38 ? int.tryParse(f[38]) : null, f.length > 36 ? int.tryParse(f[36]) : null, cg]);
++        } on FileSystemException {
++          // the thread exited mid-scan
++        }
++      }
++      return out;
++    } on FileSystemException {
++      return null;
++    }
++  }
++
++  /// Kit r28 (T-B): the cpu rows of /proc/stat (cpuN -> user nice system idle iowait irq softirq, ticks) and
++  /// /proc/loadavg, or the error (an app's SELinux domain may deny both).
++  static Map<String, Object?> procStat() {
++    final out = <String, Object?>{};
++    try {
++      out['cpu'] = {
++        for (final l in File('/proc/stat').readAsLinesSync())
++          if (RegExp(r'^cpu\d').hasMatch(l))
++            l.split(RegExp(r'\s+'))[0]: [for (final v in l.split(RegExp(r'\s+')).sublist(1, 8)) int.tryParse(v) ?? -1],
++      };
++    } on FileSystemException catch (e) {
++      out['cpu_error'] = e.osError?.errorCode ?? -1;
++    }
++    try {
++      out['loadavg'] = File('/proc/loadavg').readAsStringSync().trim();
++    } on FileSystemException catch (e) {
++      out['loadavg_error'] = e.osError?.errorCode ?? -1;
++    }
++    return out;
++  }
++
++  /// Kit r28 (T-A): pins the calling thread (an isolate's) to [mask] and spins until [untilMs] (epoch ms); returns the
++  /// sched_setaffinity result (0 = pinned; -1 off Android).
++  static int spinPinned(int mask, int untilMs) {
++    var rc = -1;
++    if (_setAffinity != null && _mask != null) {
++      _mask!.value = mask;
++      rc = _setAffinity!(0, 8, _mask!);
++    }
++    var x = 0;
++    while (DateTime.now().millisecondsSinceEpoch < untilMs) {
++      for (var i = 0; i < 100000; i++) {
++        x = (x * 1103515245 + 12345) & 0x7fffffff;
++      }
++    }
++    return x < 0 ? -2 : rc;
++  }
++
++  /// Kit r28 (c1-olmoe 0012, VOLLIE_TOUCH): starts the runtime's touch helper on the model mapping; [want] = one byte per
++  /// file page (nonzero = touch; the hold's wanted set), null = the runtime's own choice (resident now, else all).
++  /// rc 0 = started, -1 = VOLLIE_TOUCH unset, -2 = no model mapping; or the lookup's error.
++  static Map<String, Object?> touchBegin(Uint8List? want) {
++    final t0 = DateTime.now();
++    Pointer<Uint8> p = nullptr;
++    try {
++      final f = DynamicLibrary.open('libllama.so')
++          .lookupFunction<Int32 Function(Pointer<Uint8>, IntPtr), int Function(Pointer<Uint8>, int)>('llama_vollie_touch_begin');
++      if (want != null && want.isNotEmpty) {
++        p = _malloc!(want.length);
++        p.asTypedList(want.length).setAll(0, want);
++      }
++      final rc = f(p, want?.length ?? 0);
++      return {'rc': rc, 'want_pages': want?.length ?? 0, 'ms': DateTime.now().difference(t0).inMilliseconds};
++    } catch (e) {
++      return {'error': '$e', 'ms': DateTime.now().difference(t0).inMilliseconds};
++    } finally {
++      if (p != nullptr) _free!(p);
++    }
++  }
++
++  /// Kit r28: the touch helper's last pass (it blocks until the pass is done), then the helper ends. pages = pages the
++  /// last pass touched, -1 = no helper ran.
++  static Map<String, Object?> touchEnd() {
++    final t0 = DateTime.now();
++    try {
++      final f = DynamicLibrary.open('libllama.so').lookupFunction<Int64 Function(), int Function()>('llama_vollie_touch_end');
++      return {'pages': f(), 'ms': DateTime.now().difference(t0).inMilliseconds};
++    } catch (e) {
++      return {'error': '$e', 'ms': DateTime.now().difference(t0).inMilliseconds};
++    }
++  }
++
+   /// Kit r23: the kernel release (uname(2), struct utsname: six 65-byte fields, release is the third). Null off Android.
+   static String? unameRelease() {
+     final libc = _libc;
+diff --git a/lib/settings_screen.dart b/lib/settings_screen.dart
+index d544776..caeb39a 100644
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -85,6 +85,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
+             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+               Text(assistant.optimizing ?? 'Research kit ${Research.kit}',
+                   style: const TextStyle(color: Color(0xFF808080), fontSize: 14)),
++              // r28 (T-A): the cap probe's spinner, drawn only in its spinner minutes; the kit never sets it
++              ValueListenableBuilder<bool>(
++                valueListenable: Research.probeSpinner,
++                builder: (_, on, __) => on
++                    ? const Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())
++                    : const SizedBox.shrink(),
++              ),
+               const Spacer(),
+               TextButton(
+                 onPressed: assistant.stopResearch,
+@@ -374,6 +381,53 @@ class _PerformanceCard extends StatelessWidget {
+               icon: const Icon(Icons.thermostat_rounded),
+               label: const Text('Run phone test (10 min)'),
+             ),
++      // Research kit r28 (memo-32): the session label first (deep-sleeping list on / off); the kit and the cap probe
++      // start only after it is chosen. The power-save state is read and shown (the kit never changes it).
++      if (!assistant.researching)
++        ValueListenableBuilder<bool?>(
++          valueListenable: Research.deepSleep,
++          builder: (_, v, __) => Wrap(spacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
++            const Text('Session: deep-sleeping list'),
++            ChoiceChip(label: const Text('on'), selected: v == true, onSelected: (_) => Research.deepSleep.value = true),
++            ChoiceChip(label: const Text('off'), selected: v == false, onSelected: (_) => Research.deepSleep.value = false),
++          ]),
++        ),
++      if (!assistant.researching)
++        FutureBuilder<Map<String, Object?>>(
++          future: DeviceProfile.powerState(),
++          builder: (_, s) => s.data == null
++              ? const SizedBox.shrink()
++              : Text(
++                  Research.powerLabel(s.data!) == 'power-save on'
++                      ? 'Power saving is ON. A session now is recorded as "power-save on".'
++                      : 'Power saving: ${Research.powerLabel(s.data!)}.',
++                  style: Research.powerLabel(s.data!) == 'power-save on'
++                      ? const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)
++                      : subtle),
++        ),
++      if (!assistant.researching)
++        ValueListenableBuilder<bool?>(
++          valueListenable: Research.deepSleep,
++          builder: (_, v, __) => OutlinedButton.icon(
++            onPressed: busy || optimizing || v == null ? null : assistant.capProbe,
++            icon: const Icon(Icons.speed_rounded),
++            label: const Text('Run cap probe r28 (6 min, no model)'),
++          ),
++        ),
++      if (!assistant.researching && assistant.capProbeReport != null)
++        TextButton.icon(
++          onPressed: () async {
++            final m = ScaffoldMessenger.of(context);
++            try {
++              final where = await assistant.saveResearchToDownloads(probe: true);
++              m.showSnackBar(SnackBar(content: Text('Saved to $where. Send that file.')));
++            } catch (e) {
++              m.showSnackBar(SnackBar(content: Text('Could not save the file ($e).')));
++            }
++          },
++          icon: const Icon(Icons.save_alt_rounded),
++          label: const Text('Save cap probe to Downloads'),
++        ),
+       // Research kit r27: the models of Research.kitModels (memo-30); the kit's own files are fetched here first.
+       if (!assistant.kitModelReady)
+         assistant.researching
+@@ -385,7 +439,7 @@ class _PerformanceCard extends StatelessWidget {
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.downloadKitModels,
+                 icon: const Icon(Icons.download_rounded),
+-                label: Text('Download kit r27 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
++                label: Text('Download kit r28 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
+                     '(${(assistant.kitMissingBytes / 1e9).toStringAsFixed(1)} GB, Wi-Fi)'),
+               ),
+       if (assistant.kitModelReady)
+@@ -395,10 +449,13 @@ class _PerformanceCard extends StatelessWidget {
+                 icon: const Icon(Icons.stop_rounded),
+                 label: const Text('Stop research run'),
+               )
+-            : OutlinedButton.icon(
+-                onPressed: busy || optimizing ? null : assistant.researchRun,
+-                icon: const Icon(Icons.science_rounded),
+-                label: const Text('Run research kit r27 (~40-80 min)'),
++            : ValueListenableBuilder<bool?>(
++                valueListenable: Research.deepSleep,
++                builder: (_, v, __) => OutlinedButton.icon(
++                  onPressed: busy || optimizing || v == null ? null : assistant.researchRun,
++                  icon: const Icon(Icons.science_rounded),
++                  label: Text(v == null ? 'Run research kit r28: choose the session label first' : 'Run research kit r28 (~50-110 min)'),
++                ),
+               ),
+       if (assistant.kitModelReady && !assistant.researching)
+         Padding(
+diff --git a/pubspec.yaml b/pubspec.yaml
+index b13201e..f148080 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@ name: vollie
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.27.0+27
++version: 1.28.0+28
+ 
+ environment:
+   sdk: ^3.10.7
+diff --git a/test/kit_lines_test.dart b/test/kit_lines_test.dart
+index eac1781..8c4d3df 100644
+--- a/test/kit_lines_test.dart
++++ b/test/kit_lines_test.dart
+@@ -80,11 +80,8 @@ void main() {
+     expect(k.tag, 'granite_num_r16_kv.3');
+     expect(k.line.endsWith('tag=0xb4'), true);
+   });
+-  test('kit r27: run list generated from the model table', () {
+-    final ids = Research.kitModels.map((m) => m.id).toList();
+-    expect(Research.blockOrder.map((m) => m.id).toList(), [...ids, ...ids.reversed]);
+-    expect(Research.runs.length, Research.blockOrder.length * 11); // specs; the warm-up spec has 2 reps
+-    expect(Research.armOf, {'granite': 'num', 'olmoe': 'off'});
++  test('kit r28: run list generated from the block plan', () {
++    expect(Research.blockOrder.map((m) => m.id).toList(), ['olmoe', 'granite', 'olmoe', 'granite', 'olmoe']);
+     // the Williams square: every cell once per position, every ordered pair of neighbours once
+     final pos = <String>{}, pairs = <String>{};
+     for (final o in Research.quadOrders) {
+@@ -97,43 +94,44 @@ void main() {
+     expect(pos.length, 16);
+     expect(pairs.length, 12);
+     final cells = <String, Map<String, int>>{}, orders = <String, Set<String>>{};
+-    for (var b = 0; b < Research.blockOrder.length; b++) {
+-      final m = Research.blockOrder[b];
++    for (var b = 0; b < Research.blockPlan.length; b++) {
++      final p = Research.blockPlan[b], m = Research.models[p.model]!;
+       final blk = Research.runs.where((r) => r.group == 'b${b + 1}').toList();
+-      expect(blk.every((r) => r.model == m.id && r.repack && r.proto == 'r27' && r.threads == 3), true);
+-      expect(blk.every((r) => r.arm == Research.armOf[m.id]), true);
++      expect(blk.every((r) => r.model == m.id && r.repack && r.proto == 'r28' && r.threads == 3 && r.reps == 1), true);
++      expect(blk.every((r) => r.arm == p.arm && r.block == p.block && r.kind == 'official32'), true);
++      expect(blk.take(2).every((r) => r.phase == 'warmup' && !r.gate && !r.hold && r.gateRule == 'none'), true);
+       final scored = blk.where((r) => r.phase == 'on').toList();
+-      expect(scored.length, 8);
+-      expect(blk.where((r) => r.gate).every((r) => r.gateRule == 'r16'), true);
+-      for (var q = 0; q < 2; q++) {
+-        final quad = scored.sublist(4 * q, 4 * q + 4);
+-        final c = quad.map((r) => '${r.env.containsKey('VOLLIE_POOL') ? 'P' : 'p'}${r.env.containsKey('VOLLIE_EXEC_MAP') ? 'X' : 'x'}').toList();
+-        expect(c.toSet(), {'Px', 'pX', 'PX', 'px'}); // all four cells in every quad
+-        orders.putIfAbsent(m.id, () => {}).add(c.join());
+-        for (final x in c) {
+-          cells.putIfAbsent(m.id, () => {})[x] = (cells[m.id]![x] ?? 0) + 1;
++      expect(blk.length, 2 + scored.length);
++      if (p.block == 'claim') {
++        expect(scored.length, Research.claimRuns);
++        expect(scored.map((r) => r.id).toSet(), {'${m.id}_${p.arm}_claim'});
++        expect(scored.every((r) => r.env.containsKey('VOLLIE_TOUCH') == p.touch && r.env.containsKey('VOLLIE_NICE') == p.nice), true);
++      } else {
++        expect(scored.length, 16);
++        for (var q = 0; q < 4; q++) {
++          final c = scored.sublist(4 * q, 4 * q + 4)
++              .map((r) => '${r.env.containsKey('VOLLIE_TOUCH') ? 'T' : 't'}${r.env.containsKey('VOLLIE_NICE') ? 'N' : 'n'}')
++              .toList();
++          expect(c.toSet(), {'Tn', 'tN', 'TN', 'tn'});
++          orders.putIfAbsent(m.id, () => {}).add(c.join());
++          for (final x in c) {
++            cells.putIfAbsent(m.id, () => {})[x] = (cells[m.id]![x] ?? 0) + 1;
++          }
+         }
+       }
+       for (final r in blk) {
+-        expect(r.env['VOLLIE_KV_DONTNEED'], '1'); // r27: every run
++        expect(r.env['VOLLIE_KV_DONTNEED'], '1');
+         expect(r.env['VOLLIE_SCHED'], '1');
+-        expect(r.id.contains('_pin'), r.phase == 'on' && r.env.containsKey('VOLLIE_POOL'));
+-        expect(r.id.contains('_exec'), r.env.containsKey('VOLLIE_EXEC_MAP'));
+-        if (r.env.containsKey('VOLLIE_POOL')) expect(r.env['VOLLIE_CPUMASK'], '0xf0');
+-        if (r.phase != 'on') {
+-          expect(r.env.containsKey('VOLLIE_POOL') && !r.env.containsKey('VOLLIE_EXEC_MAP'), true); // pin on, exec off
+-        }
+-      }
+-      final prof = blk.where((r) => r.phase == 'prof').toList();
+-      expect(prof.length == 2 && prof.every((r) => r.hold && r.gateRule == 'r16' && r.kind == 'profiled32'), true);
+-      expect(prof[0].env['GGML_CPU_AB_TOKEN'], '1');
+-      expect(prof[1].env.containsKey('GGML_CPU_AB_TOKEN') || prof[1].id != '${m.id}_${Research.armOf[m.id]}_profb', false);
+-      expect(blk.first.phase == 'warmup' && blk.first.reps == 2 && !blk.first.gate && !blk.first.hold &&
+-          blk.first.gateRule == 'none', true);
+-      for (final r in blk) {
+         expect(r.env['GGML_C2_IO'], '1');
+-        expect(r.env.containsKey('GGML_PREFILL_COLD') || r.env.containsKey('GGML_KEEP_WARM'), false);
+-        expect(r.env.containsKey('VOLLIE_HEAD2_REPACK') || r.env.containsKey('VOLLIE_NO_ATTACH'), false);
++        expect(r.env['VOLLIE_POOL'], '1');
++        expect(r.env['VOLLIE_CPUMASK'], '0xf0');
++        expect(r.env['VOLLIE_EXEC_MAP'], '1');
++        expect(r.id.contains('_touch'), r.block == 'quad' && r.env.containsKey('VOLLIE_TOUCH'));
++        expect(r.id.contains('_nice'), r.block == 'quad' && r.env.containsKey('VOLLIE_NICE'));
++        if (r.env.containsKey('VOLLIE_TOUCH')) expect(r.env['VOLLIE_TOUCH_S'], '12');
++        if (r.env.containsKey('VOLLIE_NICE')) expect(r.env['VOLLIE_NICE'], '-10');
++        expect(r.env.containsKey('GGML_CPU_PROF') || r.env.containsKey('GGML_PREFILL_COLD') || r.env.containsKey('GGML_KEEP_WARM'), false);
++        expect(r.env.containsKey('VOLLIE_HEAD2_REPACK') || r.env.containsKey('VOLLIE_NO_ATTACH') || r.env.containsKey('VOLLIE_TOUCH_HOST'), false);
+         for (final e in m.num.entries) {
+           expect(r.env[e.key], r.arm == 'num' ? e.value : null);
+         }
+@@ -141,15 +139,43 @@ void main() {
+         expect(r.hold, r.gate);
+       }
+     }
+-    for (final m in ids) {
+-      expect(cells[m], {'Px': 4, 'pX': 4, 'PX': 4, 'px': 4}); // 8 vs 8 per factor per model
+-      expect(orders[m]!.length, 4); // four different quad orders per model
++    for (final m in ['olmoe', 'granite']) {
++      expect(cells[m], {'Tn': 4, 'tN': 4, 'TN': 4, 'tn': 4}); // 8 vs 8 per factor per model
++      expect(orders[m]!.length, 4);
+     }
++    expect(Research.blockPlan.last.arm == 'num' && Research.blockPlan.last.model == 'olmoe', true);
++    expect(Research.models['olmoe']!.num['VOLLIE_SKIP_MASS'], '900');
+     expect(Research.models['olmoe']!.load, {'VOLLIE_HEAD2_REPACK': '1'});
+     expect(Research.models['granite']!.load, isEmpty);
+     for (final m in Research.kitModels) {
+       expect(m.experts.length.isEven && m.experts.last <= m.bytes, true);
+     }
++    expect(Research.powerLabel({'powerSave': true, 'lowPower': 1}), 'power-save on');
++    expect(Research.powerLabel({'powerSave': false, 'lowPower': 0}), 'power-save off');
++    expect(Research.powerLabel({'powerSave': false, 'lowPower': 1}), 'power-save on');
++    expect(Research.powerLabel(const {}), 'power-save unknown');
++  });
++  test('kit r28: reference runtimes run 10 claim-format runs per model, no c2 knob', () {
++    for (final rt in ['c1', 'stock']) {
++      Research.runtime = rt;
++      expect(Research.blockOrder.map((m) => m.id).toList(), ['granite', 'olmoe']);
++      final on = Research.runs.where((r) => r.phase == 'on').toList();
++      expect(on.length, 20);
++      expect(Research.runs.length, 24);
++      expect(Research.runs.every((r) => r.arm == rt && r.block == 'ref' && r.threads == 3), true);
++      expect(on.every((r) => r.gate && r.hold && r.gateRule == 'r16'), true);
++      expect(Research.runs.every((r) => r.env.keys.every((k) => !k.startsWith('VOLLIE_') || k == 'VOLLIE_SAMPLER_BYPASS')), true);
++      expect(on.where((r) => r.model == 'granite').first.env['GGML_EXPERT_SKIP'], rt == 'c1' ? '117' : null);
++      expect(on.where((r) => r.model == 'olmoe').first.env, rt == 'c1' ? Research.refEnv('c1', 'olmoe') : isEmpty);
++    }
++    Research.runtime = 'c2';
++    expect(Research.runs.where((r) => r.phase == 'on').length, 62);
++  });
++  test('kit r28: the c2-touch and c2-nice lines are tagged', () {
++    expect(Research.parseLine('c2-touch run=olmoe_off_q_touch.3 pass=2 final=1 src=want at_ms=91234 set=700000 '
++            'pages=700000 ms=812.4 cpu=2 majflt=10 minflt=3000 sum=17')!.tag, 'olmoe_off_q_touch.3');
++    expect(Research.parseLine('c2-nice run=granite_num_q_nice.0 want=-10 pool=1 restored=0/0 w0=5:-10:s1:f0:e0')!.tag,
++        'granite_num_q_nice.0');
+   });
+   test('kit r27: the c2-pool, c2-sched and c2-exec lines are tagged', () {
+     expect(Research.parseLine('c2-pool run=olmoe_off_r16_pin.0 pool=1 mask=0xf0 threads=3 graphs=1/32 pool_graphs=1/32 '
+diff --git a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt b/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt
+index 9a23f49..53b9d95 100644
+--- a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt
++++ b/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt
+@@ -167,6 +167,20 @@ class MainActivity : FlutterActivity() {
+                         ))
+                     }
+ 
++                    // Kit r28 (memo-31 T-A, T-B; owner 2026-11-18: power saving was on in r13-r26): read only, never set.
++                    "powerState" -> {
++                        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
++                        val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
++                        result.success(mapOf(
++                            "powerSave" to pm.isPowerSaveMode,
++                            "lowPower" to runCatching {
++                                android.provider.Settings.Global.getInt(contentResolver, "low_power", -1)
++                            }.getOrDefault(-2),
++                            "status" to if (Build.VERSION.SDK_INT >= 29) pm.currentThermalStatus else -1,
++                            "level" to bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY),
++                        ))
++                    }
++
+                     "status" -> {
+                         val s = ModelDownloadService
+                         val idle = !s.isRunning()
