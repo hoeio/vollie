@@ -17,6 +17,10 @@ Vollie runs a sparse (mixture-of-experts) LLM on a 2021 phone CPU (Samsung Galax
   Device rounds exist (R52 onward; first host results R50, 2026-11-13); the 25 tok/s goal is not reached. The
   authoritative state is [STATUS.md](campaigns/02-25toks-5pct/STATUS.md).
   *Correction 2026-11-17: this paragraph used to say "planning, nothing measured".*
+- **Campaign 3 (research, started 2026-11-18):** 15 tok/s on a dense 7B-class model (Mistral-7B-Instruct-v0.3,
+  Qwen2.5-7B-Instruct), file not changed but used freely, budget +5 %. Terms: [campaigns/03-dense15-5pct/CAMPAIGN.md](campaigns/03-dense15-5pct/CAMPAIGN.md);
+  state: [campaigns/03-dense15-5pct/STATUS.md](campaigns/03-dense15-5pct/STATUS.md). First device round R69 (probe)
+  is pre-registered; campaign 2 is closed first when the owner returns R68's report.
 
 ## Reading order (about 30 minutes)
 

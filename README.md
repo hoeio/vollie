@@ -10,7 +10,8 @@ log of every measurement. The work is organised as **campaigns**, each with its 
 | # | goal | status |
 |---|---|---|
 | 1 | 20 tok/s on a Snapdragon 888 phone, one frozen Granite-4.0-H-Tiny file, perplexity budget +2 % | **done**: median **20.51 tok/s** (*device*, R49). Frozen at commit `686f17d`. Described on this page |
-| 2 | 25 tok/s on the same phone, a 7B-class model (to be chosen), budget +5 % | **in progress**: device rounds R52 onward, 25 tok/s **not reached** so far; best median 19.70 tok/s on OLMoE-1B-7B (*device*, R58). State and numbers: [STATUS.md](campaigns/02-25toks-5pct/STATUS.md), goal: [campaigns/02-25toks-5pct/](campaigns/02-25toks-5pct/CAMPAIGN.md) |
+| 2 | 25 tok/s on the same phone, a 7B-class model, budget +5 % | **in progress**: device rounds R52 to R68; 25 tok/s **not claimed**. Latest: OLMoE-1B-7B scored runs median 25.03 tok/s with the pinned pool (*device*, R67, not a claim; 4 of 8 runs at or above 25.0); R68 (claim-format rehearsal, power saving off, with campaign 1 and stock llama.cpp re-measured) awaits its phone report. State: [STATUS.md](campaigns/02-25toks-5pct/STATUS.md), goal: [campaigns/02-25toks-5pct/](campaigns/02-25toks-5pct/CAMPAIGN.md) |
+| 3 | 15 tok/s on the same phone, a **dense** 7B-class model (Mistral-7B-Instruct-v0.3, Qwen2.5-7B-Instruct), file not changed, budget +5 % | **research**: host screens done (memo-02, *host*); first device round R69 (probe: read rate, compute ceiling, residency, GPU) pre-registered, not run. The arithmetic puts 15 tok/s out of reach (*estimated*, memo-01). State: [STATUS.md](campaigns/03-dense15-5pct/STATUS.md), goal: [campaigns/03-dense15-5pct/](campaigns/03-dense15-5pct/CAMPAIGN.md) |
 
 **[Vollie](https://play.google.com/store/apps/details?id=com.insaneutils.vollie) is the Android app that runs
 this work, so you can reproduce the result on your own phone.** The app's source code is not in this repository.
@@ -22,8 +23,8 @@ this work, so you can reproduce the result on your own phone.** The app's source
 | see the result and how it was reached | [The result](#the-result), then [docs/overview.md](docs/overview.md) |
 | run it on your phone, or send us a report from another phone | [Run it on your phone](#run-it-on-your-phone) |
 | check the claims on a laptop | [Reproduce](#reproduce) |
-| see what campaign 2 is and where it stands | [campaigns/](campaigns/README.md), [STATUS.md](campaigns/02-25toks-5pct/STATUS.md) |
-| continue the research (a person or an AI session) | [CLAUDE.md](CLAUDE.md), then [STATUS.md](campaigns/02-25toks-5pct/STATUS.md) |
+| see what campaigns 2 and 3 are and where they stand | [campaigns/](campaigns/README.md), [campaign 2 STATUS](campaigns/02-25toks-5pct/STATUS.md), [campaign 3 STATUS](campaigns/03-dense15-5pct/STATUS.md) |
+| continue the research (a person or an AI session) | [CLAUDE.md](CLAUDE.md), then the STATUS.md of [campaign 2](campaigns/02-25toks-5pct/STATUS.md) and [campaign 3](campaigns/03-dense15-5pct/STATUS.md) |
 
 **Everything below, down to "Honest limits", describes campaign 1.**
 
