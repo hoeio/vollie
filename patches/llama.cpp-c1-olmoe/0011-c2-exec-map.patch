@@ -1,0 +1,214 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 9ee64b5..ca16bd9 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -1819,6 +1819,7 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
+ }
+ 
+ int llama_context::decode(const llama_batch_ext & batch_inp) {
++    llama_c2_exec_sync("decode"); // Vollie c2 (0011): VOLLIE_EXEC_MAP (no-op when unchanged)
+     if (!memory) {
+         LLAMA_LOG_DEBUG("%s: cannot decode batches with this context (calling encode() instead)\n", __func__);
+         return encode(batch_inp);
+diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
+index 4d1cd31..a31e271 100644
+--- a/src/llama-mmap.cpp
++++ b/src/llama-mmap.cpp
+@@ -10,6 +10,8 @@
+ #include <stdexcept>
+ #include <cerrno>
+ #include <algorithm>
++#include <mutex>
++#include <string>
+ 
+ #ifdef __has_include
+     #if __has_include(<unistd.h>)
+@@ -475,6 +477,158 @@ static llama_mmap::ranges ranges_complement(llama_mmap::ranges ranges, size_t li
+ }
+ #endif
+ 
++// Vollie c2 (patches/llama.cpp-c1-olmoe/0011-c2-exec-map.patch, bit-identical: page protection only, no data changes).
++// VOLLIE_EXEC_MAP=1: every model file mapping (llama_mmap) is made PROT_READ | PROT_EXEC with mprotect; unset (or any
++// other value): back to PROT_READ. Applied by llama_vollie_exec_sync(): at the start of every llama_decode (a no-op when
++// the state already matches) and by a direct call (exported C symbol, for the kit: before a run's gate wait, outside the
++// timed window). Linux keeps page-cache pages of executable file mappings on the active list longer (mm/vmscan.c,
++// VM_EXEC); that is the question (memo-29 Y1), not a claim. The mapping must allow it: a noexec mount or an SELinux
++// denial gives EACCES, recorded. One "c2-exec" line per VOLLIE_RUN value (and at every state change): wanted state,
++// mappings, bytes, mprotect calls that failed and the last errno, µs, where it was applied, and the protection of the
++// model ranges as /proc/self/maps shows them (perms:count of the lines overlapping a registered fragment).
++#if defined(_POSIX_MAPPED_FILES)
++namespace {
++struct c2_exec_map {
++    void * addr;
++    const std::vector<std::pair<size_t, size_t>> * frags;
++    int prot;
++};
++std::mutex                c2_exec_mu;
++std::vector<c2_exec_map>  c2_exec_maps;
++std::string               c2_exec_run = "\x01"; // VOLLIE_RUN of the last line
++int                       c2_exec_want_last = -1;
++
++void c2_exec_register(void * addr, const std::vector<std::pair<size_t, size_t>> * frags, bool add) {
++    std::lock_guard<std::mutex> lk(c2_exec_mu);
++    if (add) {
++        c2_exec_maps.push_back({addr, frags, PROT_READ});
++        return;
++    }
++    for (size_t i = 0; i < c2_exec_maps.size(); i++) {
++        if (c2_exec_maps[i].addr == addr) {
++            c2_exec_maps.erase(c2_exec_maps.begin() + i);
++            break;
++        }
++    }
++}
++
++// perms of /proc/self/maps lines that overlap a registered fragment, as "r-xs:1,r--s:1"
++std::string c2_exec_maps_perms() {
++#if defined(__linux__)
++    FILE * f = fopen("/proc/self/maps", "r");
++    if (!f) {
++        return std::string("unreadable:") + std::to_string(errno);
++    }
++    std::vector<std::pair<std::string, int>> seen;
++    char line[1024];
++    while (fgets(line, sizeof line, f)) {
++        unsigned long long a, b;
++        char perms[8];
++        if (sscanf(line, "%llx-%llx %7s", &a, &b, perms) != 3) {
++            continue;
++        }
++        bool hit = false;
++        for (const auto & m : c2_exec_maps) {
++            for (const auto & fr : *m.frags) {
++                const unsigned long long fa = (unsigned long long) (uintptr_t) m.addr + fr.first;
++                const unsigned long long fb = (unsigned long long) (uintptr_t) m.addr + fr.second;
++                hit = hit || (a < fb && b > fa);
++            }
++        }
++        if (!hit) {
++            continue;
++        }
++        auto it = std::find_if(seen.begin(), seen.end(), [&](const std::pair<std::string, int> & p) { return p.first == perms; });
++        if (it == seen.end()) {
++            seen.emplace_back(perms, 1);
++        } else {
++            it->second++;
++        }
++    }
++    fclose(f);
++    std::string out;
++    for (const auto & p : seen) {
++        out += (out.empty() ? "" : ",") + p.first + ":" + std::to_string(p.second);
++    }
++    return out.empty() ? "-" : out;
++#else
++    return "n/a";
++#endif
++}
++} // namespace
++
++static int llama_c2_exec_sync_impl(const char * where) {
++    const char * e = getenv("VOLLIE_EXEC_MAP");
++    const int want = e && atoi(e) == 1;
++    const char * r = getenv("VOLLIE_RUN");
++    const std::string run = r && *r ? r : "-";
++    std::lock_guard<std::mutex> lk(c2_exec_mu);
++    if (c2_exec_maps.empty()) {
++        return 0;
++    }
++    const int prot = want ? PROT_READ | PROT_EXEC : PROT_READ;
++    const int64_t t0 = ggml_time_us();
++    int calls = 0, fails = 0, err = 0;
++    size_t bytes = 0;
++    for (auto & m : c2_exec_maps) {
++        size_t mb = 0;
++        for (const auto & fr : *m.frags) {
++            mb += fr.second - fr.first;
++        }
++        bytes += mb;
++        if (m.prot == prot) {
++            continue;
++        }
++        bool ok = true;
++        for (const auto & fr : *m.frags) {
++            calls++;
++            if (mprotect((char *) m.addr + fr.first, fr.second - fr.first, prot) != 0) {
++                fails++;
++                err = errno;
++                ok = false;
++            }
++        }
++        if (ok) {
++            m.prot = prot;
++        }
++    }
++    const int64_t us = ggml_time_us() - t0;
++    if (calls > 0 || run != c2_exec_run || want != c2_exec_want_last) {
++        int on = 0;
++        for (const auto & m : c2_exec_maps) {
++            on += m.prot == (PROT_READ | PROT_EXEC);
++        }
++        fprintf(stderr, "c2-exec run=%s want=%d maps=%zu exec_maps=%d bytes=%zu calls=%d fails=%d errno=%d us=%lld where=%s prot=%s\n",
++                run.c_str(), want, c2_exec_maps.size(), on, bytes, calls, fails, err, (long long) us, where,
++                c2_exec_maps_perms().c_str());
++        fflush(stderr);
++        c2_exec_run = run;
++        c2_exec_want_last = want;
++    }
++    return err;
++}
++#else
++static int llama_c2_exec_sync_impl(const char * where) {
++    (void) where;
++    return 0;
++}
++#endif
++
++void llama_c2_exec_sync(const char * where) {
++    llama_c2_exec_sync_impl(where);
++}
++
++extern "C" int llama_vollie_exec_sync(void);
++
++// The kit's call (Dart FFI): applies VOLLIE_EXEC_MAP now; returns the last mprotect errno (0 = none failed).
++extern "C"
++#if !defined(_WIN32)
++__attribute__((visibility("default")))
++#endif
++int llama_vollie_exec_sync(void) {
++    return llama_c2_exec_sync_impl("api");
++}
++
+ struct llama_mmap::impl {
+ #ifdef _POSIX_MAPPED_FILES
+     std::vector<std::pair<size_t, size_t>> mapped_fragments;
+@@ -526,6 +680,7 @@ struct llama_mmap::impl {
+         }
+ 
+         mapped_fragments.emplace_back(0, file->size());
++        c2_exec_register(addr, &mapped_fragments, true); // Vollie c2 (0011)
+     }
+ 
+     static void align_range(size_t * first, size_t * last, size_t page_size) {
+@@ -577,6 +732,7 @@ struct llama_mmap::impl {
+     }
+ 
+     ~impl() {
++        c2_exec_register(addr, &mapped_fragments, false); // Vollie c2 (0011)
+         for (const auto & frag : mapped_fragments) {
+             if (munmap((char *) addr + frag.first, frag.second - frag.first)) {
+                 LLAMA_LOG_WARN("warning: munmap failed: %s\n", strerror(errno));
+diff --git a/src/llama-mmap.h b/src/llama-mmap.h
+index 6c6393d..b647840 100644
+--- a/src/llama-mmap.h
++++ b/src/llama-mmap.h
+@@ -65,6 +65,9 @@ private:
+     std::unique_ptr<impl> pimpl;
+ };
+ 
++// Vollie c2 (0011): VOLLIE_EXEC_MAP=1 -> the model mappings are PROT_READ | PROT_EXEC (llama-mmap.cpp)
++void llama_c2_exec_sync(const char * where);
++
+ struct llama_mlock {
+     llama_mlock();
+     ~llama_mlock();

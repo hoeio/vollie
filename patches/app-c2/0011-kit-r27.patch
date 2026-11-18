@@ -1,0 +1,991 @@
+diff --git a/lib/research.dart b/lib/research.dart
+index 006fad7..a6f8844 100644
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -1,9 +1,10 @@
+ part of 'assistant.dart';
+ 
+-/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-27-kit-r26.md).
++/// One kit run spec (campaign 2; vollie2 repository, campaigns/02-25toks-5pct/reports/memo-30-kit-r27.md).
+ /// model: a [KitModel] id ([Research.kitModels]); the first spec of a group (block) reloads that model.
+-/// proto: 'r26' = two-model blocks G O O G, one arm per model ([Research.armOf]), r16's gate in every gated run, the kv
+-///      factor in two ABBA quads per block (memo-27; r25 = r24's blocks with the gate rule per quad plus the kv factor).
++/// proto: 'r27' = r26's blocks (G O O G, one arm per model, r16's gate) with the kv clear in every run and two factors per
++///      model, pin (VOLLIE_POOL + VOLLIE_CPUMASK, c1-olmoe 0010) and exec (VOLLIE_EXEC_MAP, 0011), as a 2x2 in every quad
++///      of scored runs (memo-30; r26 = the kv factor in two ABBA quads per block, memo-27).
+ /// phase: 'warmup' (unscored), 'on' (scored) or 'prof' (profiled, not scored).
+ /// arm: 'off' = the model's baseline (r21's knob-off arm); 'num' = baseline + the model's [KitModel.num] (declared
+ ///      numerics: skip + two-stage head, R59).
+@@ -11,8 +12,8 @@ part of 'assistant.dart';
+ ///      every gated run, both arms).
+ /// kind: 'official32' = the benchmark (_benchPrompt, 32 tokens, greedy, the app's streaming, as r16);
+ ///       'profiled32' = the same under the profiling env (r16's per-token lines).
+-/// kv (r25, in env and id): VOLLIE_KV_DONTNEED=1 (c1-olmoe 0008 + 0009, declared bit-identical) in half of the scored runs;
+-///      id suffix '_kv'; never in warm-ups and profiled runs.
++/// kv (r25, in env and id): VOLLIE_KV_DONTNEED=1 (c1-olmoe 0008 + 0009, declared bit-identical); r27: in every run, no
++///      id suffix. pin / exec (r27, in env and id suffixes '_pin', '_exec'): see [Research.pinOn], [Research.execOn].
+ /// env: set before the run, every other known knob unset. repack: weight repack at load (a change reloads the model).
+ /// threads: 0 = the app's pick (r24 sets 3 explicitly). reps: repetitions in a row. pause: idle seconds after the gate.
+ /// gate: a cool-down gate before the run (headroom read every 5 s, at most 90 s); false = no wait.
+@@ -27,6 +28,9 @@ typedef KitModel = ({String id, String name, String arch, String file, int bytes
+ typedef RunSpec = ({String id, String model, String proto, String group, String phase, String arm, String kind,
+     Map<String, String> env, bool repack, int threads, int reps, int pause, bool gate, String gateRule, bool hold});
+ 
++/// Research kit r27 (memo-30): r26 below plus c1-olmoe 0010 (persistent pool + per-thread mask) and 0011 (PROT_EXEC model
++/// mapping), the kv clear in every run, pin x exec as a 2x2 per quad, the models copied to internal storage when it
++/// accepts an executable mapping ([kitStorageStep]), n_ctx 4096, a static dark screen and memo-28's instrument cuts.
+ /// Research kit r26: campaign 1's runtime (llama.cpp 620d2225c + patches/llama.cpp/0001-0003) +
+ /// patches/llama.cpp-c1-olmoe/0001 to 0009 (0007 off: no VOLLIE_PRIOR; 0008 + 0009 = the kv factor, 0009 clears on the
+ /// untagged address, R64). r25's protocol simplified by R64 (memo-27): one arm per model ([armOf]: Granite num, OLMoE
+@@ -34,8 +38,8 @@ typedef RunSpec = ({String id, String model, String proto, String group, String
+ /// session, blocks in [blockOrder] (G O O G); 3 threads; hold (r23's rule) in every gated run; the kit pauses while a
+ /// charger is connected. One tap, one JSON report (clipboard, a file next to the models, and "Save to Downloads").
+ extension Research on Assistant {
+-  static const kit = 'r26';
+-  static const app = '1.26.0+26';
++  static const kit = 'r27';
++  static const app = '1.27.0+27';
+ 
+   /// Shown on the kit's start screen and kept in the report (R60: a banking app was running; R62: a charger was plugged
+   /// in during the last block).
+@@ -97,6 +101,29 @@ extension Research on Assistant {
+   /// releases the page-aligned interior with MADV_DONTNEED instead of a memset; one c2-kvclear line per buffer cleared.
+   /// r26: 0009 computes the range on the untagged address (R64: every clear said why=map) and adds tag=0x.. to the line.
+   static const _kv = {'VOLLIE_KV_DONTNEED': '1'};
++  /// r27, factor pin (c1-olmoe 0010): a persistent ggml threadpool whose threads set their own affinity to cpus 4-7 at
++  /// every graph start (memo-28 §2.1, §2.4). Off = today's behaviour: a new worker pair per graph, inheriting the mask of
++  /// whichever Dart thread calls (the app's DartWorker pin, [Assistant._pin], stays in both).
++  static const pinOn = {'VOLLIE_POOL': '1', 'VOLLIE_CPUMASK': '0xf0'};
++  /// r27, factor exec (c1-olmoe 0011, memo-29 Y1): the model file mapping is PROT_READ|PROT_EXEC (mprotect, applied
++  /// before the run's gate wait through llama_vollie_exec_sync, so the wait and the run have it). Void when the model
++  /// files are not on a mount that accepts it ([kitStorageStep]).
++  static const execOn = {'VOLLIE_EXEC_MAP': '1'};
++  /// r27 (T1): per-thread schedstat and context switches in the runtime's c2-sched lines (0010), every run.
++  static const _sched = {'VOLLIE_SCHED': '1'};
++  /// r27 (T3): the second profiled run of a block in block mode: one 14-op table over the 32 decode graphs.
++  static const _profBlock = {'GGML_CPU_PROF': '1', 'GGML_CPU_AB': 'knob:MMID_FUSE+CHUNK2:1:1', 'GGML_CPU_AB_WARM': '32'};
++
++  /// r27: the four cells (pin, exec) and the order of each quad: a Williams square (every cell once per position over
++  /// four quads, every cell after every other once); pin runs P p p P or p P P p in every quad. Cells: 1 = P x,
++  /// 2 = p X, 3 = P X, 4 = p x (P / X = on).
++  static const cells = {1: (true, false), 2: (false, true), 3: (true, true), 4: (false, false)};
++  static const quadOrders = [
++    [1, 2, 4, 3],
++    [2, 3, 1, 4],
++    [3, 4, 2, 1],
++    [4, 1, 3, 2],
++  ];
+ 
+   /// hold (memo-22 §2): "wanted" = the model file's pages resident at the end of the previous run of that model. A pass =
+   /// one mincore of the file, then posix_fadvise WILLNEED on each run of wanted pages that are gone. r23: in the wait one
+@@ -135,32 +162,41 @@ extension Research on Assistant {
+   /// Threads of every run (R62: four plain threads lost on both models and are closed).
+   static const threads = 3;
+ 
++  /// r27 (memo-28 §2.6): the context of every kit load, fixed (4096 in every stored session so far, by the app's rule).
++  static const nCtx = 4096;
++
+   /// r26: the one arm each model runs (R64): Granite num (pass, frozen: R62, R64), OLMoE off (R63 §4 parks MASS=900
+   /// after three rounds without a shown gain). OLMoE keeps its load env (VOLLIE_HEAD2_REPACK=1), so its off arm is r23-r25's.
+   static const armOf = {'granite': 'num', 'olmoe': 'off'};
+ 
+-  /// One block (r26): load, two unscored warm-ups (no gate, no hold), 8 scored runs, then two profiled runs; every run of
+-  /// a block is in the model's arm ([armOf]); every run but the warm-ups has r16's gate and holds. The kv factor in two
+-  /// ABBA quads: on off off on, off on on off in odd blocks, the reverse in even ones (so each model of G O O G starts one
+-  /// block with kv and one without); kv on positions 1 4 6 7 or 2 3 5 8 of the 8 (same mean position). Warm-ups and
+-  /// profiled runs never set it.
++  /// One block (r27): load, two unscored warm-ups (no gate, no hold), 8 scored runs in two quads, then two profiled
++  /// runs (token lines, then T3's block table); every run of a block is in the model's arm ([armOf]) with the kv clear;
++  /// every run but the warm-ups has r16's gate and holds. Each quad holds the four (pin, exec) cells in the order of one
++  /// row of [quadOrders]: the model's k-th quad (k = 0..3 over its two blocks) takes row (k + 2 x model index) % 4.
++  /// Warm-ups and profiled runs: pin on, exec off.
+   static List<RunSpec> _block(int b, KitModel m) {
+     final arm = armOf[m.id]!;
+-    RunSpec r(String phase, int reps, String rule, [bool kv = false]) {
++    RunSpec r(String phase, int reps, String rule, bool pin, bool exec, [bool block = false]) {
+       final prof = phase == 'prof', wu = phase == 'warmup';
+-      final env = {...m.settings, ..._io, if (arm == 'num') ...m.num, if (prof) ..._profOn, if (kv) ..._kv};
++      final env = {
++        ...m.settings, ..._io, ..._kv, ..._sched, if (arm == 'num') ...m.num, if (prof) ...(block ? _profBlock : _profOn),
++        if (pin) ...pinOn, if (exec) ...execOn,
++      };
+       return (
+-        id: '${m.id}_$arm${prof ? '_prof' : wu ? '_wu' : rule == 'plateau' ? '_pl' : '_r16'}${kv ? '_kv' : ''}',
+-        model: m.id, proto: 'r26',
++        id: '${m.id}_$arm${prof ? (block ? '_profb' : '_prof') : wu ? '_wu' : '_r16${pin ? '_pin' : ''}${exec ? '_exec' : ''}'}',
++        model: m.id, proto: 'r27',
+         group: 'b$b', phase: phase, arm: arm, kind: prof ? 'profiled32' : 'official32', env: env,
+         repack: m.repack, threads: threads, reps: reps, pause: 0, gate: !wu, gateRule: rule, hold: !wu,
+       );
+     }
+-    final quads = [true, false, false, true, false, true, true, false];
++    final k = blockOrder.take(b - 1).where((x) => x.id == m.id).length; // this model's earlier blocks
++    final mi = kitModels.indexWhere((x) => x.id == m.id);
+     return [
+-      r('warmup', 2, 'none'),
+-      for (final kv in quads) r('on', 1, 'r16', b.isOdd ? kv : !kv),
+-      for (var j = 0; j < 2; j++) r('prof', 1, 'r16'),
++      r('warmup', 2, 'none', true, false),
++      for (var j = 0; j < 2; j++)
++        for (final c in quadOrders[(2 * k + j + 2 * mi) % 4]) r('on', 1, 'r16', cells[c]!.$1, cells[c]!.$2),
++      r('prof', 1, 'r16', true, false),
++      r('prof', 1, 'r16', true, false, true),
+     ];
+   }
+ 
+@@ -223,6 +259,26 @@ extension Research on Assistant {
+     };
+   }
+ 
++  /// r27: [_residency] counted from a page vector already taken (the run-end vector).
++  static Map<String, Object?> _residencyOf(String path, Uint8List v, int pageSize) {
++    final t0 = DateTime.now();
++    final ranges = _byFile[path.split('/').last]?.experts ?? const <int>[];
++    var total = 0, inR = 0;
++    for (final b in v) {
++      total += b;
++    }
++    for (var r = 0; r + 1 < ranges.length; r += 2) {
++      final end = math.min((ranges[r + 1] + pageSize - 1) ~/ pageSize, v.length);
++      for (var i = ranges[r] ~/ pageSize; i < end; i++) {
++        inR += v[i];
++      }
++    }
++    return {
++      'experts_mb': inR * pageSize ~/ 1000000, 'rest_mb': (total - inR) * pageSize ~/ 1000000,
++      'total_mb': total * pageSize ~/ 1000000, 'ms': DateTime.now().difference(t0).inMilliseconds, 'from': 'end vector',
++    };
++  }
++
+   /// The big cores' clock caps (scaling_max_freq of policies 4 and 7, MHz): a thermal cap shows here.
+   static String _caps() =>
+       'cap=${[4, 7].map((p) => (int.tryParse(DeviceProfile.sysRead('/sys/devices/system/cpu/cpufreq/policy$p/scaling_max_freq')) ?? 0) ~/ 1000).join('/')}';
+@@ -246,6 +302,7 @@ extension Research on Assistant {
+     'VOLLIE_SAMPLER_BYPASS', 'VOLLIE_PROF', 'VOLLIE_AB', 'VOLLIE_AB_WARM', 'VOLLIE_AB_BLOCK', 'VOLLIE_AB_BAAB',
+     'VOLLIE_RUN', 'VOLLIE_LINES', 'VOLLIE_HEAD2', 'VOLLIE_HEAD2_BATCH', 'VOLLIE_HEAD2_CHECK', 'VOLLIE_HEAD2_REPACK',
+     'VOLLIE_PRIOR', 'VOLLIE_PRIOR_N', 'VOLLIE_PRIOR_J', 'VOLLIE_KV_DONTNEED',
++    'VOLLIE_POOL', 'VOLLIE_CPUMASK', 'VOLLIE_SCHED', 'VOLLIE_EXEC_MAP', 'VOLLIE_NO_ATTACH',
+   ];
+   static Set<String> get _knobs => {..._knownKnobs, for (final r in runs) ...r.env.keys, for (final m in kitModels) ...m.load.keys};
+ 
+@@ -266,6 +323,7 @@ extension Research on Assistant {
+         'env': s.env, 'repack': s.repack,
+         'threads': s.threads, 'reps': s.reps, 'pause_s': s.pause, 'gate': s.gate, 'gate_rule': s.gateRule, 'hold': s.hold,
+         'kv': s.env.containsKey('VOLLIE_KV_DONTNEED'),
++        'pin': s.env.containsKey('VOLLIE_POOL'), 'exec': s.env.containsKey('VOLLIE_EXEC_MAP'),
+       };
+ 
+   /// The native libraries this process has mapped (llama.cpp's), from /proc/self/maps.
+@@ -494,6 +552,156 @@ extension Research on Assistant {
+     return true;
+   }
+ 
++  /// r27 (owner, 2026-11-18): the session's storage step, before the idle baseline and every warm-up. In this order:
++  /// 1. the exec check FIRST on the app's internal files folder (filesDir/kit-models): its /proc/self/mountinfo row, then
++  ///    a 1 MiB test file there mapped MAP_SHARED with PROT_READ, mprotect to PROT_READ|PROT_EXEC and a fresh PROT_READ|
++  ///    PROT_EXEC mapping, errno of each ([DeviceProfile.execProbe]); pass = both executable calls returned 0;
++  /// 2. T2: the same on the external models folder (a test file, and the first 1 MiB of each external model file);
++  /// 3. only if 1 passed: per model, an internal copy of the right size is hashed (sha256); a missing or wrong one is
++  ///    replaced, from the external file when that is on the phone and checked (copy, fsync, sha256), else by the kit's
++  ///    resumable download (Wi-Fi only, sha256); one free-space check for all of it first (bytes still to write + 200 MB),
++  ///    stop with a message when short. The external files are never deleted or changed.
++  /// Returns the model paths the session uses (internal after a pass, external after a failed check: exec factor void)
++  /// and the record; paths null = the session cannot run ([kitNote] says why).
++  Future<({Map<String, String>? paths, Map<String, Object?> rec})> kitStorageStep(String ext) async {
++    const ch = MethodChannel('vollie/downloads');
++    final rec = <String, Object?>{};
++    void note(String s) => _researchStatus('Kit ${Research.kit} storage · $s');
++    final st = Map<String, Object?>.from(await ch.invokeMethod<Map>('kitStorage') ?? const {});
++    final idir = '${st['internal']}/kit-models';
++    Directory(idir).createSync(recursive: true);
++    final extPaths = {for (final m in Research.kitModels) m.id: '$ext/${m.file}'};
++    final intPaths = {for (final m in Research.kitModels) m.id: '$idir/${m.file}'};
++    rec['internal_dir'] = idir;
++    rec['external_dir'] = ext;
++    rec['free_start'] = {'internal': st['internalFree'], 'external': st['externalFree']};
++    Map<String, Object?> check(String dir) {
++      final f = File('$dir/vollie-exec-probe.bin');
++      try {
++        f.writeAsBytesSync(Uint8List(1 << 20), flush: true);
++        final pr = DeviceProfile.execProbe(f.path);
++        return {'mount': DeviceProfile.mountOf(dir), 'probe': pr,
++                'pass': pr != null && pr['mmap_rx'] == 0 && pr['mprotect_rx'] == 0};
++      } catch (e) {
++        return {'mount': DeviceProfile.mountOf(dir), 'error': '$e', 'pass': false};
++      } finally {
++        try {
++          f.deleteSync();
++        } catch (_) {}
++      }
++    }
++    note('exec check (internal)');
++    final ic = check(idir);
++    rec['internal_check'] = ic;
++    final ec = check(ext);
++    ec['models'] = {
++      for (final m in Research.kitModels)
++        if (File(extPaths[m.id]!).existsSync()) m.id: DeviceProfile.execProbe(extPaths[m.id]!),
++    };
++    rec['external_check'] = ec;
++    final extReady = Research.kitModels.every((m) => Research.modelReady(ext, m));
++    if (ic['pass'] != true) {
++      rec['used'] = 'external';
++      rec['exec_factor'] = 'void: the internal folder refused an executable mapping';
++      if (!extReady) kitNote = 'Kit ${Research.kit}: the internal storage check failed and the kit models are not all on the phone.';
++      return (paths: extReady ? extPaths : null, rec: rec);
++    }
++    // 3. internal copies: verify what is there (full sha256), then one space check, then copy or download.
++    final per = <String, Map<String, Object?>>{};
++    rec['models'] = per;
++    final todo = <KitModel>[];
++    for (final m in Research.kitModels) {
++      final f = File(intPaths[m.id]!), e = <String, Object?>{};
++      per[m.id] = e;
++      if (f.existsSync() && f.lengthSync() == m.bytes) {
++        note('checking ${m.file} (sha256)');
++        final t0 = DateTime.now();
++        final h = await DeviceProfile.sha256(f.path);
++        e['present_sha256'] = h;
++        e['hash_ms'] = DateTime.now().difference(t0).inMilliseconds;
++        if (h == m.sha256) {
++          e['action'] = 'present';
++          File('${f.path}.verified').writeAsStringSync(m.sha256);
++          continue;
++        }
++        f.deleteSync();
++      } else if (f.existsSync()) {
++        e['present_bytes'] = f.lengthSync();
++        f.deleteSync();
++      }
++      todo.add(m);
++    }
++    final st2 = Map<String, Object?>.from(await ch.invokeMethod<Map>('kitStorage') ?? const {});
++    final free = (st2['internalFree'] as int?) ?? 0;
++    final need = todo.fold<int>(0, (a, m) => a + m.bytes) + 200000000;
++    rec['space'] = {'free': free, 'need': need, 'todo': todo.map((m) => m.file).toList()};
++    if (todo.isNotEmpty && free < need) {
++      kitNote = 'Kit ${Research.kit}: not enough free storage to copy ${todo.map((m) => m.file).join(' and ')} into the '
++          'app\'s internal storage: ${(need / 1e9).toStringAsFixed(1)} GB needed, ${(free / 1e9).toStringAsFixed(1)} GB '
++          'free. Free some space and start the kit again (nothing was copied; the files in the models folder are kept).';
++      rec['stopped'] = 'space';
++      return (paths: null, rec: rec);
++    }
++    for (final m in todo) {
++      final e = per[m.id]!, dst = File(intPaths[m.id]!), part = File('${dst.path}.part');
++      final t0 = DateTime.now();
++      if (Research.modelReady(ext, m)) {
++        note('copying ${m.file} (${(m.bytes / 1e9).toStringAsFixed(1)} GB) into internal storage');
++        try {
++          await File(extPaths[m.id]!).copy(part.path);
++          final raf = await part.open(mode: FileMode.append);
++          await raf.flush(); // fsync: the write-back is done before the first timed run
++          await raf.close();
++        } catch (err) {
++          e['copy_error'] = '$err';
++          rec['stopped'] = 'copy';
++          kitNote = 'Kit ${Research.kit}: copying ${m.file} failed ($err).';
++          try {
++            part.deleteSync();
++          } catch (_) {}
++          return (paths: null, rec: rec);
++        }
++        e['copy_ms'] = DateTime.now().difference(t0).inMilliseconds;
++        note('checking the copy of ${m.file} (sha256)');
++        final t1 = DateTime.now();
++        final h = await DeviceProfile.sha256(part.path);
++        e['hash_ms'] = DateTime.now().difference(t1).inMilliseconds;
++        e['sha256'] = h;
++        if (h != m.sha256) {
++          part.deleteSync();
++          rec['stopped'] = 'copy hash';
++          kitNote = 'Kit ${Research.kit}: the copy of ${m.file} has the wrong sha256 ($h); it was deleted. Start again.';
++          return (paths: null, rec: rec);
++        }
++        part.renameSync(dst.path);
++        File('${dst.path}.verified').writeAsStringSync(m.sha256);
++        e['action'] = 'copied';
++      } else {
++        final net = Map<String, Object?>.from(await ch.invokeMethod<Map>('status') ?? const {});
++        if (net['metered'] == true) {
++          rec['stopped'] = 'metered';
++          kitNote = 'Kit ${Research.kit}: ${m.file} has to be downloaded; connect to Wi-Fi first.';
++          return (paths: null, rec: rec);
++        }
++        if (!await _fetch(idir, m)) {
++          rec['stopped'] = 'download';
++          return (paths: null, rec: rec);
++        }
++        e['action'] = 'downloaded';
++        e['download_ms'] = DateTime.now().difference(t0).inMilliseconds;
++      }
++      e['bytes'] = dst.lengthSync();
++    }
++    for (final m in Research.kitModels) {
++      per[m.id]!['probe'] = DeviceProfile.execProbe(intPaths[m.id]!); // the real file, after the copy
++    }
++    final st3 = Map<String, Object?>.from(await ch.invokeMethod<Map>('kitStorage') ?? const {});
++    rec['free_end'] = {'internal': st3['internalFree'], 'external': st3['externalFree']};
++    rec['used'] = 'internal';
++    rec['exec_factor'] = 'live';
++    return (paths: intPaths, rec: rec);
++  }
++
+   /// Copies the last kit report (plain JSON) into the phone's Downloads folder (MediaStore; Android 10+). Returns the
+   /// name it was saved under, or throws.
+   Future<String> saveResearchToDownloads() async {
+@@ -520,14 +728,9 @@ extension Research on Assistant {
+     if (_loadedPath == null || isBusy || optimizing != null || researching) return;
+     final dir = _kitDir!;
+     final home = _loadedPath!;
+-    final paths = {for (final m in Research.kitModels) m.id: '$dir/${m.file}'};
+-    final missing = [for (final m in Research.kitModels) if (!Research.modelReady(dir, m)) m.file];
+     final odd = [for (final m in Research.kitModels) if (m.template != 'model') m.id];
+-    if (missing.isNotEmpty || odd.isNotEmpty) {
+-      kitNote = missing.isNotEmpty
+-          ? 'Kit ${Research.kit} needs ${missing.join(' and ')} on the phone first (the download button above; '
+-              'olmoe-Mi is the app\'s own download).'
+-          : 'Kit ${Research.kit} has no template source other than the model\'s own (${odd.join(', ')}).';
++    if (odd.isNotEmpty) {
++      kitNote = 'Kit ${Research.kit} has no template source other than the model\'s own (${odd.join(', ')}).';
+       _kitChanged();
+       return;
+     }
+@@ -537,6 +740,28 @@ extension Research on Assistant {
+     _stopTest = false;
+     await DeviceProfile.keepScreenOn(true);
+     final started = DateTime.now();
++    // r27: the storage step first (exec check, internal copies), before the idle baseline and every warm-up.
++    final ({Map<String, String>? paths, Map<String, Object?> rec}) storage;
++    try {
++      storage = await kitStorageStep(dir);
++    } catch (e) {
++      kitNote = 'Kit ${Research.kit}: the storage step failed ($e).';
++      await DeviceProfile.keepScreenOn(false);
++      researching = false;
++      optimizing = null;
++      _kitChanged();
++      return;
++    }
++    if (storage.paths == null) {
++      kitNote ??= 'Kit ${Research.kit}: the storage step stopped (${storage.rec['stopped']}).';
++      await DeviceProfile.keepScreenOn(false);
++      researching = false;
++      optimizing = null;
++      _kitChanged();
++      return;
++    }
++    final paths = storage.paths!;
++    _contextSize = Research.nCtx; // r27 (memo-28 §2.6): fixed, recorded; the app's next load() sets its own again
+     final w = autoThreads;
+     final rows = <Map<String, Object?>>[];
+     final notes = <String>[];
+@@ -549,6 +774,30 @@ extension Research on Assistant {
+       'started': started.toIso8601String(),
+       'header': await _testHeader('research ${Research.kit}', started),
+       'saved': {'write_threads': w, 'context': contextSize, 'reuse_prefix': Research.reusePrefix},
++      'context_rule': 'r27: n_ctx ${Research.nCtx} at every kit load (Research.nCtx), not the app\'s free-RAM rule',
++      'storage': storage.rec,
++      'pin_rule': 'factor pin (c1-olmoe 0010): on = ${Research.pinOn} (persistent pool, poll 0; every thread sets its '
++          'affinity to the mask at each graph start when it differs); off = no VOLLIE_POOL: a new worker pair per graph '
++          'that inherits the calling Dart thread\'s mask; the app\'s DartWorker pin in both; c2-pool line per prompt',
++      'exec_rule': 'factor exec (c1-olmoe 0011): on = ${Research.execOn}; applied by llama_vollie_exec_sync() right after '
++          'the run\'s env is set, before its gate wait (row exec_sync; the runtime\'s c2-exec line shows want, errno, the '
++          '/proc/self/maps protection); off = PROT_READ; void when storage.exec_factor is not "live"',
++      'design': {'cells': {for (final e in Research.cells.entries) '${e.key}': {'pin': e.value.$1, 'exec': e.value.$2}},
++                 'quad_orders': Research.quadOrders,
++                 'rule': "quad k (0..3) of a model takes row (k + 2 x model index) % 4; warm-ups and profiled runs pin on, exec off"},
++      'instrument_changes': [
++        'kv clear (VOLLIE_KV_DONTNEED=1) in every run (R66)',
++        'n_ctx fixed at ${Research.nCtx}',
++        'static dark kit screen while the kit runs (no spinner; memo-28 §2.2)',
++        'no OpenCL backend or OpenCL helper in the APK (memo-28 §2.5)',
++        'VOLLIE_SCHED=1 in every run: per-thread schedstat / context switches per graph in the runtime (T1)',
++        'res_after from the run-end page vector (one mincore less; its ms is now the count from the vector, memo-28 §3.2)',
++        'no vmstat / /proc/self/io reads inside the timed window (vmstat_first, io_read_bytes_to_first_chunk gone; both were unreadable)',
++        'native library hashes once per session (libs per load row unchanged in meaning)',
++        'native env strings freed; the log read from the last offset (memo-28 §3.5, 3.6, 3.8, 3.9)',
++        'T1 records: ru (getrusage start / first chunk / end), smaps_before / smaps_after',
++        'T3: the second profiled run per block in block mode (id _profb)',
++      ],
+       'kernel': DeviceProfile.sysRead('/proc/version'),
+       'kernel_release': DeviceProfile.unameRelease(), // r23: uname(2) release; /proc/version reads empty in the app (r22)
+       'os_version': Platform.operatingSystemVersion, // r21: /proc/version reads empty in the app; this is uname's (Dart)
+@@ -562,11 +811,12 @@ extension Research on Assistant {
+           'arm num = off + the model\'s num env (declared numerics, R59/R61); GGML_PREFILL_COLD and GGML_KEEP_WARM are never set; '
+           'hold = app-side read-back of the pages the gate wait took (memo-22 §2, r23 rule unchanged), no env, in every gated '
+           'run; r26: gate rule r16 in every gated run (no plateau factor); 3 threads in every run; the kit pauses '
+-          'while a charger is connected (charger_rule); kv factor (kv_rule); one arm per model (arm_rule)',
++          'while a charger is connected (charger_rule); one arm per model (arm_rule); r27: kv clear in every run, factors '
++          'pin and exec (pin_rule, exec_rule, design)',
+       'arm_rule': 'r26: each model runs one arm in every run of its blocks (warm-ups, scored, profiled): '
+           '${Research.armOf.entries.map((e) => '${e.key} ${e.value}').join(', ')} (R64: Granite num passed; R63 §4 parks '
+           'OLMoE MASS=900); OLMoE keeps its load env, so its off arm is r23-r25\'s',
+-      'kv_rule': 'scored runs alternate VOLLIE_KV_DONTNEED=1 (spec kv, id suffix _kv; c1-olmoe 0008, declared bit-identical): '
++      'kv_rule': 'r27: VOLLIE_KV_DONTNEED=1 in every run (R66). Before: scored runs alternate VOLLIE_KV_DONTNEED=1 (spec kv, id suffix _kv; c1-olmoe 0008, declared bit-identical): '
+           'llama_memory_clear(data) releases the KV / recurrent buffers\' page-aligned interior with MADV_DONTNEED instead '
+           'of a memset; one c2-kvclear line per buffer (kind kv / rs, bytes, released, why, us, tag); r26: c1-olmoe 0009 '
+           'computes the range on the untagged address (tag = its top byte); two ABBA quads per block, on off off on / '
+@@ -579,7 +829,8 @@ extension Research on Assistant {
+                         'rounds or max_ms'},
+       'thread_rule': {'threads': Research.threads,
+                       'note': 'llama.cpp threads = the spec\'s threads (prompt and decode); the app restricts its DartWorker '
+-                          'threads (and the ggml workers they start) to pinned_cpus as a set, no per-thread pinning'},
++                          'threads (and the ggml workers they start) to pinned_cpus as a set at each generation; r27: pin '
++                          'runs also set the mask in the runtime at every graph start (pin_rule)'},
+       'memlock_rlimit': () {
+         final l = DeviceProfile.memlockLimit();
+         return l == null ? null : {'soft': l.soft, 'hard': l.hard};
+@@ -637,16 +888,26 @@ extension Research on Assistant {
+     // next prompt starts or the context is freed, so it arrives one row later (or at the next load). Lines without
+     // run= (c2-pcold, c2-pcold-advice, c2-keepwarm) go to the row being measured.
+     final byTag = <String, Map<String, Object?>>{};
+-    var logPos = 0;
++    var logPos = 0; // r27: a byte offset (memo-28 §3.9: the log is no longer re-read whole twice per run)
+     void harvest(Map<String, Object?>? current) {
+       List<String> lines;
++      RandomAccessFile? f;
+       try {
+-        lines = File(Assistant._loadLogPath).readAsLinesSync();
++        f = File(Assistant._loadLogPath).openSync();
++        final len = f.lengthSync();
++        if (len < logPos) logPos = 0; // the file was truncated
++        f.setPositionSync(logPos);
++        final b = f.readSync(len - logPos);
++        final end = b.lastIndexOf(10); // whole lines only
++        if (end < 0) return;
++        lines = utf8.decode(b.sublist(0, end), allowMalformed: true).split('\n');
++        logPos += end + 1;
+       } catch (_) {
+         return;
++      } finally {
++        f?.closeSync();
+       }
+-      if (lines.length < logPos) logPos = 0; // the file was truncated
+-      for (final l in lines.skip(logPos)) {
++      for (final l in lines) {
+         final p = Research.parseLine(l);
+         if (p == null) continue;
+         final tag = p.tag;
+@@ -667,7 +928,6 @@ extension Research on Assistant {
+           (row['c2'] as List).add(p.line);
+         }
+       }
+-      logPos = lines.length;
+     }
+ 
+     // Loads [path] with repack [on] when [force] or anything differs; returns the reload's ms, or null. Without a reload
+@@ -675,6 +935,7 @@ extension Research on Assistant {
+     // r21: every block starts with a load of its model (force), repack set explicitly (never the app's size rule).
+     // r23: the model's load env ([KitModel.load]) is set during the load only; what native code saw is in [loadSeen].
+     Map<String, String>? loadSeen;
++    final libHash = <String, String?>{}; // r27 (memo-28 §3.6): each native library hashed once per session
+     Future<int?> ensureLoad(String path, KitModel m, bool on, int threads, bool force) async {
+       if (!force && _loadedPath == path && _loadedAccel == Accel.cpu && _loadedRepack == on) {
+         await _benchOn(Accel.cpu, threads, threads);
+@@ -865,7 +1126,7 @@ extension Research on Assistant {
+         if (reload != null) {
+           row['reload_ms'] = reload;
+           row['load_env_set'] = loadSeen; // r23: the env native code saw during this load (OLMoE: VOLLIE_HEAD2_REPACK=1)
+-          row['libs'] = {for (final l in Research._nativeLibs()) l.split('/').last: await DeviceProfile.sha256(l)};
++          row['libs'] = {for (final l in Research._nativeLibs()) l.split('/').last: libHash[l] ??= await DeviceProfile.sha256(l)};
+           if (!(report['templates'] as Map).containsKey(s.model)) await describe(s.model);
+         }
+         row['loaded_file'] = _loadedPath?.split('/').last;
+@@ -874,6 +1135,8 @@ extension Research on Assistant {
+         s.env.forEach(setNativeEnv);
+         setNativeEnv('VOLLIE_RUN', tag);
+         row['env_set'] = Research._envNow();
++        // r27: VOLLIE_EXEC_MAP applied now, before the gate wait (the wait and the run have the run's protection)
++        row['exec_sync'] = DeviceProfile.execSync();
+         row['threads_loaded'] = [_loadedThreads, _loadedRead];
+         final c0 = DateTime.now();
+         final want = lastVec[path];
+@@ -971,6 +1234,7 @@ extension Research on Assistant {
+           };
+         }
+         show('${s.group} ${s.model} · ${s.id} ${i + 1}/${s.reps}');
++        row['smaps_before'] = DeviceProfile.smaps(path); // r27 (T1): mapped (smaps Rss) against resident (mincore)
+         row['res_before'] = !s.gate && lastRes != null ? lastRes : Research._residency(path);
+         if (!s.gate && lastRes != null) row['res_before_from'] = 'previous run end';
+         row['cap_before'] = Research._caps();
+@@ -985,13 +1249,13 @@ extension Research on Assistant {
+         final f0 = DeviceProfile.pageFaults();
+         final io0 = DeviceProfile.ioReadBytes();
+         final ru0 = DeviceProfile.rusage();
++        ({int inblock, int cpuUs, int userUs, int sysUs, int nvcsw, int nivcsw})? ruFirst;
+         final wt0 = DeviceProfile.ioWaitTicks();
+         int? ib1st;
+         final sw = Stopwatch();
+         final t0 = DateTime.now();
+         if (lastEnd != null) row['idle_ms'] = t0.difference(lastEnd!).inMilliseconds;
+         sw.start();
+-        int? io1st;
+         double? firstMs;
+         // r23: where llama.cpp's threads run during the decode: up to 3 samples, >= 500 ms apart, of the DartWorker
+         // threads (the app's inference threads and the ggml workers they start) in state R and their CPU.
+@@ -1000,10 +1264,10 @@ extension Research on Assistant {
+         final c = await _kitComplete(Assistant._benchPrompt, Assistant._benchTokens, false, (ch) {
+           if (ch.text.isNotEmpty && firstMs == null) {
+             firstMs = sw.elapsedMicroseconds / 1000;
+-            row['vmstat_first'] = DeviceProfile.vmstat(); // r24: the prefill's share
++            // r27 (memo-28 §3.5): no vmstat / /proc/self/io here (both unreadable on this phone)
+             row['mem_first'] = DeviceProfile.memInfo(); // r24: VmSwap / RssFile after the prefill
+-            io1st = DeviceProfile.ioReadBytes(); // the app's own split (the c2-io line is the runtime's)
+-            ib1st = DeviceProfile.rusage()?.inblock;
++            ruFirst = DeviceProfile.rusage();
++            ib1st = ruFirst?.inblock;
+           }
+           final ms = sw.elapsedMilliseconds;
+           if (firstMs != null && thr.length < 3 && ms - lastSample >= 500) {
+@@ -1024,10 +1288,12 @@ extension Research on Assistant {
+           lastVec[path] = endVec.v; // r22 hold: the pages this model needs, for its next run
+           pageSize = endVec.pageSize;
+         }
++        row['smaps_after'] = DeviceProfile.smaps(path); // r27 (T1)
+         row['mhz_after'] = DeviceProfile.cpuMhz();
+         row['mem_after'] = DeviceProfile.memInfo();
+         row['cap_after'] = Research._caps();
+-        row['res_after'] = lastRes = Research._residency(path);
++        // r27 (memo-28 §3.2): from the run-end vector (one whole-file mincore less); ms = this count's time
++        row['res_after'] = lastRes = endVec == null ? Research._residency(path) : Research._residencyOf(path, endVec.v, endVec.pageSize);
+         if (!s.gate) row['heat_after'] = lastHeat = (await DeviceProfile.thermal()).headroom;
+         if (s.gate) lastHeat = null;
+         final b1 = await DeviceProfile.battery();
+@@ -1049,7 +1315,10 @@ extension Research on Assistant {
+           row['minflt'] = f1.minor - f0.minor;
+         }
+         if (io0 != null && io1 != null) row['io_read_bytes'] = io1 - io0;
+-        if (io0 != null && io1st != null) row['io_read_bytes_to_first_chunk'] = io1st! - io0;
++        List<int>? ruv(({int inblock, int cpuUs, int userUs, int sysUs, int nvcsw, int nivcsw})? u) =>
++            u == null ? null : [u.cpuUs, u.userUs, u.sysUs, u.nvcsw, u.nivcsw, u.inblock];
++        row['ru'] = {'fields': ['cpu_us', 'user_us', 'sys_us', 'nvcsw', 'nivcsw', 'inblock'], 'start': ruv(ru0),
++                     'first': ruv(ruFirst), 'end': ruv(ru1)}; // r27 (T1): whole process
+         if (ru0 != null && ru1 != null) {
+           row['inblock_read_bytes'] = (ru1.inblock - ru0.inblock) * 512; // r22: getrusage ru_inblock over the run
+           row['run_cpu_ms'] = (ru1.cpuUs - ru0.cpuUs) ~/ 1000;
+diff --git a/lib/device.dart b/lib/device.dart
+index b0d32c4..c484d31 100644
+--- a/lib/device.dart
++++ b/lib/device.dart
+@@ -234,7 +234,8 @@ class DeviceProfile {
+ 
+   /// Kit r22: this process's getrusage(RUSAGE_SELF): blocks read from storage (ru_inblock, 512 B units; the same
+   /// counter as /proc/self/io read_bytes, readable where /proc/self/io is not) and user + system CPU time in µs.
+-  static ({int inblock, int cpuUs})? rusage() {
++  /// Kit r27 (T1): also user and system µs apart and voluntary / involuntary context switches (whole process).
++  static ({int inblock, int cpuUs, int userUs, int sysUs, int nvcsw, int nivcsw})? rusage() {
+     final libc = _libc;
+     if (libc == null) return null;
+     final getrusage = libc.lookupFunction<Int32 Function(Int32, Pointer<Uint8>), int Function(int, Pointer<Uint8>)>('getrusage');
+@@ -243,12 +244,130 @@ class DeviceProfile {
+     try {
+       if (getrusage(0 /* RUSAGE_SELF */, b) != 0) return null;
+       final q = b.cast<Int64>().asTypedList(18);
+-      return (inblock: q[11], cpuUs: q[0] * 1000000 + q[1] + q[2] * 1000000 + q[3]);
++      return (inblock: q[11], cpuUs: q[0] * 1000000 + q[1] + q[2] * 1000000 + q[3], userUs: q[0] * 1000000 + q[1],
++          sysUs: q[2] * 1000000 + q[3], nvcsw: q[16], nivcsw: q[17]);
+     } finally {
+       free(b);
+     }
+   }
+ 
++  /// Kit r27 (T2, the owner's exec check): the /proc/self/mountinfo row of the mount holding [path] (the longest mount
++  /// point that prefixes its resolved path): mount point, mount options, fs type, super options, noexec. Error text
++  /// instead when unreadable.
++  static Map<String, Object?> mountOf(String path) {
++    try {
++      final real = File(path).existsSync() ? File(path).resolveSymbolicLinksSync() : Directory(path).resolveSymbolicLinksSync();
++      List<String>? best;
++      for (final l in File('/proc/self/mountinfo').readAsLinesSync()) {
++        final f = l.split(' ');
++        if (f.length < 10) continue;
++        final mp = f[4].replaceAll(r'\040', ' ');
++        if ((real == mp || real.startsWith(mp == '/' ? '/' : '$mp/')) && (best == null || mp.length > best[4].length)) best = f;
++      }
++      if (best == null) return {'path': real, 'error': 'no mount found'};
++      final dash = best.indexOf('-');
++      final opts = best[5].split(',');
++      return {
++        'path': real, 'mount_point': best[4], 'options': best[5],
++        'fs': dash > 0 && dash + 1 < best.length ? best[dash + 1] : null,
++        'super_options': dash > 0 && dash + 3 < best.length ? best[dash + 3] : null,
++        'noexec': opts.contains('noexec'), 'line': best.join(' '),
++      };
++    } catch (e) {
++      return {'path': path, 'error': '$e'};
++    }
++  }
++
++  /// Kit r27 (T2): can [path] be mapped executable? Maps its first [len] bytes (the file must have them) MAP_SHARED and
++  /// records errno (0 = ok) of: mmap PROT_READ, then mprotect to PROT_READ|PROT_EXEC on that mapping (what the runtime's
++  /// VOLLIE_EXEC_MAP does), and a fresh mmap PROT_READ|PROT_EXEC. Null off Android.
++  static Map<String, int>? execProbe(String path, [int len = 1 << 20]) {
++    final libc = _libc;
++    if (libc == null) return null;
++    final open = libc.lookupFunction<Int32 Function(Pointer<Uint8>, Int32), int Function(Pointer<Uint8>, int)>('open');
++    final close = libc.lookupFunction<Int32 Function(Int32), int Function(int)>('close');
++    final mmap = libc.lookupFunction<Pointer<Void> Function(Pointer<Void>, IntPtr, Int32, Int32, Int32, IntPtr),
++        Pointer<Void> Function(Pointer<Void>, int, int, int, int, int)>('mmap');
++    final munmap = libc.lookupFunction<Int32 Function(Pointer<Void>, IntPtr), int Function(Pointer<Void>, int)>('munmap');
++    final mprotect = libc.lookupFunction<Int32 Function(Pointer<Void>, IntPtr, Int32), int Function(Pointer<Void>, int, int)>('mprotect');
++    final errno = libc.lookupFunction<Pointer<Int32> Function(), Pointer<Int32> Function()>('__errno');
++    final name = _cString(path);
++    final fd = open(name, 0 /* O_RDONLY */);
++    final out = <String, int>{'open': fd < 0 ? errno().value : 0};
++    _free?.call(name);
++    if (fd < 0) return out;
++    try {
++      final a = mmap(nullptr, len, 1 /* PROT_READ */, 1 /* MAP_SHARED */, fd, 0);
++      if (a.address == -1) {
++        out['mmap_r'] = errno().value;
++      } else {
++        out['mmap_r'] = 0;
++        out['mprotect_rx'] = mprotect(a, len, 5 /* PROT_READ|PROT_EXEC */) == 0 ? 0 : errno().value;
++        munmap(a, len);
++      }
++      final b = mmap(nullptr, len, 5 /* PROT_READ|PROT_EXEC */, 1 /* MAP_SHARED */, fd, 0);
++      if (b.address == -1) {
++        out['mmap_rx'] = errno().value;
++      } else {
++        out['mmap_rx'] = 0;
++        munmap(b, len);
++      }
++    } finally {
++      close(fd);
++    }
++    return out;
++  }
++
++  /// Kit r27 (T1): /proc/self/smaps summed: the mapping(s) of [modelPath] (size, Rss, Pss, Swap kB: "mapped" against
++  /// mincore's "resident") and the anonymous memory by mapping name ([anon:...], [heap], unnamed; the 12 largest by Rss +
++  /// Swap), file-backed rest, totals; ms = the read's wall time. An error text when unreadable.
++  static Map<String, Object?> smaps(String modelPath) {
++    final t0 = DateTime.now();
++    try {
++      final groups = <String, List<int>>{}; // name -> [size, rss, pss, swap] kB
++      final model = [0, 0, 0, 0], file = [0, 0, 0, 0];
++      List<int>? cur;
++      final head = RegExp(r'^[0-9a-f]+-[0-9a-f]+ ');
++      for (final l in File('/proc/self/smaps').readAsLinesSync()) {
++        if (head.hasMatch(l)) {
++          final f = l.split(RegExp(r'\s+'));
++          final n = f.length > 5 ? f.sublist(5).join(' ') : '';
++          cur = n == modelPath
++              ? model
++              : n.startsWith('/')
++                  ? file
++                  : groups.putIfAbsent(n.isEmpty ? '[unnamed]' : n, () => [0, 0, 0, 0]);
++          continue;
++        }
++        if (cur == null) continue;
++        final i = l.startsWith('Size:') ? 0 : l.startsWith('Rss:') ? 1 : l.startsWith('Pss:') ? 2 : l.startsWith('Swap:') ? 3 : -1;
++        if (i >= 0) cur[i] += int.tryParse(l.split(RegExp(r'\s+'))[1]) ?? 0;
++      }
++      final named = groups.entries.toList()..sort((a, b) => (b.value[1] + b.value[3]).compareTo(a.value[1] + a.value[3]));
++      final anon = groups.values.fold<List<int>>([0, 0, 0, 0], (a, v) => [for (var i = 0; i < 4; i++) a[i] + v[i]]);
++      return {
++        'fields': ['size_kb', 'rss_kb', 'pss_kb', 'swap_kb'], 'model': model, 'anon': anon, 'file_rest': file,
++        'anon_top': {for (final e in named.take(12)) e.key: e.value},
++        'ms': DateTime.now().difference(t0).inMilliseconds,
++      };
++    } catch (e) {
++      return {'error': '$e', 'ms': DateTime.now().difference(t0).inMilliseconds};
++    }
++  }
++
++  /// Kit r27: VOLLIE_EXEC_MAP applied now by the runtime (c1-olmoe 0011's exported llama_vollie_exec_sync, through
++  /// the libllama.so llamadart loaded); rc = the last mprotect errno (0 = none failed), or the lookup's error.
++  static Map<String, Object?> execSync() {
++    final t0 = DateTime.now();
++    try {
++      final f = DynamicLibrary.open('libllama.so').lookupFunction<Int32 Function(), int Function()>('llama_vollie_exec_sync');
++      final rc = f();
++      return {'rc': rc, 'ms': DateTime.now().difference(t0).inMilliseconds};
++    } catch (e) {
++      return {'error': '$e', 'ms': DateTime.now().difference(t0).inMilliseconds};
++    }
++  }
++
+   /// Kit r23: the kernel release (uname(2), struct utsname: six 65-byte fields, release is the third). Null off Android.
+   static String? unameRelease() {
+     final libc = _libc;
+@@ -752,20 +871,30 @@ final _mask = _libc
+ 
+ final _malloc =
+     _libc?.lookupFunction<Pointer<Uint8> Function(IntPtr), Pointer<Uint8> Function(int)>('malloc');
++final _free = _libc?.lookupFunction<Void Function(Pointer<Uint8>), void Function(Pointer<Uint8>)>('free');
+ final _setenv = _libc?.lookupFunction<Int32 Function(Pointer<Uint8>, Pointer<Uint8>, Int32),
+     int Function(Pointer<Uint8>, Pointer<Uint8>, int)>('setenv');
+ 
+ final _unsetenv = _libc?.lookupFunction<Int32 Function(Pointer<Uint8>), int Function(Pointer<Uint8>)>('unsetenv');
+ 
+ /// Removes an environment variable for native code (campaign 2 kit: "off" means unset, not "").
+-void unsetNativeEnv(String name) => _unsetenv?.call(_cString(name));
++/// Kit r27 (memo-28 §3.8): the C strings are freed after the call (setenv / unsetenv / getenv copy or keep nothing).
++void unsetNativeEnv(String name) {
++  if (_unsetenv == null) return;
++  final n = _cString(name);
++  _unsetenv!(n);
++  _free!(n);
++}
+ 
+ final _getenv = _libc?.lookupFunction<Pointer<Uint8> Function(Pointer<Uint8>), Pointer<Uint8> Function(Pointer<Uint8>)>('getenv');
+ 
+ /// An environment variable as native code sees it (null = unset), read back for the kit report.
+ String? getNativeEnv(String name) {
+-  final p = _getenv?.call(_cString(name));
+-  if (p == null || p.address == 0) return null;
++  if (_getenv == null) return null;
++  final n = _cString(name);
++  final p = _getenv!(n);
++  _free!(n);
++  if (p.address == 0) return null;
+   final b = <int>[];
+   for (var i = 0; p[i] != 0; i++) {
+     b.add(p[i]);
+@@ -796,10 +925,12 @@ void setTinyOps(int elements) => setNativeEnv('GGML_TINY_OP', '$elements');
+ void setExpertIo(int mode) => setNativeEnv('GGML_EXPERT_IO', '$mode');
+ 
+ /// Sets an environment variable for native code (ggml reads its knobs per graph).
+-// ponytail: leaks two short strings per call; called a handful of times per speed test.
+ void setNativeEnv(String name, String value) {
+   if (_setenv == null) return;
+-  _setenv!(_cString(name), _cString(value), 1);
++  final n = _cString(name), v = _cString(value);
++  _setenv!(n, v, 1);
++  _free!(n);
++  _free!(v);
+ }
+ 
+ /// Restricts llama.cpp's threads to [cpus] (all cores when null).
+diff --git a/lib/settings_screen.dart b/lib/settings_screen.dart
+index 9735bc5..d544776 100644
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -74,6 +74,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
+     final dirty = _prompt.text.trim() != assistant.systemPrompt;
+     final t = assistant.temperature;
+ 
++    // Kit r27 (memo-28 §2.2): while the kit runs, a static dark screen (no progress indicator, no animation; the text
++    // changes only when the kit's status does) instead of this page with its spinner.
++    if (assistant.researching) {
++      return Scaffold(
++        backgroundColor: Colors.black,
++        body: SafeArea(
++          child: Padding(
++            padding: const EdgeInsets.all(24),
++            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
++              Text(assistant.optimizing ?? 'Research kit ${Research.kit}',
++                  style: const TextStyle(color: Color(0xFF808080), fontSize: 14)),
++              const Spacer(),
++              TextButton(
++                onPressed: assistant.stopResearch,
++                style: TextButton.styleFrom(foregroundColor: const Color(0xFF808080), splashFactory: NoSplash.splashFactory),
++                child: const Text('Stop'),
++              ),
++            ]),
++          ),
++        ),
++      );
++    }
++
+     return Scaffold(
+       appBar: AppBar(title: const Text('Settings')),
+       body: ListView(
+@@ -351,7 +374,7 @@ class _PerformanceCard extends StatelessWidget {
+               icon: const Icon(Icons.thermostat_rounded),
+               label: const Text('Run phone test (10 min)'),
+             ),
+-      // Research kit r26: the models of Research.kitModels (memo-27); the kit's own files are fetched here first.
++      // Research kit r27: the models of Research.kitModels (memo-30); the kit's own files are fetched here first.
+       if (!assistant.kitModelReady)
+         assistant.researching
+             ? OutlinedButton.icon(
+@@ -362,7 +385,7 @@ class _PerformanceCard extends StatelessWidget {
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.downloadKitModels,
+                 icon: const Icon(Icons.download_rounded),
+-                label: Text('Download kit r26 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
++                label: Text('Download kit r27 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
+                     '(${(assistant.kitMissingBytes / 1e9).toStringAsFixed(1)} GB, Wi-Fi)'),
+               ),
+       if (assistant.kitModelReady)
+@@ -375,7 +398,7 @@ class _PerformanceCard extends StatelessWidget {
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.researchRun,
+                 icon: const Icon(Icons.science_rounded),
+-                label: const Text('Run research kit r26 (~35-75 min)'),
++                label: const Text('Run research kit r27 (~40-80 min)'),
+               ),
+       if (assistant.kitModelReady && !assistant.researching)
+         Padding(
+@@ -387,7 +410,7 @@ class _PerformanceCard extends StatelessWidget {
+           padding: const EdgeInsets.symmetric(vertical: 4),
+           child: Text(assistant.kitNote!, style: subtle),
+         ),
+-      if (assistant.researchReport != null && !assistant.researching) ...[
++      if (!assistant.researching && assistant.researchReport != null) ...[
+         TextButton.icon(
+           onPressed: () {
+             Clipboard.setData(ClipboardData(text: assistant.researchReport!));
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 411ac7e..b13201e 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@ name: vollie
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.26.0+26
++version: 1.27.0+27
+ 
+ environment:
+   sdk: ^3.10.7
+diff --git a/test/kit_lines_test.dart b/test/kit_lines_test.dart
+index 35c176f..eac1781 100644
+--- a/test/kit_lines_test.dart
++++ b/test/kit_lines_test.dart
+@@ -80,60 +80,84 @@ void main() {
+     expect(k.tag, 'granite_num_r16_kv.3');
+     expect(k.line.endsWith('tag=0xb4'), true);
+   });
+-  test('kit r26: run list generated from the model table', () {
++  test('kit r27: run list generated from the model table', () {
+     final ids = Research.kitModels.map((m) => m.id).toList();
+     expect(Research.blockOrder.map((m) => m.id).toList(), [...ids, ...ids.reversed]);
+-    expect(Research.runs.length, Research.blockOrder.length * 11);
++    expect(Research.runs.length, Research.blockOrder.length * 11); // specs; the warm-up spec has 2 reps
+     expect(Research.armOf, {'granite': 'num', 'olmoe': 'off'});
+-    final kvFirst = <String, List<bool>>{};
+-    final kvCount = <String, List<int>>{};
++    // the Williams square: every cell once per position, every ordered pair of neighbours once
++    final pos = <String>{}, pairs = <String>{};
++    for (final o in Research.quadOrders) {
++      expect(o.toSet(), {1, 2, 3, 4});
++      for (var i = 0; i < 4; i++) {
++        pos.add('${o[i]}@$i');
++        if (i > 0) pairs.add('${o[i - 1]}>${o[i]}');
++      }
++    }
++    expect(pos.length, 16);
++    expect(pairs.length, 12);
++    final cells = <String, Map<String, int>>{}, orders = <String, Set<String>>{};
+     for (var b = 0; b < Research.blockOrder.length; b++) {
+       final m = Research.blockOrder[b];
+       final blk = Research.runs.where((r) => r.group == 'b${b + 1}').toList();
+-      expect(blk.every((r) => r.model == m.id && r.repack && r.proto == 'r26' && r.threads == 3), true);
+-      expect(blk.every((r) => r.arm == Research.armOf[m.id]), true); // r26: one arm per model, every run
++      expect(blk.every((r) => r.model == m.id && r.repack && r.proto == 'r27' && r.threads == 3), true);
++      expect(blk.every((r) => r.arm == Research.armOf[m.id]), true);
+       final scored = blk.where((r) => r.phase == 'on').toList();
+       expect(scored.length, 8);
+-      expect(blk.where((r) => r.gate).every((r) => r.gateRule == 'r16'), true); // r26: no plateau factor
+-      // r26: kv in two ABBA quads, on off off on / off on on off (b1, b3), the reverse in b2, b4; never outside scored runs
+-      final kv = scored.map((r) => r.env['VOLLIE_KV_DONTNEED'] == '1').toList();
+-      expect(kv, b.isEven ? [true, false, false, true, false, true, true, false] : [false, true, true, false, true, false, false, true]);
+-      kvFirst.putIfAbsent(m.id, () => []).add(kv[0]);
+-      kvCount.putIfAbsent(m.id, () => []).add(kv.where((x) => x).length);
++      expect(blk.where((r) => r.gate).every((r) => r.gateRule == 'r16'), true);
++      for (var q = 0; q < 2; q++) {
++        final quad = scored.sublist(4 * q, 4 * q + 4);
++        final c = quad.map((r) => '${r.env.containsKey('VOLLIE_POOL') ? 'P' : 'p'}${r.env.containsKey('VOLLIE_EXEC_MAP') ? 'X' : 'x'}').toList();
++        expect(c.toSet(), {'Px', 'pX', 'PX', 'px'}); // all four cells in every quad
++        orders.putIfAbsent(m.id, () => {}).add(c.join());
++        for (final x in c) {
++          cells.putIfAbsent(m.id, () => {})[x] = (cells[m.id]![x] ?? 0) + 1;
++        }
++      }
+       for (final r in blk) {
+-        expect(r.id.endsWith('_kv'), r.env.containsKey('VOLLIE_KV_DONTNEED'));
+-        if (r.phase != 'on') expect(r.env.containsKey('VOLLIE_KV_DONTNEED'), false);
++        expect(r.env['VOLLIE_KV_DONTNEED'], '1'); // r27: every run
++        expect(r.env['VOLLIE_SCHED'], '1');
++        expect(r.id.contains('_pin'), r.phase == 'on' && r.env.containsKey('VOLLIE_POOL'));
++        expect(r.id.contains('_exec'), r.env.containsKey('VOLLIE_EXEC_MAP'));
++        if (r.env.containsKey('VOLLIE_POOL')) expect(r.env['VOLLIE_CPUMASK'], '0xf0');
++        if (r.phase != 'on') {
++          expect(r.env.containsKey('VOLLIE_POOL') && !r.env.containsKey('VOLLIE_EXEC_MAP'), true); // pin on, exec off
++        }
+       }
+       final prof = blk.where((r) => r.phase == 'prof').toList();
+       expect(prof.length == 2 && prof.every((r) => r.hold && r.gateRule == 'r16' && r.kind == 'profiled32'), true);
++      expect(prof[0].env['GGML_CPU_AB_TOKEN'], '1');
++      expect(prof[1].env.containsKey('GGML_CPU_AB_TOKEN') || prof[1].id != '${m.id}_${Research.armOf[m.id]}_profb', false);
+       expect(blk.first.phase == 'warmup' && blk.first.reps == 2 && !blk.first.gate && !blk.first.hold &&
+           blk.first.gateRule == 'none', true);
+       for (final r in blk) {
+         expect(r.env['GGML_C2_IO'], '1');
+         expect(r.env.containsKey('GGML_PREFILL_COLD') || r.env.containsKey('GGML_KEEP_WARM'), false);
+-        expect(r.env.containsKey('VOLLIE_HEAD2_REPACK'), false); // a load env, never a run env
++        expect(r.env.containsKey('VOLLIE_HEAD2_REPACK') || r.env.containsKey('VOLLIE_NO_ATTACH'), false);
+         for (final e in m.num.entries) {
+           expect(r.env[e.key], r.arm == 'num' ? e.value : null);
+         }
+         expect(r.gate, r.phase != 'warmup');
+-        expect(r.hold, r.gate); // hold is protocol: every gated run
++        expect(r.hold, r.gate);
+       }
+     }
+-    for (final v in kvFirst.values) {
+-      expect(v.toSet(), {true, false}); // each model: one block starts with kv, one without
+-    }
+-    for (final v in kvCount.values) {
+-      expect(v, [4, 4]); // 8 kv + 8 plain scored runs per model
++    for (final m in ids) {
++      expect(cells[m], {'Px': 4, 'pX': 4, 'PX': 4, 'px': 4}); // 8 vs 8 per factor per model
++      expect(orders[m]!.length, 4); // four different quad orders per model
+     }
+     expect(Research.models['olmoe']!.load, {'VOLLIE_HEAD2_REPACK': '1'});
+     expect(Research.models['granite']!.load, isEmpty);
+-    expect(Research.models['olmoe']!.num, {'VOLLIE_SKIP_MASS': '900', 'VOLLIE_HEAD2': '1024', 'VOLLIE_SKIP_STATS': '1'});
+-    expect(Research.models['granite']!.num,
+-        {'GGML_EXPERT_SKIP': '130', 'GGML_HEAD2': '2048', 'GGML_HEAD2_Q': 'q4_0', 'VOLLIE_SKIP_STATS': '1'});
+     for (final m in Research.kitModels) {
+       expect(m.experts.length.isEven && m.experts.last <= m.bytes, true);
+     }
+   });
++  test('kit r27: the c2-pool, c2-sched and c2-exec lines are tagged', () {
++    expect(Research.parseLine('c2-pool run=olmoe_off_r16_pin.0 pool=1 mask=0xf0 threads=3 graphs=1/32 pool_graphs=1/32 '
++            'w0=1175:0xf0:s1:e0:c4=20,c7=13')!.tag, 'olmoe_off_r16_pin.0');
++    expect(Research.parseLine('c2-sched run=granite_num_r16.1 phase=decode n=32 w0=1:2:3:4')!.tag, 'granite_num_r16.1');
++    expect(Research.parseLine('E/x c2-exec run=olmoe_off_r16_exec.2 want=1 maps=1 exec_maps=1 bytes=2986121408 calls=1 '
++            'fails=0 errno=0 us=462 where=api prot=r-xs:1')!.tag, 'olmoe_off_r16_exec.2');
++  });
+ 
+   test('kit r24: the plateau rule on two R62 heat series (device, r23 report pos 4 and 6)', () {
+     // Readings every 5 s (pos 4: 0 to 90 s; pos 6 starts low right after the run, rises, then falls).
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+index 665985c..7fcb218 100644
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -73,6 +73,8 @@ android {
+         jniLibs {
+             useLegacyPackaging true
+             excludes += ['lib/x86_64/**', 'lib/x86/**', 'lib/armeabi-v7a/**']
++            // Kit r27 (memo-28 §2.5): no OpenCL backend or OpenCL compiler helper in the CPU-only research kit.
++            excludes += ['**/libggml-opencl.so', '**/libvollie_clc.so']
+         }
+     }
+ 
+diff --git a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt b/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt
+index 88f0895..9a23f49 100644
+--- a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt
++++ b/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt
+@@ -48,6 +48,17 @@ class MainActivity : FlutterActivity() {
+                         result.success(f.absolutePath)
+                     }
+ 
++                    // Kit r27: the app's internal files folder (exec-mmap check, model copies) and free space on both.
++                    "kitStorage" -> {
++                        val ext = getExternalFilesDir(null)
++                        result.success(mapOf(
++                            "internal" to filesDir.absolutePath,
++                            "internalFree" to StatFs(filesDir.absolutePath).availableBytes,
++                            "external" to ext?.absolutePath,
++                            "externalFree" to ext?.let { StatFs(it.absolutePath).availableBytes },
++                        ))
++                    }
++
+                     "deviceInfo" -> {
+                         val mem = ActivityManager.MemoryInfo()
+                         (getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(mem)

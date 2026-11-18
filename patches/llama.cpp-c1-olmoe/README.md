@@ -293,3 +293,43 @@ Note 2026-11-18 (Tom, kit r26 tree `lab/llama.cpp-c1r26` = 620d2225c + `patches/
 `-c 512`, 20 chunks at `-b 512` and `-b 512 -ub 32`, 8 at `-b 512 -ub 1`, both models: equal on macOS (clear path `os`)
 and in the Linux aarch64 container (`why=ok` in every clear); greedy texts (n_ctx 4096, q8_0, three clears per process)
 equal off and on on both systems; the tagged-pointer test passes in the container (*host*; memo-27 §2).
+
+## 0010-c2-pool (2026-11-18, kit r27; bit-identical, knobs `VOLLIE_POOL=1`, `VOLLIE_CPUMASK=<hex>[,<hex>...]`, `VOLLIE_SCHED=1`)
+
+memo-28 §2.1 / §2.4: in the app (llamadart, no `llama_attach_threadpool`) every graph creates and joins its n-1
+workers, and they inherit the mask of whichever Dart thread calls; after an idle wait that thread can be a different,
+unpinned one. Changes `ggml/src/ggml-cpu/ggml-cpu.c` (CPU module) and `common/common.cpp` (host tools only).
+
+- **`VOLLIE_POOL=1`:** a graph without a threadpool runs on one persistent pool (`ggml_threadpool_new_impl`, poll 0, so
+  the workers sleep between graphs); a larger thread count recreates it; if another graph holds the pool (`trylock`
+  fails) the graph takes a disposable one as before. Same `n_threads`, same chunking: placement only.
+- **`VOLLIE_CPUMASK`** (with the pool only): mask of thread i (0 = the calling thread), the last entry repeats, so
+  `0xf0` = every thread on cpus 4-7 and `0x10,0x20,0x40` = one cpu each. Each thread compares `sched_getaffinity` with
+  its mask at every graph start and sets it when it differs. Linux only; ignored elsewhere. The calling thread keeps
+  the mask after the graph.
+- **Kit lines** (with `GGML_C2_IO=1`, per prompt, after `c2-io-blk`): `c2-pool run=<id> pool=0|1 mask=<VOLLIE_CPUMASK|->
+  threads=<n> graphs=<prefill>/<decode> pool_graphs=<prefill>/<decode> w<i>=<last tid>:0x<affinity at the last graph
+  start>:s<mask sets>:e<set failures>:c<cpu>=<graph starts on that cpu>,...` and, with `VOLLIE_SCHED=1`, per phase
+  `c2-sched run=<id> phase=prefill|decode n=<graphs with a schedstat reading> w<i>=<µs on cpu>:<µs in run queue>:<voluntary
+  cs>:<involuntary cs>` (from `/proc/thread-self/schedstat` and `getrusage(RUSAGE_THREAD)`, graph start to the last
+  barrier, summed over the phase).
+- **Host-only knob `VOLLIE_NO_ATTACH=1`** (`common/common.cpp`): the tools (`llama-perplexity`, `llama-cli`) skip
+  `common_threadpools::init`, so their graphs come without a threadpool, as in the app; without it the tools attach
+  their own pool and `VOLLIE_POOL` never acts (`pool_graphs=0`). The app does not use `common`.
+- Host checks and what is not verified: [memo-30](../../campaigns/02-25toks-5pct/reports/memo-30-kit-r27.md) §2.
+
+## 0011-c2-exec-map (2026-11-18, kit r27, memo-29 Y1; bit-identical, knob `VOLLIE_EXEC_MAP=1`)
+
+- **What it does:** every `llama_mmap` model mapping (registered in the posix constructor, removed in the destructor)
+  is `mprotect`ed over its mapped fragments to `PROT_READ|PROT_EXEC` when the knob is `1`, back to `PROT_READ`
+  otherwise. Applied by `llama_c2_exec_sync()`: at the start of every `llama_context::decode` (a no-op when the state
+  already matches) and by the exported `extern "C" int llama_vollie_exec_sync(void)` (returns the last errno), which
+  the kit calls before a run's gate wait so that the `mprotect` (about 0.3 s on a resident 3 GB mapping in the Linux
+  container, *host*) is outside the timed window. Pages are not touched; no data changes.
+- **Question, not claim:** Linux's reclaim keeps page-cache pages of executable file mappings on the active list
+  longer (`mm/vmscan.c`, `VM_EXEC`). Whether that holds on the phone's kernel and helps residency is what kit r27
+  measures. A noexec mount or an SELinux denial gives `EACCES`, recorded.
+- **Kit line** (once per `VOLLIE_RUN` value and at every state change): `c2-exec run=<id> want=0|1 maps=<registered>
+  exec_maps=<now executable> bytes=<mapped> calls=<mprotect calls> fails=<failed> errno=<last> us=<time of the calls>
+  where=api|decode prot=<perms>:<lines>,...` (`/proc/self/maps` lines overlapping the fragments; `n/a` without procfs).
+- Host checks and what is not verified: [memo-30](../../campaigns/02-25toks-5pct/reports/memo-30-kit-r27.md) §2.

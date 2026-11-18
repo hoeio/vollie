@@ -194,3 +194,28 @@ address, R64). Same package and debug key: installs as an update over r25 / r25b
 - **kv factor in two ABBA quads per block:** on off off on, off on on off in odd blocks, the reverse in even ones; 8 kv
   and 8 plain scored runs per model; never in warm-ups and profiled runs (two per block, the model's arm). `proto: r26`.
 - Every recorded field of r25 is kept.
+
+## 0011-kit-r27.patch (on top of 0010)
+
+Kit r27 (version 1.27.0+27). Runtime `patches/llama.cpp-c1-olmoe/0001-0011` (0010: persistent pool + per-thread
+mask; 0011: PROT_EXEC model mapping). Same package and debug key: installs as an update over r26. Design, run list,
+storage step and owner steps: `campaigns/02-25toks-5pct/reports/memo-30-kit-r27.md`.
+
+- **Storage step first** (`Research.kitStorageStep`, before the idle baseline): exec check on `filesDir/kit-models`
+  (mountinfo row, then a 1 MiB test file mapped `PROT_READ`, `mprotect` to `PROT_READ|PROT_EXEC`, and mapped
+  `PROT_READ|PROT_EXEC`; errno of each), the same probes on the external models folder and its model files (T2); only
+  if the internal check passes: verify internal copies (sha256), one free-space check, copy from the external file
+  (fsync, sha256) or download (Wi-Fi, resumable, sha256). The external files are never changed. Failed check: the
+  session runs from the external files and the exec factor is void. Report `storage`.
+- **Two factors per model as a 2x2 in every quad** (`Research.cells`, `quadOrders`: a Williams square): pin
+  (`VOLLIE_POOL=1 VOLLIE_CPUMASK=0xf0`) and exec (`VOLLIE_EXEC_MAP=1`, applied through `llama_vollie_exec_sync` right
+  after the run's env is set, before its gate wait). 8 vs 8 runs per factor per model. Warm-ups and profiled runs: pin
+  on, exec off. Ids `<m>_<arm>_r16[_pin][_exec]`, `_wu`, `_prof`, `_profb` (T3: block-mode profile). `proto: r27`.
+- **In every run:** `VOLLIE_KV_DONTNEED=1`, `VOLLIE_SCHED=1` (T1: per-thread schedstat and context switches in the
+  runtime's `c2-sched` lines).
+- **Instrument changes:** n_ctx fixed at 4096; static dark screen while the kit runs; no OpenCL libraries in the APK
+  (gradle excludes); `res_after` from the run-end vector; no vmstat / `/proc/self/io` read inside the timed window;
+  native library hashes once per session; native env strings freed; log read from the last byte offset. New records:
+  `ru` (getrusage start / first chunk / end), `smaps_before` / `smaps_after`, `exec_sync`, `context_rule`, `pin_rule`,
+  `exec_rule`, `design`, `instrument_changes`.
+- New MethodChannel call `kitStorage` (MainActivity.kt): internal and external folders and their free bytes.

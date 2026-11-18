@@ -1,0 +1,296 @@
+diff --git a/common/common.cpp b/common/common.cpp
+index c5db228..a78c590 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -1378,7 +1378,12 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+ 
+     set_process_priority(params.cpuparams.priority);
+ 
+-    pimpl->threadpools.init(lctx, params);
++    // Vollie c2 (patches/llama.cpp-c1-olmoe/0010, host checks only): VOLLIE_NO_ATTACH=1 leaves the context without a
++    // threadpool, so the tools take the path the app takes (a disposable pool per graph, or VOLLIE_POOL's).
++    const char * na = getenv("VOLLIE_NO_ATTACH");
++    if (!(na && atoi(na) == 1)) {
++        pimpl->threadpools.init(lctx, params);
++    }
+ }
+ 
+ llama_model * common_init_result::model() {
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index d5fac10..bf2108a 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -6046,6 +6046,193 @@ static struct {
+                      // [6] (0006): VOLLIE_HEAD2 declines
+ } ggml_cpu_c2io;
+ 
++// Vollie c2 (patches/llama.cpp-c1-olmoe/0010-c2-pool.patch, bit-identical: placement only, same nth and chunking).
++// VOLLIE_POOL=1: graphs that bring no threadpool (llama.cpp without llama_attach_threadpool, as in the app) run on one
++// persistent pool (poll 0: the workers sleep between graphs) instead of creating and joining n-1 threads per graph; a
++// larger thread count recreates it; a busy pool (another graph running) falls back to a disposable one.
++// VOLLIE_CPUMASK=<hex>[,<hex>...] (with VOLLIE_POOL=1 only): the CPU mask of thread i (0 = the calling thread); the last
++// entry repeats ("0xf0" = every thread on cpus 4-7). Each thread compares its affinity (sched_getaffinity) with its mask
++// at every graph start and sets it when it differs, so the mask holds whichever thread calls ggml (memo-28 §2.1: the
++// app's Dart thread changes after an idle wait). Linux only; elsewhere the mask is ignored. The calling thread keeps the
++// mask after the graph.
++// With GGML_C2_IO=1, per prompt, one "c2-pool" line (graphs per phase, graphs on the pool, and per thread index: last
++// tid, affinity seen at the last graph start, mask sets and failures, a histogram of sched_getcpu at graph starts as
++// c<cpu>=<graphs>, cpu 15 = 15 and above) and,
++// with VOLLIE_SCHED=1, one "c2-sched" line per phase (per thread index: µs on the CPU and µs waiting in the run queue
++// from /proc/thread-self/schedstat, voluntary and involuntary context switches from getrusage(RUSAGE_THREAD), summed
++// over the phase's graphs, graph start to the last barrier; n = graphs with a schedstat reading).
++#if defined(__linux__)
++#include <fcntl.h>
++#include <sched.h>
++#include <sys/syscall.h>
++#endif
++#define GGML_C2_THR 16
++struct ggml_c2_thr_ph { int graphs, sets, errs, ss; int64_t ex_us, wq_us, nv, ni; int cpu[16]; };
++static struct { int tid; unsigned long long aff; struct ggml_c2_thr_ph ph[2]; } ggml_c2_thr[GGML_C2_THR];
++static int  ggml_c2_thr_pool[2];          // graphs of this prompt on the persistent pool (prefill, decode)
++static int  ggml_c2_thr_n;                // threads of the prompt's last graph
++static char ggml_c2_thr_mask[128] = "-"; // VOLLIE_CPUMASK at the prompt's start
++static int  ggml_c2_thr_on;               // VOLLIE_POOL=1 at the prompt's start
++static unsigned long long ggml_c2_pool_want[GGML_C2_THR]; // parsed VOLLIE_CPUMASK (0 = leave the thread's affinity)
++static char ggml_c2_pool_mask_s[128] = "";
++static struct ggml_threadpool * ggml_c2_pool = NULL;
++static int  ggml_c2_sched = 0;            // VOLLIE_SCHED=1
++struct ggml_c2_thr_t0 { int ph; int64_t ex, wq, nv, ni; };
++
++static void ggml_c2_thr_sample(struct ggml_c2_thr_t0 * t) {
++    t->ex = t->wq = t->nv = t->ni = -1;
++#if defined(__linux__)
++    char b[96];
++    const int fd = open("/proc/thread-self/schedstat", O_RDONLY);
++    if (fd >= 0) {
++        const ssize_t n = read(fd, b, sizeof b - 1);
++        long long a, w;
++        if (n > 0 && (b[n] = 0, sscanf(b, "%lld %lld", &a, &w) == 2)) {
++            t->ex = a / 1000;
++            t->wq = w / 1000;
++        }
++        close(fd);
++    }
++    struct rusage ru;
++    if (getrusage(RUSAGE_THREAD, &ru) == 0) {
++        t->nv = ru.ru_nvcsw;
++        t->ni = ru.ru_nivcsw;
++    }
++#endif
++}
++
++// Every thread at its graph start: the mask (pool graphs) and the counters (GGML_C2_IO=1).
++static void ggml_c2_thr_begin(int ith, bool pool, struct ggml_c2_thr_t0 * t) {
++    t->ph = -1;
++    const int ph = ggml_cpu_c2io.state - 1; // 0 prefill, 1 decode, -1 no prompt open (counters off)
++    if (ith >= GGML_C2_THR || (ph < 0 && !pool)) {
++        return;
++    }
++    int set = 0, err = 0, cpu = -1;
++    unsigned long long aff = 0;
++#if defined(__linux__)
++    cpu_set_t cs;
++    CPU_ZERO(&cs);
++    if (sched_getaffinity(0, sizeof cs, &cs) == 0) {
++        for (int c = 0; c < 64; c++) {
++            if (CPU_ISSET(c, &cs)) aff |= 1ull << c;
++        }
++    }
++    const unsigned long long want = pool ? ggml_c2_pool_want[ith] : 0;
++    if (want && aff != want) {
++        CPU_ZERO(&cs);
++        for (int c = 0; c < 64; c++) {
++            if (want >> c & 1) CPU_SET(c, &cs);
++        }
++        if (sched_setaffinity(0, sizeof cs, &cs) == 0) {
++            aff = want;
++            set = 1;
++        } else {
++            err = 1;
++        }
++    }
++    cpu = sched_getcpu();
++#endif
++    if (ph < 0) {
++        return;
++    }
++#if defined(__linux__)
++    ggml_c2_thr[ith].tid = (int) syscall(SYS_gettid);
++#endif
++    ggml_c2_thr[ith].aff = aff;
++    struct ggml_c2_thr_ph * p = &ggml_c2_thr[ith].ph[ph];
++    p->graphs++;
++    p->sets += set;
++    p->errs += err;
++    if (cpu >= 0) {
++        p->cpu[cpu < 15 ? cpu : 15]++;
++    }
++    if (ggml_c2_sched) {
++        t->ph = ph;
++        ggml_c2_thr_sample(t);
++    }
++}
++
++// Every thread before the graph's last barrier (so thread 0 reads finished counters).
++static void ggml_c2_thr_end(int ith, const struct ggml_c2_thr_t0 * t) {
++    if (t->ph < 0) {
++        return;
++    }
++    struct ggml_c2_thr_t0 e;
++    ggml_c2_thr_sample(&e);
++    struct ggml_c2_thr_ph * p = &ggml_c2_thr[ith].ph[t->ph];
++    if (t->ex >= 0 && e.ex >= 0) {
++        p->ss++;
++        p->ex_us += e.ex - t->ex;
++        p->wq_us += e.wq - t->wq;
++    }
++    if (t->nv >= 0 && e.nv >= 0) {
++        p->nv += e.nv - t->nv;
++        p->ni += e.ni - t->ni;
++    }
++}
++
++static void ggml_c2_thr_flush(const char * run) {
++    char line[2048];
++    const int nt = ggml_c2_thr_n < GGML_C2_THR ? ggml_c2_thr_n : GGML_C2_THR;
++    int len = snprintf(line, sizeof line, "c2-pool run=%s pool=%d mask=%s threads=%d graphs=%d/%d pool_graphs=%d/%d", run,
++                       ggml_c2_thr_on, ggml_c2_thr_mask, ggml_c2_thr_n, ggml_c2_thr[0].ph[0].graphs, ggml_c2_thr[0].ph[1].graphs,
++                       ggml_c2_thr_pool[0], ggml_c2_thr_pool[1]);
++    for (int i = 0; i < nt && len < (int) sizeof line - 160; i++) {
++        const struct ggml_c2_thr_ph * a = &ggml_c2_thr[i].ph[0], * b = &ggml_c2_thr[i].ph[1];
++        len += snprintf(line + len, sizeof line - len, " w%d=%d:0x%llx:s%d:e%d:", i, ggml_c2_thr[i].tid, ggml_c2_thr[i].aff,
++                        a->sets + b->sets, a->errs + b->errs);
++        for (int c = 0, k = 0; c < 16 && len < (int) sizeof line - 16; c++) {
++            if (a->cpu[c] + b->cpu[c]) {
++                len += snprintf(line + len, sizeof line - len, "%sc%d=%d", k++ ? "," : "", c, a->cpu[c] + b->cpu[c]);
++            }
++        }
++    }
++    fprintf(stderr, "%s\n", line);
++    for (int ph = 0; ph < 2 && ggml_c2_sched; ph++) {
++        len = snprintf(line, sizeof line, "c2-sched run=%s phase=%s n=%d", run, ph ? "decode" : "prefill", ggml_c2_thr[0].ph[ph].ss);
++        for (int i = 0; i < nt && len < (int) sizeof line - 96; i++) {
++            const struct ggml_c2_thr_ph * p = &ggml_c2_thr[i].ph[ph];
++            len += snprintf(line + len, sizeof line - len, " w%d=%lld:%lld:%lld:%lld", i, (long long) p->ex_us,
++                            (long long) p->wq_us, (long long) p->nv, (long long) p->ni);
++        }
++        fprintf(stderr, "%s\n", line);
++    }
++}
++
++// At a prompt's start (calling thread): empty the counters, note the knobs.
++static void ggml_c2_thr_reset(void) {
++    memset(ggml_c2_thr, 0, sizeof ggml_c2_thr);
++    memset(ggml_c2_thr_pool, 0, sizeof ggml_c2_thr_pool);
++    const char * m = getenv("VOLLIE_CPUMASK"), * p = getenv("VOLLIE_POOL");
++    snprintf(ggml_c2_thr_mask, sizeof ggml_c2_thr_mask, "%s", m && *m ? m : "-");
++    ggml_c2_thr_on = p && atoi(p) == 1;
++}
++
++// VOLLIE_CPUMASK into ggml_c2_pool_want (parsed again only when the string changes).
++static void ggml_c2_pool_masks(const char * s) {
++    s = s ? s : "";
++    if (strcmp(s, ggml_c2_pool_mask_s) == 0) {
++        return;
++    }
++    snprintf(ggml_c2_pool_mask_s, sizeof ggml_c2_pool_mask_s, "%s", s);
++    unsigned long long last = 0;
++    const char * p = s;
++    for (int i = 0; i < GGML_C2_THR; i++) {
++        if (*p) {
++            char * e;
++            const unsigned long long v = strtoull(p, &e, 16);
++            if (e == p) {
++                p = "";
++            } else {
++                last = v;
++                p = *e == ',' ? e + 1 : e;
++            }
++        }
++        ggml_c2_pool_want[i] = last;
++    }
++}
++
+ // Vollie c2 (patches/llama.cpp-c1-olmoe/0005, counters only): the 0003 skip counters and both heads' counters, sampled
+ // with the c2-io line's points, so each prompt gets its own c2-skip-run / c2-head-run line (prefill and decode apart).
+ static void ggml_cpu_c2io_counters(double * k, int64_t * h) {
+@@ -6111,6 +6298,7 @@ void ggml_cpu_c2io_flush(void) {
+     // Vollie c2 (0005): its own line, so that 0002's c2-io line keeps its format
+     fprintf(stderr, "c2-io-blk run=%s inblock=%lld/%lld/%lld\n", ggml_cpu_c2io.run, (long long) s[0][5], (long long) s[1][5],
+             (long long) s[2][5]);
++    ggml_c2_thr_flush(ggml_cpu_c2io.run); // Vollie c2 (0010): its own lines
+     const double * k0 = ggml_cpu_c2io.k[0], * k1 = ggml_cpu_c2io.k[1];
+     if (kn[1] > k0[1]) { // the prompt ran with a skip mask and VOLLIE_SKIP_STATS=1
+         fprintf(stderr, "c2-skip-run: run=%s sum=%g max=%g mass=%g c1_skip=%d c1_topp=%d c1_gap=%d", ggml_cpu_c2io.run,
+@@ -6152,6 +6340,7 @@ static void ggml_cpu_c2_begin(int64_t n_tok) {
+         ggml_cpu_c2io.pg = ggml_cpu_c2io.dg = 0;
+         ggml_cpu_c2io_sample(ggml_cpu_c2io.s[0]);
+         ggml_cpu_c2io_counters(ggml_cpu_c2io.k[0], ggml_cpu_c2io.h[0]); // Vollie c2 (0005)
++        ggml_c2_thr_reset(); // Vollie c2 (0010)
+         ggml_cpu_c2io.state = 1;
+     } else if (n_tok == 1 && ggml_cpu_c2io.state == 1) {
+         ggml_cpu_c2io_sample(ggml_cpu_c2io.s[1]);
+@@ -6399,6 +6588,8 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+         }
+     }
+     ggml_cpu_mmid_seq_tl = 0;
++    struct ggml_c2_thr_t0 c2t; // Vollie c2 (0010): mask and counters
++    ggml_c2_thr_begin(state->ith, tp == ggml_c2_pool, &c2t);
+ 
+     for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
+         struct ggml_tensor * node = cgraph->nodes[node_n];
+@@ -6544,6 +6735,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+     GGML_PRINT_DEBUG("thread #%d compute-done cplan %p last-graph %d\n", state->ith, (const void *)cplan, state->last_graph);
+ #endif
+ 
++    ggml_c2_thr_end(state->ith, &c2t); // Vollie c2 (0010)
+     ggml_barrier(state->threadpool);
+ 
+ #ifdef GGML_USE_CPU_RISCV64_SPACEMIT
+@@ -7229,6 +7421,34 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+ 
+     bool disposable_threadpool = false;
+ 
++#if !defined(_WIN32) && !defined(GGML_USE_OPENMP)
++    // Vollie c2 (0010): VOLLIE_POOL=1, the persistent pool; VOLLIE_CPUMASK, VOLLIE_SCHED (see ggml_c2_thr_begin)
++    static pthread_mutex_t c2_pool_mu = PTHREAD_MUTEX_INITIALIZER;
++    bool c2_pool = false;
++    {
++        const char * pe = getenv("VOLLIE_POOL"), * se = getenv("VOLLIE_SCHED");
++        ggml_c2_sched = se && atoi(se) == 1;
++        ggml_c2_pool_masks(getenv("VOLLIE_CPUMASK"));
++        if (threadpool == NULL && n_threads > 1 && pe && atoi(pe) == 1 && pthread_mutex_trylock(&c2_pool_mu) == 0) {
++            if (ggml_c2_pool && ggml_c2_pool->n_threads < n_threads) {
++                ggml_threadpool_free(ggml_c2_pool);
++                ggml_c2_pool = NULL;
++            }
++            if (!ggml_c2_pool) {
++                struct ggml_threadpool_params tpp = ggml_threadpool_params_default(n_threads);
++                tpp.poll = 0; // sleep between graphs
++                ggml_c2_pool = ggml_threadpool_new_impl(&tpp, NULL, NULL);
++            }
++            threadpool = ggml_c2_pool;
++            c2_pool = true;
++        }
++        ggml_c2_thr_n = n_threads;
++        if (c2_pool && ggml_cpu_c2io.state) {
++            ggml_c2_thr_pool[ggml_cpu_c2io.state - 1]++;
++        }
++    }
++#endif
++
+     if (threadpool == NULL) {
+         //GGML_PRINT_DEBUG("Threadpool is not specified. Will create a disposable threadpool : n_threads %d\n", n_threads);
+         disposable_threadpool = true;
+@@ -7334,6 +7554,11 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+     ggml_cpu_kw_end();
+ #endif
+     enum ggml_status ret = threadpool->ec;
++#if !defined(_WIN32) && !defined(GGML_USE_OPENMP)
++    if (c2_pool) {
++        pthread_mutex_unlock(&c2_pool_mu); // Vollie c2 (0010)
++    }
++#endif
+ 
+     if (disposable_threadpool) {
+         ggml_threadpool_free(threadpool);

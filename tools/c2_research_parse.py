@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Campaign 2 research-kit report parser (kits r17 to r26; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
-memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md, memo-19-kit-r21.md, memo-20-kit-r22.md, memo-22-kit-r23.md, memo-23-kit-r24.md, memo-26-kit-r25.md and memo-27-kit-r26.md).
+"""Campaign 2 research-kit report parser (kits r17 to r27; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
+memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md, memo-19-kit-r21.md, memo-20-kit-r22.md, memo-22-kit-r23.md, memo-23-kit-r24.md, memo-26-kit-r25.md, memo-27-kit-r26.md and memo-30-kit-r27.md).
 Standard library only.
 
 usage: python3 -I tools/c2_research_parse.py <report.json | clipboard text "c2gz:..."> [--min-mhz 1800]
@@ -72,7 +72,17 @@ block. r24's checks plus: arms per model, gate rules, kv id suffix and placement
 check (released > 0 without kv) and the kv runs releasing 0, texts kv against plain; then per model kv minus plain
 paired per ABBA quad and Welch (r25's metrics) with an R65 §4 effect readout, the mechanism lines (kv runs with why=ok
 in every clear line, why and tag counts per kind), r24's idle baseline and zones, one stats line per model, arm and kv,
-charger runs, swap per gated run and the hold table."""
+charger runs, swap per gated run and the hold table.
+
+Kit r27 (memo-30): r26's blocks with the kv clear in every run and two factors per model, pin (VOLLIE_POOL=1
+VOLLIE_CPUMASK, c1-olmoe 0010) and exec (VOLLIE_EXEC_MAP=1, 0011), as a 2x2 in every quad of four scored runs. r24's
+checks plus: arms, gate rules, id suffixes against env, kv in every run, every quad holding the four cells, texts across
+the cells per model, the storage step (exec check of the internal folder, T2 probes, copies); then per model the main
+effect of pin and of exec (paired: per quad mean(on) - mean(off), mean ± SE over quads; Welch over all scored runs),
+the 2x2 cell means, worker placement (c2-pool lines: affinity, cpus at graph starts, runs touching cpus 0-3, mask sets /
+failures; thread_samples), protection lines (c2-exec: want, errno, /proc/self/maps perms, us), T1 (c2-sched run-queue
+wait and involuntary switches, getrusage, smaps mapped against mincore resident, readability), T3 (the block-mode 14-op
+table of the _profb runs), the kv mechanism, one stats line per model and cell, charger runs, swap and the hold table."""
 import argparse
 import base64
 import gzip
@@ -1374,6 +1384,266 @@ def r26_tables(r):
     return out + extras_tail(runs)
 
 
+# kit r27 (memo-30): pin x exec as a 2x2 per quad, kv clear in every run (c1-olmoe 0010, 0011)
+POOL_RE = re.compile(r'c2-pool run=(\S+) pool=(\d) mask=(\S+) threads=(\d+) graphs=(\d+)/(\d+) pool_graphs=(\d+)/(\d+)')
+POOLW_RE = re.compile(r' w(\d+)=(-?\d+):0x([0-9a-fA-F]+):s(\d+):e(\d+):(\S*)')
+SCHED_RE = re.compile(r'c2-sched run=(\S+) phase=(\w+) n=(\d+)')
+SCHEDW_RE = re.compile(r' w(\d+)=(-?\d+):(-?\d+):(-?\d+):(-?\d+)')
+EXEC_RE = re.compile(r'c2-exec run=(\S+) want=(\d) maps=(\d+) exec_maps=(\d+) bytes=(\d+) calls=(\d+) fails=(\d+) '
+                     r'errno=(\d+) us=(\d+) where=(\w+) prot=(\S+)')
+OPS_RE = re.compile(r' ([A-Z_]+) (\d+):(\d+)\+(\d+)')
+BIGMASK = sum(1 << c for c in BIG)
+
+
+def pin_on(x):
+    return 'VOLLIE_POOL' in (x.get('env') or env_of(x))
+
+
+def exec_on(x):
+    return 'VOLLIE_EXEC_MAP' in (x.get('env') or env_of(x))
+
+
+def cell_of(x):
+    return ('P' if pin_on(x) else 'p') + ('X' if exec_on(x) else 'x')
+
+
+def pool_of(x):
+    """The row's c2-pool line: knob, graphs, pool graphs, workers [(i, tid, aff, sets, errs, {cpu: graphs})]."""
+    for l in x.get('c2') or []:
+        m = POOL_RE.search(l)
+        if m and m.group(1) == x.get('run_tag', m.group(1)):
+            ws = []
+            for w in POOLW_RE.finditer(l[m.end():]):
+                h = {int(a[1:]): int(b) for a, b in (c.split('=') for c in w.group(6).split(',') if '=' in c)}
+                ws.append((int(w.group(1)), int(w.group(2)), int(w.group(3), 16), int(w.group(4)), int(w.group(5)), h))
+            v = [int(g) for g in m.groups()[3:]]
+            return {'pool': m.group(2) == '1', 'mask': m.group(3), 'threads': v[0], 'graphs': v[1] + v[2],
+                    'pool_graphs': v[3] + v[4], 'workers': ws}
+    return None
+
+
+def sched_of(x, phase='decode'):
+    """The row's c2-sched line of [phase]: n, workers [(i, ex_us, wq_us, nv, ni)]."""
+    for l in x.get('c2') or []:
+        m = SCHED_RE.search(l)
+        if m and m.group(1) == x.get('run_tag', m.group(1)) and m.group(2) == phase:
+            return {'n': int(m.group(3)), 'workers': [tuple(int(g) for g in w.groups()) for w in SCHEDW_RE.finditer(l[m.end():])]}
+    return None
+
+
+def exec_of(x):
+    """The row's c2-exec lines: [(want, maps, exec_maps, calls, fails, errno, us, where, prot)]."""
+    return [(int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(6)), int(m.group(7)), int(m.group(8)),
+             int(m.group(9)), m.group(10), m.group(11))
+            for l in x.get('c2') or [] for m in [EXEC_RE.search(l)] if m and m.group(1) == x.get('run_tag', m.group(1))]
+
+
+def little(x):
+    """True when a c2-pool worker started a graph on cpus 0-3 or had a mask outside the big cores; None without a line."""
+    p = pool_of(x)
+    if not p:
+        return None
+    return any(any(c < 4 for c in w[5]) or (w[2] & ~BIGMASK) != 0 for w in p['workers'])
+
+
+def exec_live(x):
+    """The run's protection as the c2-exec line shows it: 'x' in the model's maps perms (every mapping executable)."""
+    e = exec_of(x)
+    return None if not e else all('x' in seg.split(':')[0] for seg in e[-1][8].split(',')) and e[-1][8] not in ('-', 'n/a')
+
+
+def wq_ms_tok(x):
+    s_ = sched_of(x)
+    i = io_of(x) or {}
+    if not s_ or not s_['n'] or not i.get('decode_graphs'):
+        return None
+    return sum(w[2] for w in s_['workers']) / 1000 / i['decode_graphs']
+
+
+def ni_tok(x):
+    s_ = sched_of(x)
+    i = io_of(x) or {}
+    if not s_ or not s_['n'] or not i.get('decode_graphs'):
+        return None
+    return sum(w[4] for w in s_['workers']) / i['decode_graphs']
+
+
+def smaps_model(x, k):
+    d = x.get(k)
+    if not isinstance(d, dict) or 'model' not in d:
+        return None
+    return d['model'][1] / 1000  # rss MB
+
+
+R27_METRICS = [('tok/s', lambda x: x.get('decode_tps'), 2), ('decode graph ms/token', dec_ms_tok, 2),
+               ('TTFT ms', lambda x: x.get('ttft_ms'), 1), ('pre-prompt majflt', pre_prompt_majflt, 0),
+               ('decode majflt', lambda x: (io_of(x) or {}).get('dec_majflt'), 0),
+               ('res before MB', lambda x: res_mb(x), 0), ('lost in wait MB', lambda x: x.get('wait_lost_mb'), 0),
+               ('mapped before MB (smaps)', lambda x: smaps_model(x, 'smaps_before'), 0),
+               ('run-queue wait ms/token (decode, all threads)', wq_ms_tok, 3),
+               ('involuntary switches/token (decode)', ni_tok, 2)]
+
+
+def r27_quads(rs):
+    """One block's scored runs in list order, by four: the quads (r27: each should hold the four cells)."""
+    return [rs[i:i + 4] for i in range(0, len(rs) - 3, 4)]
+
+
+def r27_runs(r, phase=None):
+    return [x for x in r.get('runs', []) if x.get('proto') == 'r27' and (phase is None or x.get('phase') == phase)]
+
+
+def r27_checks(r):
+    out = r24_checks(r)
+    runs = r27_runs(r)
+    arm = r.get('models') or {}
+    bad_arm = [x.get('run_tag') for x in runs if (arm.get(x.get('model')) or {}).get('arm') not in (None, x.get('arm'))]
+    rules = sorted({x.get('gate_rule') for x in runs if x.get('gate')}, key=str)
+    sid = lambda x: str(x.get('id', ''))
+    bad_id = [x.get('run_tag') for x in runs if x.get('phase') == 'on' and (sid(x).endswith('_exec') != exec_on(x)
+                                                                            or ('_pin' in sid(x)) != pin_on(x))]
+    nokv = [x.get('run_tag') for x in runs if not kv_on(x)]
+    side = [x.get('run_tag') for x in runs if x.get('phase') != 'on' and not (pin_on(x) and not exec_on(x))]
+    badq = []
+    for m in r21_models(r):
+        rs = [x for x in runs if x.get('model') == m and x.get('phase') == 'on']
+        for g in r23_blocks(rs, m):
+            for k, q in enumerate(r27_quads([x for x in rs if x.get('group') == g])):
+                if sorted(cell_of(x) for x in q) != ['PX', 'Px', 'pX', 'px']:
+                    badq.append(f"{g}q{k + 1}({''.join(cell_of(x) for x in q)})")
+    out.append(f"r27: arms per model { {m: sorted({str(x.get('arm')) for x in runs if x.get('model') == m}) for m in r21_models(r)} }, "
+               f"arm != report in {','.join(bad_arm) or 'none'}; gate rules of gated runs {rules}; id suffix != env in "
+               f"{','.join(bad_id) or 'none'}; runs without kv {','.join(nokv) or 'none'}; warm-up / profiled runs not pin on + "
+               f"exec off {','.join(side) or 'none'}; quads without the four cells {','.join(badq) or 'none'}")
+    for m in r21_models(r):
+        t = {}
+        for x in runs:
+            if x.get('model') == m and x.get('text') is not None:
+                t.setdefault(cell_of(x), set()).add(md5(x['text'])[:8])
+        same = len(set().union(*t.values())) == 1 if t else False
+        out.append(f"{m} (r27) texts per cell: {dict(sorted((k, sorted(v)) for k, v in t.items()))}: "
+                   f"{'same' if same else 'DIFFER (kill rule)'}")
+    sto = r.get('storage') or {}
+    ic, ec = sto.get('internal_check') or {}, sto.get('external_check') or {}
+    mrow = lambda c: (c.get('mount') or {})
+    out.append(f"r27 storage: used {sto.get('used')}, exec factor {sto.get('exec_factor')}; internal "
+               f"{mrow(ic).get('mount_point')} ({mrow(ic).get('fs')}, options {mrow(ic).get('options')}, noexec "
+               f"{mrow(ic).get('noexec')}) probe {ic.get('probe')} pass {ic.get('pass')}; external {mrow(ec).get('mount_point')} "
+               f"({mrow(ec).get('fs')}, options {mrow(ec).get('options')}, noexec {mrow(ec).get('noexec')}) probe {ec.get('probe')}"
+               f" models {ec.get('models')}; stopped {sto.get('stopped')}")
+    for m, e in sorted((sto.get('models') or {}).items()):
+        out.append(f"  storage {m}: {e.get('action')} bytes {e.get('bytes')} copy ms {e.get('copy_ms')} download ms "
+                   f"{e.get('download_ms')} hash ms {e.get('hash_ms')} sha256 {str(e.get('sha256') or e.get('present_sha256'))[:12]} "
+                   f"probe {e.get('probe')}")
+    if sto:
+        out.append(f"  storage free start {sto.get('free_start')} end {sto.get('free_end')} space {sto.get('space')}")
+    return out
+
+
+def r27_factor(rs, qs, on, name):
+    out = []
+    eff = lambda q, f: None if None in [f(x) for x in q] or len({on(x) for x in q}) < 2 else \
+        st.mean(f(x) for x in q if on(x)) - st.mean(f(x) for x in q if not on(x))
+    a, b = [x for x in rs if on(x)], [x for x in rs if not on(x)]
+    out.append(f"    {name}: {len(a)} on, {len(b)} off, {len(qs)} quads")
+    for mn, f, d in R27_METRICS:
+        out.append(f"      {mn}: paired {fmt_se([eff(q, f) for q in qs], d)} | Welch {welch([f(x) for x in a], [f(x) for x in b], d)} | "
+                   f"median {fmt(med(f(x) for x in a), d)} / {fmt(med(f(x) for x in b), d)}")
+    return out
+
+
+def r27_tables(r):
+    runs = r27_runs(r)
+    if not runs:
+        return []
+    models = r21_models(r)
+    scored = [x for x in runs if x.get('phase') == 'on']
+    out = ['r27 factors per model: on minus off; paired = per quad mean(on) - mean(off) (2 vs 2), mean ± SE over quads; '
+           'Welch = all scored runs; medians on / off (*device*):']
+    for m in models:
+        rs = [x for x in scored if x.get('model') == m]
+        qs = [q for g in r23_blocks(rs, m) for q in r27_quads([x for x in rs if x.get('group') == g])]
+        out.append(f"  {m}: {len(rs)} scored runs, {len(qs)} quads")
+        out += r27_factor(rs, qs, pin_on, 'pin (P - p)')
+        out += r27_factor(rs, qs, exec_on, 'exec (X - x)')
+    out.append('r27 2x2 cell means per model, tok/s | decode graph ms/token | TTFT ms (mean, n) (*device*):')
+    for m in models:
+        rs = [x for x in scored if x.get('model') == m]
+        parts = []
+        for c in ('px', 'Px', 'pX', 'PX'):
+            v = [x for x in rs if cell_of(x) == c]
+            mn = lambda f, d: fmt(None if not [f(x) for x in v if f(x) is not None] else st.mean(f(x) for x in v if f(x) is not None), d)
+            parts.append(f"{c} {mn(lambda x: x.get('decode_tps'), 2)} | {mn(dec_ms_tok, 2)} | {mn(lambda x: x.get('ttft_ms'), 0)} (n {len(v)})")
+        out.append(f"  {m}: " + '; '.join(parts))
+    out.append('r27 worker placement per model and pin (all runs with a c2-pool line): runs with a worker on cpus 0-3 or a mask '
+               'outside 4-7 | pool graphs / graphs | mask sets / failures | thread_samples on cpus 0-3 (runs) (*device*):')
+    for m in models:
+        for pv in (True, False):
+            v = [x for x in runs if x.get('model') == m and pin_on(x) == pv]
+            ps = [pool_of(x) for x in v]
+            have = [p for p in ps if p]
+            lit = [x.get('run_tag') for x in v if little(x)]
+            ts = sum(1 for x in v if any(c < 4 for s_ in x.get('thread_samples') or [] for c in s_[2:]))
+            affs = sorted({hex(w[2]) for p in have for w in p['workers']})
+            out.append(f"  {m} {'P' if pv else 'p'}: {len(v)} runs, {len(have)} with a line; little {len(lit)} "
+                       f"({','.join(lit[:8]) or 'none'}{' ...' if len(lit) > 8 else ''}) | pool graphs "
+                       f"{sum(p['pool_graphs'] for p in have)} / {sum(p['graphs'] for p in have)} | sets "
+                       f"{sum(w[3] for p in have for w in p['workers'])} fails {sum(w[4] for p in have for w in p['workers'])} | "
+                       f"affinities {affs} | thread_samples little {ts}")
+    out.append('r27 protection per model and exec (c2-exec, last line per run): (want, exec_maps, errno, where, prot): runs | '
+               'mprotect us median where calls > 0 | exec_sync rc (*device*):')
+    for m in models:
+        for ev in (True, False):
+            v = [x for x in runs if x.get('model') == m and exec_on(x) == ev]
+            cnt = {}
+            for x in v:
+                e = exec_of(x)
+                k = (e[-1][0], e[-1][2], e[-1][5], e[-1][7], e[-1][8]) if e else None
+                cnt[k] = cnt.get(k, 0) + 1
+            us = [c[6] for x in v for c in exec_of(x) if c[3] > 0]
+            rc = {}
+            for x in v:
+                k = str((x.get('exec_sync') or {}).get('rc', (x.get('exec_sync') or {}).get('error', 'none')))[:40]
+                rc[k] = rc.get(k, 0) + 1
+            out.append(f"  {m} {'X' if ev else 'x'}: {len(v)} runs {dict(sorted(cnt.items(), key=str))} | us {spread(us)} | rc {rc}")
+        live = [x for x in scored if x.get('model') == m and exec_on(x) and exec_live(x)]
+        dead = [x for x in scored if x.get('model') == m and not exec_on(x) and exec_live(x)]
+        out.append(f"    exec live in {len(live)} of {sum(1 for x in scored if x.get('model') == m and exec_on(x))} X scored runs; "
+                   f"executable in x runs (VOID) {','.join(x.get('run_tag') for x in dead) or 'none'}")
+    out.append('r27 T1 per model (scored runs, medians): c2-sched readable (decode n > 0) | run-queue wait ms/token | '
+               'involuntary switches/token | process sys ms and nivcsw start -> end | smaps model Rss MB before / after against '
+               'mincore resident MB before / after | smaps readable (*device*):')
+    for m in models:
+        v = [x for x in scored if x.get('model') == m]
+        ru = lambda x, i: None if not isinstance(x.get('ru'), dict) or not x['ru'].get('start') or not x['ru'].get('end') \
+            else x['ru']['end'][i] - x['ru']['start'][i]
+        out.append(f"  {m}: {sum(1 for x in v if (sched_of(x) or {}).get('n'))} of {len(v)} | {fmt(med(wq_ms_tok(x) for x in v), 3)} | "
+                   f"{fmt(med(ni_tok(x) for x in v), 2)} | {fmt(med(None if ru(x, 2) is None else ru(x, 2) / 1000 for x in v), 0)} ms, "
+                   f"{fmt(med(ru(x, 4) for x in v), 0)} | {fmt(med(smaps_model(x, 'smaps_before') for x in v), 0)} / "
+                   f"{fmt(med(smaps_model(x, 'smaps_after') for x in v), 0)} against {fmt(med(res_mb(x) for x in v), 0)} / "
+                   f"{fmt(med(res_mb(x, 'res_after') for x in v), 0)} | "
+                   f"{sum(1 for x in v if isinstance(x.get('smaps_before'), dict) and 'model' in x['smaps_before'])} of {len(v)}")
+    out.append('r27 T3 block-mode profile per model (_profb runs, ops by compute + wait us per token, mean over runs) (*device*):')
+    for m in models:
+        v = [x for x in runs if x.get('model') == m and str(x.get('id', '')).endswith('_profb')]
+        acc, nl = {}, 0
+        for x in v:
+            for l in x.get('c2') or []:
+                if l.startswith('cpu-prof ab=') and ' graphs=' in l and ' | ' in l:
+                    nl += 1
+                    for o in OPS_RE.finditer(l[l.index(' | '):]):
+                        acc.setdefault(o.group(1), []).append((int(o.group(2)), int(o.group(3)), int(o.group(4))))
+        ops = sorted(acc.items(), key=lambda kv: -st.mean(c + w for _, c, w in kv[1]))
+        out.append(f"  {m}: {len(v)} runs, {nl} table lines | " + ', '.join(
+            f"{k} {st.mean(n for n, _, _ in t):.0f}:{st.mean(c for _, c, _ in t):.0f}+{st.mean(w for _, _, w in t):.0f}" for k, t in ops[:14]))
+    out += kv_mech(runs, models) + extras_head(r)
+    out.append('kit r27, scored runs (phase on), per model and cell (*device*):')
+    for m in models:
+        for c in ('px', 'Px', 'pX', 'PX'):
+            out.append(stats_line(f"  {m} {c}", [x for x in scored if x.get('model') == m and cell_of(x) == c]))
+    return out + extras_tail(runs)
+
+
 def main(argv=None):
     a = argparse.ArgumentParser()
     a.add_argument('report', nargs='?')
@@ -1400,7 +1670,8 @@ def main(argv=None):
         if r.get('kit') == 'r22' else (r23_checks(r), r23_tables(r)) if r.get('kit') == 'r23' \
         else (r24_checks(r), r24_tables(r)) if r.get('kit') == 'r24' \
         else (r25_checks(r), r25_tables(r)) if r.get('kit') == 'r25' \
-        else (r26_checks(r), r26_tables(r)) if r.get('kit') == 'r26' else (
+        else (r26_checks(r), r26_tables(r)) if r.get('kit') == 'r26' \
+        else (r27_checks(r), r27_tables(r)) if r.get('kit') == 'r27' else (
         checks(r, o.prompt), identity(r), groups(r, o.min_mhz, o.fault_run), ab(r, o.min_mhz, o.sigma),
         r16_compare(r, r16), waits(r), warm(r))
     for part in parts:
@@ -1817,6 +2088,74 @@ def selftest():
     assert not any(l.startswith('kv mechanism per model') for l in r25_tables(r25))
     r25b = dict(r25, runs=[dict(x, c2=[l + ' tag=0xb4' if l.startswith('c2-kvclear') else l for l in x['c2']]) for x in r25['runs']])
     assert any(l.startswith('kv mechanism per model') for l in r25_tables(r25b))
+    # r27: kv in every run, pin x exec per quad (Williams rows; model k-th quad takes row (k + 2 x model index) % 4);
+    # synthetic effects: pin +1.0 tok/s, exec +0.5 tok/s; little-core workers only without pin; exec live only with X.
+    rows27 = [[1, 2, 4, 3], [2, 3, 1, 4], [3, 4, 2, 1], [4, 1, 3, 2]]
+    cell27 = {1: (True, False), 2: (False, True), 3: (True, True), 4: (False, False)}
+    def row27(m, g, i, pin, ex, phase='on', first=False, block=False):
+        x = row26(m, g, i, True, phase, first)
+        sfx = ('_profb' if block else '_prof') if phase == 'prof' else '_wu' if phase == 'warmup' else \
+            '_r16' + ('_pin' if pin else '') + ('_exec' if ex else '')
+        tag = f"{m}_{arm26[m]}{sfx}.{i}"
+        x['c2'] = [l.replace(f"run={x['run_tag']} ", f'run={tag} ') for l in x['c2']]
+        env = {**x['env'], 'VOLLIE_SCHED': '1', **({'VOLLIE_POOL': '1', 'VOLLIE_CPUMASK': '0xf0'} if pin else {}),
+               **({'VOLLIE_EXEC_MAP': '1'} if ex else {})}
+        x.update({'proto': 'r27', 'id': f"{m}_{arm26[m]}{sfx}", 'run_tag': tag, 'env': env, 'env_set': env,
+                  'decode_tps': 17.0 + (2 if arm26[m] == 'num' else 0) + (1.0 if pin else 0) + (0.5 if ex else 0),
+                  'exec_sync': {'rc': 0 if ex else 0, 'ms': 3}, 'smaps_before': {'model': [3000000, 2000000, 2000000, 0]},
+                  'ru': {'start': [0, 0, 0, 0, 0, 0], 'first': None, 'end': [5000000, 4000000, 1000000, 10, 20, 0]}})
+        w = '0xf0:s1:e0:c4=20,c7=13' if pin else '0xf0:s0:e0:c1=3,c5=30'
+        x['c2'] = [l for l in x['c2']] + [
+            f"c2-pool run={tag} pool={int(pin)} mask={'0xf0' if pin else '-'} threads=3 graphs=1/32 pool_graphs={'1/32' if pin else '0/0'} "
+            + ' '.join(f"w{k}=10{k}:{w}" for k in range(3)),
+            f"c2-sched run={tag} phase=prefill n=1 w0=1:2:3:4 w1=1:2:3:4 w2=1:2:3:4",
+            f"c2-sched run={tag} phase=decode n=32 w0=1000:{310 if pin else 620}:3:4 w1=1000:0:3:4 w2=1000:0:3:4",
+            f"c2-exec run={tag} want={int(ex)} maps=1 exec_maps={int(ex)} bytes=3000000000 calls=1 fails=0 errno=0 us=400 "
+            f"where=api prot={'r-xs:1' if ex else 'r--s:1'}"]
+        if block:
+            x['c2'].append('cpu-prof ab=A blk=0 graphs=32 tokens=32 threads=3 mmid_thr=1/2/3 | MUL_MAT_ID 48:30000+2000 MUL_MAT 100:9000+800 ADD 50:300+40')
+        return x
+    r27 = dict(r24, kit='r27', runs=[], models={m: {'arm': a} for m, a in arm26.items()},
+               storage={'used': 'internal', 'exec_factor': 'live', 'internal_check': {'mount': {'mount_point': '/data', 'fs': 'f2fs',
+               'options': 'rw,nosuid,nodev', 'noexec': False}, 'probe': {'open': 0, 'mmap_r': 0, 'mprotect_rx': 0, 'mmap_rx': 0},
+               'pass': True}, 'external_check': {'mount': {'mount_point': '/storage/emulated', 'fs': 'fuse', 'noexec': True},
+               'probe': {'open': 0, 'mmap_r': 0, 'mprotect_rx': 13, 'mmap_rx': 13}},
+               'models': {'olmoe': {'action': 'copied', 'bytes': 3072399552, 'copy_ms': 9000, 'hash_ms': 8000}}})
+    seen = {}
+    for b, m in enumerate(['granite', 'olmoe', 'olmoe', 'granite'], 1):
+        k = seen.get(m, 0); seen[m] = k + 1
+        mi = ['granite', 'olmoe'].index(m)
+        r27['runs'] += [row27(m, f'b{b}', 90 + j, True, False, 'warmup', j == 0) for j in range(2)]
+        for q in range(2):
+            for j, c in enumerate(rows27[(2 * k + q + 2 * mi) % 4]):
+                r27['runs'].append(row27(m, f'b{b}', 4 * q + j, *cell27[c]))
+        r27['runs'] += [row27(m, f'b{b}', 8, True, False, 'prof'), row27(m, f'b{b}', 9, True, False, 'prof', block=True)]
+    r27['specs'] = list({x['id']: {'id': x['id'], 'gate_rule': x['gate_rule']} for x in r27['runs']}.values())
+    c = r27_checks(r27)
+    assert any(l.startswith("r27: arms per model {'granite': ['num'], 'olmoe': ['off']}, arm != report in none; gate rules of "
+                            "gated runs ['r16']; id suffix != env in none; runs without kv none; warm-up / profiled runs not "
+                            "pin on + exec off none; quads without the four cells none") for l in c), c
+    assert any(l.startswith('olmoe (r27) texts per cell') and l.endswith(': same') for l in c), c
+    assert any(l.startswith('r27 storage: used internal, exec factor live; internal /data (f2fs') and 'pass True' in l for l in c), c
+    t = r27_tables(r27)
+    i = t.index('  granite: 16 scored runs, 4 quads')
+    assert t[i + 1] == '    pin (P - p): 8 on, 8 off, 4 quads', t[i + 1]
+    assert t[i + 2].startswith('      tok/s: paired +1.00 ± 0.00 (n 4) | Welch +1.00 ± 0.'), t[i + 2]
+    assert t[i + 10].startswith('      run-queue wait ms/token (decode, all threads): paired -0.010 ± 0.000 (n 4)'), t[i + 10]
+    j = t.index('    exec (X - x): 8 on, 8 off, 4 quads', i)
+    assert t[j + 1].startswith('      tok/s: paired +0.50 ± 0.00 (n 4)'), t[j + 1]
+    assert any(l.startswith('  olmoe: px 17.00 | ') and 'PX 18.50' in l and '(n 4)' in l for l in t), t
+    assert any(l.startswith('  olmoe P: 16 runs, 16 with a line; little 0 (none) | pool graphs 528 / 528 | sets 48 fails 0')
+               for l in t), t
+    assert any(l.startswith('  olmoe p: 8 runs, 8 with a line; little 8') for l in t), t
+    assert any(l.startswith('    exec live in 8 of 8 X scored runs; executable in x runs (VOID) none') for l in t), t
+    assert any(l.startswith('  granite: 2 runs, 2 table lines | MUL_MAT_ID 48:30000+2000, MUL_MAT 100:9000+800, ADD') for l in t), t
+    assert any(l.startswith('  granite PX: n 4 (flagged 0) tok/s 20.50') for l in t), t
+    xr = next(x for x in r27['runs'] if x['phase'] == 'on' and not exec_on(x))
+    xr['c2'][-1] = xr['c2'][-1].replace('prot=r--s:1', 'prot=r-xs:1')
+    assert any(l == '    exec live in 8 of 8 X scored runs; executable in x runs (VOID) ' + xr['run_tag'] for l in r27_tables(r27))
+    r27['runs'][2]['text'] = 'other'
+    assert any(l.startswith('granite (r27) texts per cell') and l.endswith('DIFFER (kill rule)') for l in r27_checks(r27))
     # the plateau gate, as the app's unit test (R62's pos 4 and 6 series, every 5 s)
     p4 = [0.873, 0.873, 0.873, 0.873, 0.802, 0.788, 0.755, 0.741, 0.721, 0.735, 0.725, 0.735, 0.748, 0.764, 0.77]
     p6 = [0.725, 0.767, 0.789, 0.81, 0.833, 0.833, 0.808, 0.778, 0.753, 0.741, 0.717, 0.737, 0.753, 0.776, 0.79]

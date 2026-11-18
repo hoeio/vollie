@@ -817,6 +817,7 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-28, code audit of the kit app and runtime: thread pin lost in gated runs, per-run waste](memo-28-code-audit.md);
 [memo-29, joint round (Bonnie and Ebony): TEST list T1-T11 and TRY list Y1-Y12 for Tom; working files in `memo-29-work/`](memo-29-joint-test-and-try-lists.md);
+[memo-30, kit r27 (persistent pool + per-thread mask, patch 0010; PROT_EXEC model mapping, patch 0011; pin x exec 2x2 per quad; internal-storage exec check and copy; T1, T3 riders)](memo-30-kit-r27.md);
 [memo-27, kit r26 (kv clear on the untagged address; one arm per model, r16 gate, kv in ABBA quads)](memo-27-kit-r26.md);
 [memo-26, kit r25 (kit r24 plus the kv clear by MADV_DONTNEED, patch 0008; kv in ABBA pairs)](memo-26-kit-r25.md);
 [memo-25, routing prior toward recently used experts (patch 0007), host study, not an R-entry](memo-25-routing-prior-host.md);

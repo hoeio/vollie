@@ -6,6 +6,8 @@
 # usage: tools/c2_build_kit.sh <llama.cpp tree> <app copy> [series dir ... (default patches/llama.cpp-c2)]
 #   <llama.cpp tree>: 620d2225c with every patch of the series dirs applied in order (dir by dir); checked file by file here.
 #   kit r20: tools/c2_build_kit.sh <tree> lab/app-c2 patches/llama.cpp patches/llama.cpp-c1-olmoe
+#   kit r27: tools/c2_build_kit.sh lab/llama.cpp-c1r27 lab/app-c2 patches/llama.cpp patches/llama.cpp-c1-olmoe
+#            (c1-olmoe 0001-0011; 0010 also touches common/common.cpp, a host-check knob not in the APK's libraries)
 #   <app copy>: app 2.3.0+45 with patches/app-c2/*.patch applied in order.
 # out: lab/dist-c2/vollie-c2-<version>-research-<kit>.apk and BUILD-<kit>.txt; the app's assets/kit_build.json
 #      (llama.cpp commit, sha256 of every series patch, app patch and built library) goes into the kit's report.
