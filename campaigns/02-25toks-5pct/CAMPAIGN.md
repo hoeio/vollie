@@ -25,6 +25,8 @@ Campaign 1 answered the same question for 20 tok/s and +2 % with *yes*
 | metric | llamadart `decodeTokensPerSec`, official prompt, 32 tokens, greedy, kit cool-down gate | unchanged, so the benchmark's definition does not change |
 | claim rule (**draft**) | median of 10 plain runs ≥ 25.0 tok/s | fixed before the run, never a best run |
 
+2026-11-18 (owner): the claim runs with power saving off; the state is recorded.
+
 Budget values known so far:
 
 | model | F16 PPL (host) | stock served PPL (host) | budget (× 1.05, estimated) | hard (× 1.20, estimated) |
