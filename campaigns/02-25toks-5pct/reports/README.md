@@ -778,6 +778,40 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
 - **Scored runs, tok/s medians (kv pooled; not levels):** Granite off 16.17 / 16.04, num 19.72 / 16.91 (r16 /
   plateau); OLMoE off 18.47 / 20.91, num 21.88 / 21.06.
 
+### R66 KV and recurrent clear with MADV_DONTNEED on the untagged address, on Granite and OLMoE (kit r26)
+
+- **Date:** 2026-11-18, from 12:38 local. **Label:** *device*. Pre-registration:
+  [prereg/R66-kv-clear-untagged-two-models-device.md](../prereg/R66-kv-clear-untagged-two-models-device.md)
+  (commit `b06ed48`). **Source:** [device/r26_2026-11-18.json](device/r26_2026-11-18.json) (sha256
+  `45769b42…7fcee561bd`), read with `tools/c2_research_parse.py`; `Cached` and cap are the lead's reading of the
+  same file.
+- **Checks:** model and library hashes equal the build (series 0001-0009, app 0001-0010); one arm per model
+  (Granite num, OLMoE off), r16 gate in every gated run; texts equal kv against plain (Granite `13584df0`, OLMoE
+  `f8a9fdc4`); no charger; released 0 in every run without kv. **Not void.**
+- **Owner's note (2026-11-18):** background apps kept starting by themselves during the session, so memory
+  pressure from other apps may be in these runs. The counters agree: every wait ran to 91 s; the file lost in
+  the wait was 506 to 954 MB at the median (R64: 0 to 330); the hold got back 84.5 % at the median (95 % or more
+  in 10 of 40 runs); the app's `VmSwap` before a run reached 800 MB. `Cached` at least 2.4 GB before 13 of 16
+  Granite and 16 of 16 OLMoE runs; cap 2,035 MHz in the profiled runs. Levels were not pre-registered here.
+- **Mechanism: pass on both models.** `why=ok` in every clear line of 8 of 8 kv runs per model; `tag=0xb4` in
+  every kv line (32 Granite, 16 OLMoE): **the tagged-pointer reading of R64 is confirmed on the phone.**
+  Released per kv run 151.8 MB (Granite, `kv` + `rs`) and 570.4 MB (OLMoE; two clears per run of 285.2 MB):
+  bands (≥ 50, ≥ 250): **hit**.
+- **Effect (kv minus plain, paired over 4 ABBA quads ± SE):**
+  - **OLMoE: pass.** Pre-prompt major faults −15,860 ± 9,128 (lower; band 0 to −15,000: **miss**, larger);
+    TTFT **−704 ± 149 ms** (4.7 × SE; band 0 to −250: **miss**, larger); decode −4.5 ± 6.7 ms/token;
+    tok/s +1.44 ± 1.74 (band −1.0 to +1.0: **miss**, high, inside its SE); `VmSwap` at run end −18 ± 15 MB.
+  - **Granite: mechanism works, effect not shown.** Pre-prompt faults −8,231 ± 3,867 (lower; band 0 to
+    −10,000: **hit**); TTFT +6 ± 263 ms (band +50 to −120: **hit**, not beyond 2 × SE); decode −5.1 ± 4.0;
+    tok/s +0.85 ± 0.92 (band: **hit**).
+  - Texts identical: **no kill.**
+- **Generalisation:** the mechanism and the fault reduction appear on both models; the TTFT gain is shown on
+  OLMoE only (its KV buffer is about four times Granite's, as predicted, but the gain is about three times the
+  predicted band; the heavy memory pressure of this session is the likely reason, a reading).
+- **What it means (R66 §7):** the knob is kept on in every later kit on both models (OLMoE pass; Granite
+  "mechanism works, effect not shown", which also keeps it on). Its value is TTFT and memory, not the 32-token
+  metric. Next memory lever: memo-24 item 3.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-27, kit r26 (kv clear on the untagged address; one arm per model, r16 gate, kv in ABBA quads)](memo-27-kit-r26.md);
 [memo-21, unconventional levers priced on both models (owner's list and new directions)](memo-21-unconventional-levers.md);
