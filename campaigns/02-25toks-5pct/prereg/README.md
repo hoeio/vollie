@@ -17,3 +17,10 @@ see [../../README.md](../../README.md).
 - [R55](R55-olmoe-c1-runtime-residency-device.md): OLMoE on campaign 1's runtime with residency measured, kit r19.
 - [R56](R56-olmoe-r16-protocol-device.md): OLMoE under campaign 1's kit r16 protocol, warm block, keep-warm; kit r20.
 - [R58](R58-prefill-cold-two-models-device.md): prefill-cold on Granite and OLMoE in one session, kit r21.
+- [R60](R60-numerics-and-hold-two-models-device.md): skip + two-stage head and page hold through the gate wait, two models; kit r22.
+- [R61](R61-kleidiai-host-ppl.md): stock and num perplexity on a host build with KleidiAI (pre-statement, host).
+- [R62](R62-numerics-threads-hold-two-models-device.md): skip + head with hold in every run, threads 3 against 4; kit r23.
+- [R63](R63-gate-rule-and-numerics-two-models-device.md): plateau gate rule against r16, skip + head; kit r24 (not run; its rules were applied in R64).
+- [R64](R64-kv-clear-dontneed-two-models-device.md): KV and recurrent clear with MADV_DONTNEED; kit r25 (kv factor void, tagged pointer).
+- [R65](R65-kv-clear-untagged-two-models-device.md): the same on the untagged address; kit r25b (superseded by R66); [dated note 2026-11-18](R65-note-2026-11-18.md).
+- [R66](R66-kv-clear-untagged-two-models-device.md): the same on the untagged address; kit r26 (scored in R66 of the R-log).
