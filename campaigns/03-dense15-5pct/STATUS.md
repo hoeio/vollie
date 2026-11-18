@@ -5,12 +5,22 @@ R68's reports, the lead scores them and closes campaign 2.
 
 ## Next actions
 
-1. Bonnie and Ebony: joint feasibility round (c3 memo-01): candidate dense models, the bytes-and-compute arithmetic,
-   runtime sparsity methods priced against +5 % (dense-as-MoE included), a low-bit served file inside F16 × 1.20.
-2. After campaign 2 closes: a device probe of dense read rate and int8 ceiling with power saving off.
+1. Tom runs host tests H1, H3, H6, H7 (memo-02 to come; test list in reports/memo-01-feasibility.md).
+2. Round 2 goes into memo-03: Bonnie prices Gemma 4 E4B and the strict-dense re-price; Ebony covers Adreno and
+   Hexagon and the read rate.
+3. After campaign 2 closes: a device probe of dense read rate and int8 ceiling with power saving off.
+
+## Open owner decisions
+
+Collected here; the owner asked not to be asked until the R68 JSON arrives.
+
+- Gemma 4 E4B as a subject.
+- RWKV-7 G1 as a subject.
+- Calibration-derived tables as runtime (the lead's provisional answer: yes).
 
 ## Session log
 
 | date | session | what |
 |---|---|---|
 | 2026-11-18 | 4 (continued) | Owner sets campaign 3: dense 7B-class, 15 tok/s (first 20, lowered after the lead's arithmetic), file not changed but used freely (dense as MoE allowed), served quantisation free inside the budget, +5 % budget, F16 × 1.20 ceiling, campaigns 1-2 as the base. Lead's model definition accepted. Planning files created. |
+| 2026-11-18 | 4 (continued) | memo-01 verdict: 15 tok/s on a 7.1 B+ dense body is out of reach with every priced method, P < 0.05 (*estimated*). Best priced combination is 5 to 9 tok/s (*estimated*). The Gemma 4 E4B opening is 7.5 to 14 tok/s (*estimated*). The goal stays at 15 and is not raised. Research continues. |
