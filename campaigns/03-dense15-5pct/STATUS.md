@@ -11,6 +11,8 @@ R68's reports, the lead scores them and closes campaign 2.
    to `HoeioUser/vollie-kits` as `r29/`; the owner runs it after R68's reports are in and campaign 2 is closed.
 2. Tom's host tests H1, H3, H6, H7 are done (memo-02, including section 8). Element column sparsity stays open; the
    phone's read rate (R69) decides.
+4. R69 is uploaded to HF `r29/` as `vollie-c3-probe-r29.apk` (sha 02736b56...). The kit after R69 carries D1 to D3 and E5
+   from memo-05 section 4. Owner questions (a) to (c) from memo-05 section 3.5 are asked after the R68 report.
 3. Round 2 (memo-03) is done; memo-04-work holds Bonnie's bands and Ebony's block-sparsity draft.
 
 ## Open owner decisions
@@ -37,3 +39,4 @@ Collected here; the owner asked not to be asked until the R68 JSON arrives.
 | 2026-11-19 | 4 (continued) | Owner rules RWKV-7 G1 out as a subject: "There is no need to include RWKV-7 G1; the subject models and their reserves are enough." The subject set is fixed: Mistral-7B-Instruct-v0.3 and Qwen2.5-7B-Instruct, with reserves Llama-3.1-8B and Yi-1.5-6B. The only open owner item left is calibration tables as runtime (the lead's provisional yes). |
 | 2026-11-19 | 4 (continued) | Owner decides calibration-derived tables (thresholds, hot-first orders) are data read at runtime but managed as derived artifacts attached to the weights, not as code. Lead's reading recorded in CAMPAIGN.md: sidecar file; committed generator script, served file and wikitext-2 train named in the header; model sha256 and own sha256 recorded; runtime refuses a model-sha mismatch; table sha256 listed next to the model's in every pre-registration; a new table needs its own PPL check at `-b 512` and `-ub 1`; served file unchanged. No owner decisions are open now. |
 | 2026-11-19 | 4 (continued) | memo-02 section 8 (*host*): block sparsity is closed as a speed lever on both models (down-only frontier 9 to 10 % of blocks, about 2.5 % of the bytes); the block-major skip-list kernel costs 0.93x per touched weight and is bit-identical; element column sparsity stays open. R69 pre-registered (probe kit r29; probe patch sha256 ac5c7057..., app patch a1c51b22...); kit upload follows, owner runs it after R68. |
+| 2026-11-19 | 4 (continued) | memo-05 *host* results: K1 at TR 128 is bit-identical, k 1.53 to 1.64, open pending phone D2. Y1b is bit-identical, hot 1.47 to 1.51, cold about 2.1 on down. Y1c is not bit-identical; the PPL delta is ±0.02 %. Closed: K2, H5 as a residency lever, gate rule, K1 at TR 512. Row skip is parked. E1: down-only 60 % fits, 70 % does not. The goal is unchanged. |

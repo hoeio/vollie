@@ -17,6 +17,10 @@
 #     prev: r of layer L-1 for the same token (causal, so the FFN of L need not be read). Layer 0 never skips under prev.
 # eval with table '-' (or sparsity 0) reproduces llama-perplexity: the identity check of this tool.
 # C3_BLOCK=32|64 (eval): H3b, block-granular sparsity, thresholds on the L2 norm of each input block (thr3 tables).
+# memo-05 E2 (gate rule): group 'gate' zeroes neuron i of layer L (the ffn_down input, i.e. its up row and down column)
+#   when |SiLU(g_i)| of the full ffn_gate output is under a train threshold ('L:gate' quantiles, from calib).
+# memo-05 T5: C3_KEEPSTAT=<out.npz> (eval, element rule) saves per input and column how often it was kept, and the mean
+#   fraction of columns kept by at least one token of each 32-token window (the 32-token union).
 import sys, os, re, time, json, ctypes as C, numpy as np, collections
 mode, libdir, model_path, text_path, n_chunks = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
 _src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dense_acts.py')).read(); exec(_src[_src.index('ggml = C.CDLL'):_src.index('# ---- stats')])
@@ -27,7 +31,7 @@ L.llama_vocab_bos.restype = C.c_int32; L.llama_vocab_bos.argtypes = [C.c_void_p]
 KIND = {'attn_q': 'qkv', 'attn_k': 'qkv', 'attn_v': 'qkv', 'attn_output': 'o', 'ffn_gate': 'gu', 'ffn_up': 'gu', 'ffn_down': 'down',
         'channel_mix_key': 'cmix_k', 'channel_mix_value': 'cmix_v'}   # RWKV-7: cmix_v's input is relu(k)^2 (H4 counts its exact zeros)
 CBLK = int(os.environ.get('C3_BLOCK', '0'))   # H3b: 0 = per element; 32 or 64 = whole input blocks (needs a table from this calib)
-QS = (0.02, 0.05, 0.08, 0.1, 0.15, 0.2, 0.3, 0.35, 0.4, 0.45, 0.5, 0.6)   # tables store their own list as 'qs'
+QS = (0.02, 0.05, 0.08, 0.1, 0.15, 0.2, 0.3, 0.35, 0.4, 0.45, 0.5, 0.6, 0.7, 0.8)   # tables store their own list as 'qs'
 if mode == 'calib': UB, out_path, NT = 512, sys.argv[6], int(sys.argv[7]) if len(sys.argv) > 7 else 8
 elif mode == 'eval':
     UB, tab, SP, GROUPS, NDENSE = int(sys.argv[6]), sys.argv[7], float(sys.argv[8]), sys.argv[9], int(sys.argv[10]); NT = int(sys.argv[11]) if len(sys.argv) > 11 else 8
@@ -45,7 +49,8 @@ else:
     z = np.load(tab); rr = np.concatenate([z[k] for k in z.files if k.startswith('ratio:')]); RTHR = float(np.quantile(rr, SKF)) if SKF > 0 else -1.0
     FDENSE = int(os.environ.get('C3_DENSE_FIRST', '0'))   # positions < FDENSE never skip (attention-sink tokens)
     print('ffnskip %s: global ratio threshold %.5f for skip fraction %g (train)' % (RULE, RTHR, SKF), flush=True)
-resin = {}; rprev = {}; ffn_in = {}; ratios = collections.defaultdict(list)
+resin = {}; rprev = {}; ffn_in = {}; ratios = collections.defaultdict(list); gaten = {}; gmask = {}
+KEEP = os.environ.get('C3_KEEPSTAT'); kc = {}; kn = collections.Counter(); ku = collections.defaultdict(lambda: [0.0, 0])
 def ptr(p): return C.cast(p, C.POINTER(ggml_tensor)).contents
 inp = {}; outn = {}; phase = ['discover']; pos0 = [0]; samp = collections.defaultdict(list); rng = np.random.default_rng(0)
 cnt = collections.defaultdict(lambda: [0.0, 0])   # group -> [zeroed elements, elements]
@@ -57,6 +62,7 @@ def cb(t, ask, ud):
         if m and m.group(2).decode() in KIND:
             k = '%s:%s' % (int(m.group(1)), KIND[m.group(2).decode()]); inp[bytes(ptr(tt.src[1]).name)] = k; outn[bytes(tt.name)] = k
             if k.endswith(':down'): resin[b'ffn_inp-%d' % int(m.group(1))] = int(m.group(1))
+            if m.group(2) == b'ffn_gate': gaten[bytes(tt.name)] = int(m.group(1))
         return True
     name = tt.name
     if mode == 'ablate':
@@ -78,8 +84,15 @@ def cb(t, ask, ud):
                 m = use < RTHR; m[:max(0, FDENSE - pos0[0])] = False; y[m] = 0.0; cnt['ffn'][0] += m.sum()
             cnt['ffn'][1] += len(r); return True
         if mode == 'ffnskip': return not ask
+    gl = gaten.get(name)
+    if gl is not None and mode in ('calib', 'eval') and (mode == 'calib' or '%d:gate' % gl in THR):   # E2: |SiLU(gate)|
+        if ask: return True
+        g = np.ctypeslib.as_array(C.cast(tt.data, C.POINTER(C.c_float)), shape=(tt.ne[1], tt.ne[0])); a = np.abs(g / (1.0 + np.exp(-g)))
+        if mode == 'calib': samp['%d:gate' % gl].append(a.ravel()[rng.integers(0, a.size, 32768)].astype(np.float32))
+        else: gmask[gl] = a < THR['%d:gate' % gl]
+        return True
     k = inp.get(name)
-    if ask: return k is not None and (mode == 'calib' or k in THR)
+    if ask: return k is not None and (mode == 'calib' or k in THR or (k.endswith(':down') and '%s:gate' % k.split(':')[0] in THR))
     if k is None or tt.type != 0 or tt.nb[1] != tt.ne[0]*4: return True
     x = np.ctypeslib.as_array(C.cast(tt.data, C.POINTER(C.c_float)), shape=(tt.ne[1], tt.ne[0]))
     if mode == 'calib':
@@ -93,10 +106,17 @@ def cb(t, ask, ud):
     first = max(0, NDENSE - pos0[0])   # rows of this ubatch at positions < NDENSE stay dense
     if first >= x.shape[0]: return True
     xs = x[first:]
+    if k.endswith(':down') and int(k.split(':')[0]) in gmask:   # E2: the gate rule's neurons
+        gm = gmask.pop(int(k.split(':')[0]))[first:]; np.putmask(xs, gm, 0.0); cnt['gate'][0] += gm.sum(); cnt['gate'][1] += gm.size
+        if k not in THR: return True
     if CBLK:   # H3b: zero whole input blocks whose L2 norm is below the threshold
         xb = xs.reshape(xs.shape[0], -1, CBLK); mb = np.sqrt((xb**2).sum(2)) < THR[k]; xb[mb] = 0.0; m = np.repeat(mb, CBLK, axis=1)
     else: m = np.abs(xs) < THR[k]; np.putmask(xs, m, 0.0)
     g = k.split(':')[1]; cnt[g][0] += m.sum(); cnt[g][1] += m.size
+    if KEEP and not CBLK:   # T5: keep frequency per column, and the union over 32-token windows
+        kp = ~m; kc[k] = kc.get(k, 0) + kp.sum(0); kn[k] += kp.shape[0]
+        nw = kp.shape[0] // 32
+        if nw: ku[k][0] += kp[:nw * 32].reshape(nw, 32, -1).any(1).mean(1).sum(); ku[k][1] += nw
     return True
 cbf = CB(cb)
 L.llama_backend_init()
@@ -145,3 +165,4 @@ else:
     real = ', '.join('%s %.4f' % (g, z/max(n, 1)) for g, (z, n) in sorted(cnt.items()) if g != 'ablated')
     print('RESULT ub %d %s: PPL %.4f over %d chunks; realised zeroed fraction: %s' % (UB, tag, np.exp(np.concatenate(nll).mean()), n_chunks, real or '-'))
     print('PERCHUNK ' + json.dumps({'ub': UB, 'tag': tag, 'nll': per_chunk}))
+    if KEEP: np.savez(KEEP, **{'freq:' + k: v / kn[k] for k, v in kc.items()}, **{'union32:' + k: np.array(u[0] / max(u[1], 1)) for k, u in ku.items()}); print('wrote', KEEP)
