@@ -11,9 +11,9 @@ R68's reports, the lead scores them and closes campaign 2.
    to `HoeioUser/vollie-kits` as `r29/`; the owner runs it after R68's reports are in and campaign 2 is closed.
 2. Tom's host tests H1, H3, H6, H7 are done (memo-02, including section 8). Element column sparsity stays open; the
    phone's read rate (R69) decides.
+3. Round 2 (memo-03) is done; memo-04-work holds Bonnie's bands and Ebony's block-sparsity draft.
 4. R69 is uploaded to HF `r29/` as `vollie-c3-probe-r29.apk` (sha 02736b56...). The kit after R69 carries D1 to D3 and E5
    from memo-05 section 4. Owner questions (a) to (c) from memo-05 section 3.5 are asked after the R68 report.
-3. Round 2 (memo-03) is done; memo-04-work holds Bonnie's bands and Ebony's block-sparsity draft.
 
 ## Open owner decisions
 
