@@ -945,6 +945,30 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   0; C1's strict uncapped rule (per-run cap before and after) already enforces it. For a later kit: record
   `thermal_status` per run and gate on status 0 as well as headroom.
 
+### R68 (session A; sessions A and B together)
+
+- **Date:** session A started 2026-11-19 15:22 local. **Label:** *device*. **Sources:**
+  [device/r28_2026-11-19.json](device/r28_2026-11-19.json) (sha256 `54af112b...f23fba4`, checked on copy) and session B
+  [device/r28_2026-11-18.json](device/r28_2026-11-18.json); scorer output
+  [memo-33-work/score-r68-sessionsAB.txt](memo-33-work/score-r68-sessionsAB.txt) (`score_r68.py`, run with `python3 -I`).
+- **Session A:** deep-sleeping list on; power saving off in 72 of 72 runs; no void; greedy texts identical (olmoe
+  num, olmoe off, granite num: one md5 each, same in A and B).
+- **b1 OLMoE off:** median 25.20 tok/s, 4 of 10 below 25.0 (prediction 4 to 7: hit), 10 of 10 uncapped.
+- **b2 Granite num:** median 23.27 tok/s (inside the band 22.5 to 24.5).
+- **b5 OLMoE num + touch** (threads at -10, the app baseline, amendment 4): median **27.25 tok/s**, 0 of 10 below
+  25.0, 10 of 10 uncapped. b5 minus b1 = +2.05 tok/s (band +0.4 to +1.6: **MISS, high**; position confounded, b5 last,
+  b1 first).
+- **Touch:** OLMoE +0.14 ± 0.28 tok/s, PASS; Granite +0.54 ± 0.57 tok/s, PASS. A6 failed in 2 of 18 OLMoE T runs (set
+  2894 MB vs want 2980; 2841 vs 2916), which makes b5 ineligible under C5 (the scorer lists olmoe_num_claim.0).
+- **A8 over both sessions:** touch PASS on both models. Nice is VOID in both sessions (threads already at -10 in all
+  runs, no contrast; amendment 4).
+- **Go rule: MISSED.** It reads session B's median (b5 B 25.47 < 25.7, 3 of 10 below 25.0; b1 B 23.03). b5 is also
+  ineligible by A6. No claim round is opened by R68's rule.
+- *Lead's observation (unscored):* with the list on, session A ran faster than session B on every block (b1 +2.17,
+  b2 +0.68, b5 +1.78 tok/s). The sessions are on different days and phone states, so this is not a controlled list
+  effect.
+- Rehearsal, not a claim. Session R (campaign 1 and stock references) is still to come.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-28, code audit of the kit app and runtime: thread pin lost in gated runs, per-run waste](memo-28-code-audit.md);
 [memo-29, joint round (Bonnie and Ebony): TEST list T1-T11 and TRY list Y1-Y12 for Tom; working files in `memo-29-work/`](memo-29-joint-test-and-try-lists.md);
