@@ -1,0 +1,18 @@
+== session R-c1 (r28-c1_2026-11-19T1909.json): kit r28, runtime c1, label 'deep-sleeping list off', started 2026-11-19T19:09:30.741965, r28 runs 24 (scored 20) ==
+  void checks (§4, kit not lever; D1 to D3):
+    D3 model granite: models.sha256_end 8df94de7…a0bc0f45: ok; storage.models.present_sha256 8df94de7…a0bc0f45: ok
+    D3 model olmoe: models.sha256_end 5abf710b…8e444abb: ok; storage.models.present_sha256 5abf710b…8e444abb: ok
+    D3 libraries (runtime c1, memo-32 §5's full values): 6 hashes in build.libs + 2 load rows: ok
+    D1 power saving: at start on, at end on, session_power 'power-save on'; reads on in 24 of 24 runs (granite_c1_wu.0, granite_c1_wu.1, granite_c1_claim.0, granite_c1_claim.1, granite_c1_claim.2, granite_c1_claim.3, granite_c1_claim.4, granite_c1_claim.5, granite_c1_claim.6, granite_c1_claim.7, granite_c1_claim.8, granite_c1_claim.9, olmoe_c1_wu.0, olmoe_c1_wu.1, olmoe_c1_claim.0, olmoe_c1_claim.1, olmoe_c1_claim.2, olmoe_c1_claim.3, olmoe_c1_claim.4, olmoe_c1_claim.5, olmoe_c1_claim.6, olmoe_c1_claim.7, olmoe_c1_claim.8, olmoe_c1_claim.9); unread ('?') in 0 (scored only when start and end both read off)
+    prediction 'power saving reads off in every run' (P 0.95): MISS
+    D2 scored runs left out of every statistic: 20 of 20; power saving on: granite_c1_claim.0, granite_c1_claim.1, granite_c1_claim.2, granite_c1_claim.3, granite_c1_claim.4, granite_c1_claim.5, granite_c1_claim.6, granite_c1_claim.7, granite_c1_claim.8, granite_c1_claim.9, olmoe_c1_claim.0, olmoe_c1_claim.1, olmoe_c1_claim.2, olmoe_c1_claim.3, olmoe_c1_claim.4, olmoe_c1_claim.5, olmoe_c1_claim.6, olmoe_c1_claim.7, olmoe_c1_claim.8, olmoe_c1_claim.9
+    D2 VOID block b1 (granite_c1_claim): 0 valid runs of 10 (fewer than 8)
+    D2 VOID block b2 (olmoe_c1_claim): 0 valid runs of 10 (fewer than 8)
+    layout check (2026-11-19): block kind per group from the run, design.blocks or the id suffix; cell from env; the run id suffix disagrees in 0 of 20 scored runs (0 without a suffix)
+  claim-format blocks (descriptive; D2: valid runs only; C1 strict: uncapped = policy 4 >= 2419 and policy 7 >= 2841 in cap_before and cap_after):
+    b1 granite c1 (granite_c1_claim): valid 0 of 10, median - tok/s, below 25.0: 0, uncapped 0 of 0 (written reading, cpu 7 before >= 2419: 0); C2c block is not capped (0 capped runs); cap states [] VOID (<8 valid)
+      reference block c1 granite: C3 prediction (written for uncapped): not scored (mixed block); band read anyway: n/a
+    b2 olmoe c1 (olmoe_c1_claim): valid 0 of 10, median - tok/s, below 25.0: 0, uncapped 0 of 0 (written reading, cpu 7 before >= 2419: 0); C2c block is not capped (0 capped runs); cap states [] VOID (<8 valid)
+      reference block c1 olmoe: C3 prediction (written for uncapped): not scored (mixed block); band read anyway: n/a
+  texts per model (reported; the identity rule covers c2 cells): {'granite': ['a93b223e'], 'olmoe': ['f8a9fdc4']}
+== still open after amendment 2 (met in this scoring): 0 ==

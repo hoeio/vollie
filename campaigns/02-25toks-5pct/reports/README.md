@@ -969,6 +969,23 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   effect.
 - Rehearsal, not a claim. Session R (campaign 1 and stock references) is still to come.
 
+### R68 (session R, c1, 2026-11-19 19:09: void, power saving on)
+
+- **Date:** started 2026-11-19 19:09 local. **Label:** *device*. **Sources:**
+  [device/r28-c1_2026-11-19T1909.json](device/r28-c1_2026-11-19T1909.json) (sha256 `5facdf8a...1085855`, checked on
+  copy); scorer output [memo-33-work/score-r68-sessionR-c1-1909.txt](memo-33-work/score-r68-sessionR-c1-1909.txt)
+  (`score_r68.py`, run with `python3 -I`). Kit r28, runtime c1 (campaign 1's APK).
+- **VOID by D1/D2:** power saving read on at start, at end and in 24 of 24 runs (battery level 57 to 53 %, not
+  charging). Hashes are ok (D3). Texts: Granite `a93b223e`, OLMoE `f8a9fdc4`, the latter equal to c2's OLMoE off text.
+  Both claim blocks have 0 valid runs of 10.
+- **Descriptive only, not scored:** cap 2035/2035 in every run. c1 Granite (R49's shipped env) median 20.08 tok/s;
+  c1 OLMoE (c1_ship) median 22.66 tok/s (10 claim runs each, *device*). The Granite value is close to R49's 20.51,
+  which supports the reading that campaign 1's claim ran with power saving on, but this is not shown.
+- **Next:** the owner reruns c1 with power saving off. The stock APK install failed on the phone ("package
+  invalid"). The Hugging Face copy of `r28/vollie-r28-stock.apk` was re-downloaded and checked: sha256 `c9b156a1...`
+  matches, signature `c49dde85...`, versionCode 28 as c1, zip alignment ok. The file is intact; the likely cause is
+  the phone's download.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-28, code audit of the kit app and runtime: thread pin lost in gated runs, per-run waste](memo-28-code-audit.md);
 [memo-29, joint round (Bonnie and Ebony): TEST list T1-T11 and TRY list Y1-Y12 for Tom; working files in `memo-29-work/`](memo-29-joint-test-and-try-lists.md);
