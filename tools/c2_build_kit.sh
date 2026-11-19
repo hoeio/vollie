@@ -16,6 +16,12 @@
 #   <app copy>: app 2.3.0+45 with patches/app-c2/*.patch applied in order (APP_SERIES: the app series dirs recorded in
 #   kit_build.json, default patches/app-c2; c3 kit r29: APP_SERIES="patches/app-c2 patches/app-c3").
 #   kit r29 (c3 probe): APP_SERIES="patches/app-c2 patches/app-c3" tools/c2_build_kit.sh lab/llama.cpp-c3k lab/app-c3 patches/llama.cpp patches/llama.cpp-c1-olmoe patches/llama.cpp-c3
+#   APP_ID_SUFFIX / APP_LABEL (default unset: the .c2 app, unchanged): build a separate app beside it, e.g. the r28 stock
+#   reference after the phone refused it as an update (R68 session R): APP_ID_SUFFIX=.c2stock APP_LABEL="Vollie stock r28"
+#   RUNTIME=stock ... ; build.gradle's suffix and the manifest label are changed for the build only and restored, the
+#   kit_build.json gets "app_id", and the APK and BUILD names get -app. r28 stock app (with LIBS_FROM, step 2):
+#   LIBS_FROM=<lib/arm64-v8a of the r28-stock APK> APP_ID_SUFFIX=.c2stock APP_LABEL="Vollie stock r28" RUNTIME=stock \
+#     tools/c2_build_kit.sh lab/llama.cpp-r28stock lab/app-c2 none
 # out: lab/dist-c2/vollie-c2-<version>-research-<kit>.apk and BUILD-<kit>.txt; the app's assets/kit_build.json
 #      (llama.cpp commit, sha256 of every series patch, app patch and built library) goes into the kit's report.
 set -eu
@@ -37,8 +43,9 @@ files=$([ -z "$PATCHES" ] || cat $PATCHES | sed -n 's#^+++ b/##p' | sort -u)
 for f in $files; do cmp -s "$X/$f" "$SRC/$f" || { echo "tree differs from the series: $f"; exit 1; }; done
 rm -rf "$X"
 
-# 2. Libraries.
-sh "$R/android/build_cpu.sh" "$SRC" "$M"
+# 2. Libraries. LIBS_FROM=<dir> (default unset: build them): take both libraries from <dir> instead, e.g. unpacked from an
+#    earlier APK of the same tree, so a rebuild is byte-identical (a fresh build differs in the 20-byte ELF build-id only).
+if [ -n "${LIBS_FROM:-}" ]; then M=$(cd "$LIBS_FROM" && pwd); else sh "$R/android/build_cpu.sh" "$SRC" "$M"; fi
 J=$APP/android/app/src/main/jniLibs/arm64-v8a; B=$APP/third_party/llamadart/third_party/bin/android-arm64
 cp "$M/libggml-cpu-android_armv8.2_2.so" "$J/"; cp "$M/libllama.so" "$B/"
 
@@ -52,7 +59,17 @@ sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
     "$(sha "$M/libggml-cpu-android_armv8.2_2.so")" "$(sha "$M/libllama.so")"; } > "$APP/assets/kit_build.json"
 python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$APP/assets/kit_build.json"
 
-# 4. APK. Stale hook caches shipped an old libllama.so in campaign 1 (R39): wipe them and flutter clean.
+# 4. APK. With APP_ID_SUFFIX the app copy's gradle and manifest are swapped for this build only (restored on exit).
+G=$APP/android/app/build.gradle; MF=$APP/android/app/src/main/AndroidManifest.xml
+if [ -n "${APP_ID_SUFFIX:-}" ]; then
+  cp "$G" "$G.orig"; cp "$MF" "$MF.orig"; trap 'mv "$G.orig" "$G"; mv "$MF.orig" "$MF"' EXIT
+  sed -i '' "s/applicationIdSuffix \".c2\"/applicationIdSuffix \"$APP_ID_SUFFIX\"/" "$G"
+  sed -i '' "s/android:label=\"Vollie C2\"/android:label=\"${APP_LABEL:-Vollie $APP_ID_SUFFIX}\"/" "$MF"
+  grep -q "applicationIdSuffix \"$APP_ID_SUFFIX\"" "$G" && ! cmp -s "$MF" "$MF.orig" || { echo "app id or label swap failed"; exit 2; }
+  sed -i '' "s/^{\"kit\"/{\"app_id\": \"com.insaneutils.vollie$APP_ID_SUFFIX\", \"kit\"/" "$APP/assets/kit_build.json"
+  python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$APP/assets/kit_build.json"
+fi
+# Stale hook caches shipped an old libllama.so in campaign 1 (R39): wipe them and flutter clean.
 rm -rf "$APP/.dart_tool/hooks_runner/shared/llamadart" "$APP/.dart_tool/hooks_runner/llamadart" "$APP/.dart_tool/flutter_build"
 (cd "$APP" && flutter clean >/dev/null && LLAMADART_ALLOW_LEGACY_LOCAL_BUNDLES=1 flutter build apk --release)
 A=$APP/build/app/outputs/flutter-apk/app-release.apk; X=$(mktemp -d)
@@ -61,7 +78,7 @@ for f in "$M/libllama.so" "$M/libggml-cpu-android_armv8.2_2.so"; do
   cmp -s "$X/lib/arm64-v8a/$b" "$f" || { echo "MISMATCH: the APK's $b is not the one just built"; exit 1; }; done
 unzip -o -q "$A" assets/flutter_assets/assets/kit_build.json -d "$X"
 cmp -s "$X/assets/flutter_assets/assets/kit_build.json" "$APP/assets/kit_build.json" || { echo "MISMATCH: kit_build.json"; exit 1; }
-rm -rf "$X"; mkdir -p "$O"; N=$KIT; [ "$RT" = c2 ] || N=$KIT-$RT; D=$O/vollie-c2-$V-research-$N.apk; cp "$A" "$D"
+rm -rf "$X"; mkdir -p "$O"; N=$KIT; [ "$RT" = c2 ] || N=$KIT-$RT; [ -z "${APP_ID_SUFFIX:-}" ] || N=$N-app; D=$O/vollie-c2-$V-research-$N.apk; cp "$A" "$D"
 { echo "apk $(basename "$D") $(wc -c < "$D" | tr -d ' ') B sha256 $(sha "$D")"
   cat "$APP/assets/kit_build.json"
   unzip -l "$D" | awk '$4 ~ /^lib\/arm64-v8a\// {print $1, $4}'; } > "$O/BUILD-$N.txt"
