@@ -1,4 +1,5 @@
-# Campaign 3: tabulates a c3 probe report (kit r29, "Save c3 probe to Downloads"; patches/llama.cpp-c3/0001-probe).
+# Campaign 3: tabulates a c3 probe report (kit r29, "Save c3 probe to Downloads"; patches/llama.cpp-c3/0001-probe; and
+# 0002-d-rows: the per-block "hdr" lines (D3) and the "p2d" rows (D2)).
 # usage: python3 -I tools/c3_probe_parse.py <vollie-c3probe-r29-*.json>      python3 -I tools/c3_probe_parse.py --selftest
 # Every number it prints is *device* (from the phone's lines); the ratios are arithmetic on them. A cell whose workers did
 # not all stay on their cpu (cpu_ok < n) is marked '*' and should not be used for a claim.
@@ -20,6 +21,7 @@ def num(v):
 
 def parse(rep):
     out = {'p2': [], 'p2hot': [], 'p2col': [], 'p2col_id': None, 'x1': [], 'x2': [], 'x1gpu': [], 'p1': [], 'p1_info': {},
+           'p2d': [], 'p2d_id': None, 'hdr': [],
            'gates': [], 'errors': [], 'meta': {k: rep.get(k) for k in ('kit', 'app', 'started', 'label', 'session_label',
                                                                           'deep_sleeping_list', 'stopped_early', 'model_unloaded')}}
     for b in rep.get('blocks', []):
@@ -35,6 +37,10 @@ def parse(rep):
                 out['meta']['%s_s' % tag] = f.get('s')
             elif 'error' in f:
                 out['errors'].append('%s %s' % (tag, ' '.join('%s=%s' % kv_ for kv_ in f.items())))
+            elif tag == 'hdr':
+                out['hdr'].append((b.get('block'), line.split('c3-probe:', 1)[1].split()[1], f))
+            elif tag == 'p2d' and 'k1_keep100' in f:
+                out['p2d_id'] = f
             elif tag == 'p2col' and 'col_exact' in f:
                 out['p2col_id'] = f
             elif tag == 'p1' and 'pass' in f:
@@ -83,6 +89,18 @@ def report(p):
             v = num(d.get(k, {}).get('ns_per_touched_w'))
             if st and v:
                 L.append('  cores %s: %s / stock per touched weight = %.2f x (GB/s %s vs %s)%s' % (c, k, v / st, d[k]['gbs'], d['stock']['gbs'], okmark(d[k])))
+    if p['p2d_id']:
+        i = p['p2d_id']
+        L.append('\nD2 rows on one pinned A78 (cpu 4): identity k1 keep 1.0=%s, k1 keep 0.6=%s, y1b=%s, y1b_rows=%s (1 = bit-identical to stock)'
+                 % (i['k1_keep100'], i['k1_keep060'], i['y1b'], i['y1b_rows']))
+    if p['p2d']:
+        L.append('k = ns per touched weight / stock ns per weight (mean of stock before and after, same shape and regime); '
+                 't = k x d = time against dense stock')
+        L.append('| inputs | rows | regime | kern | keep | d | k | t vs stock | GB/s | drift | mhz (0/4/7) |')
+        L.append('|---|---|---|---|---|---|---|---|---|---|---|')
+        for f in p['p2d']:
+            L.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s%s | %s | %s |' % (f['k_in'], f['rows'], f['regime'], f['kern'], f['keep'], f['d'], f['k'],
+                     f['t_vs_stock'], f['gbs'], okmark(f), f.get('drift', ''), f.get('mhz', '')))
     L.append('\nX1 multi-stream, 3 A78')
     for f in p['x1']:
         L.append('  streams %s: %s GB/s%s' % (f['streams'], f['gbs'], okmark(f)))
@@ -101,7 +119,35 @@ def report(p):
         s = [num(f['s']) for f in fs]; g = [num(f['gbs']) for f in fs]; mf = [int(f['majflt']) for f in fs]
         L.append('| %s | %s | %d | %.3f | %.2f | %.2f | %d | %d | %s | %s | %s |' % (n, m, len(fs), statistics.median(s), statistics.median(g),
                  statistics.median(g[-5:]), sum(mf), sum(mf[-5:]), fs[-1]['cached'], fs[-1]['swapfree'], fs[-1]['vmswap']))
+    L += header(p['hdr'])
     return '\n'.join(L)
+
+
+MM_STAT = ('orig_data_size', 'compr_data_size', 'mem_used_total', 'mem_limit', 'mem_used_max', 'same_pages', 'pages_compacted',
+           'huge_pages', 'huge_pages_since')
+
+
+def header(hdr):
+    """D3: lmk properties, zram, memory and vm once (first block), PSI per block. 'e<n>' = the source gave errno n."""
+    if not hdr:
+        return []
+    L = ['\nD3 header (first block %s)' % hdr[0][0]]
+    first = [h for h in hdr if h[0] == hdr[0][0]]
+    for _, kind, f in first:
+        if kind == 'zram':
+            mm = f.get('mm_stat', '')
+            if mm and not mm.startswith('e') and mm != 'empty':
+                f = dict(f, **dict(zip(MM_STAT, mm.split(','))))
+            L.append('  zram: ' + ', '.join('%s=%s' % kv_ for kv_ in f.items()))
+        elif kind != 'psi':
+            L.append('  %s: %s' % (kind, ', '.join('%s=%s' % kv_ for kv_ in f.items())))
+    L.append('| block | psi | kind | avg10 | avg60 | avg300 | total (us) |')
+    L.append('|---|---|---|---|---|---|---|')
+    for blk, kind, f in hdr:
+        if kind == 'psi':
+            L.append('| %s | %s | %s | %s | %s | %s | %s |' % (blk, f.get('res'), f.get('kind', 'e%s' % f.get('errno')), f.get('avg10', '-'),
+                     f.get('avg60', '-'), f.get('avg300', '-'), f.get('total', '-')))
+    return L
 
 
 SELFTEST = {'kit': 'r29', 'label': 'power-save off', 'blocks': [
@@ -114,6 +160,20 @@ SELFTEST = {'kit': 'r29', 'label': 'power-save off', 'blocks': [
         'c3-probe: p2col kern=col keep=0.60 cores=4 gbs=4.00 ns_per_touched_w=0.1300 cpu_ok=1/1 mhz=1/2/3->1/2/3',
         'c3-probe: p2col kern=skip keep=0.60 cores=4 gbs=8.00 ns_per_touched_w=0.0550 cpu_ok=1/1 mhz=1/2/3->1/2/3',
         'c3-probe: p2 end s=70.1']},
+    {'block': 'p2d', 'rc': 100, 'ms': 80000, 'gate': {'timeout': False, 'series': []}, 'lines': [
+        'c3-probe: hdr props n=2 ro.lmk.low=1001 ro.lmk.use_minfree_levels=true',
+        'c3-probe: hdr zram disksize=4294967296 mm_stat=100,40,50,0,60,1,0,0 mem_used_total=e2 swaps=/dev/block/zram0,partition,4194300,1000,-2',
+        'c3-probe: hdr psi res=memory kind=some avg10=1.50 avg60=0.80 avg300=0.20 total=12345',
+        'c3-probe: hdr psi res=cpu errno=13',
+        'c3-probe: hdr mem memtotal_kb=7700000 memavail_kb=3000000 cached_kb=1000000 swaptotal_kb=4194300 swapfree_kb=4000000',
+        'c3-probe: p2d identity k1_keep100=1 k1_keep060=1 y1b=1 y1b_rows=0',
+        'c3-probe: p2d kern=stock_before k_in=4096 rows=1024 row_b=2304 regime=cold keep=1.00 d=1.000 cpu=4 ns_per_touched_w=0.1000 '
+        'stock_ns_per_w=0.1000 k=1.000 t_vs_stock=1.000 gbs=5.62 cpu_ok=1/1 mhz=1/2/3->1/2/3',
+        'c3-probe: p2d kern=k1 k_in=4096 rows=1024 row_b=2304 regime=cold keep=0.60 d=0.601 cpu=4 ns_per_touched_w=0.1800 '
+        'stock_ns_per_w=0.1000 k=1.800 t_vs_stock=1.082 gbs=3.00 cpu_ok=0/1 mhz=1/2/3->1/2/3',
+        'c3-probe: p2d kern=stock_after k_in=4096 rows=1024 row_b=2304 regime=cold keep=1.00 d=1.000 cpu=4 ns_per_touched_w=0.1000 '
+        'stock_ns_per_w=0.1000 k=1.000 t_vs_stock=1.000 drift=1.000000 gbs=5.62 cpu_ok=1/1 mhz=1/2/3->1/2/3',
+        'c3-probe: p2d end s=80.0']},
     {'block': 'x2', 'rc': -1, 'ms': 5, 'gate': {'timeout': True, 'series': [[90000, 0.8]]}, 'lines': ['c3-probe: x2 error=no_opencl']},
     {'block': 'p1', 'rc': 100, 'ms': 9000, 'gate': {'timeout': False, 'series': []}, 'lines': [
         'c3-probe: p1 free_gb=20.00 top_gb=4.6',
@@ -125,11 +185,16 @@ def selftest():
     p = parse(SELFTEST)
     assert p['p2'][0]['gbs'] == '20.50' and okmark(p['p2'][0]) == '' and okmark(p['p2'][1]) == '*'
     assert p['p2col_id']['col_exact'] == '1' and len(p['p2col']) == 3
-    assert p['errors'] == ['x2 error=no_opencl'] and p['meta']['p2_s'] == '70.1' and p['gates'][1][1] is True
+    assert p['errors'] == ['x2 error=no_opencl'] and p['meta']['p2_s'] == '70.1' and p['gates'][2][1] is True
     r = report(p)
     assert 'col / stock per touched weight = 2.60 x' in r and 'skip / stock per touched weight = 1.10 x' in r, r
     assert '| 2.7 | r | 2 | 1.575 | 9.45 |' in r and '| 600000 | 600000 |' in r, r
     assert 'a55 (cpu 0, 63 KB): 0.9000 ns/weight' in r
+    assert p['p2d_id']['y1b_rows'] == '0' and len(p['p2d']) == 3 and len(p['hdr']) == 5 and p['meta']['p2d_s'] == '80.0'
+    assert '| 4096 | 1024 | cold | k1 | 0.60 | 0.601 | 1.800 | 1.082 | 3.00* |  |' in r, r
+    assert '| 4096 | 1024 | cold | stock_after | 1.00 | 1.000 | 1.000 | 1.000 | 5.62 | 1.000000 |' in r, r
+    assert 'mem_used_total=50' in r and 'mem_used_max=60' in r and 'ro.lmk.low=1001' in r, r
+    assert '| p2d | memory | some | 1.50 | 0.80 | 0.20 | 12345 |' in r and '| p2d | cpu | e13 |' in r, r
     print('selftest ok')
 
 
