@@ -914,6 +914,37 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
     across runs, or was the baseline set before the first run?
 - **First warm-ups** were capped at 1555/1555 with power saving off (likely heat or prior use; not established).
 
+### R68 (cap probes)
+
+- **Date:** 2026-11-19, 14:00 and 14:06 local. **Label:** *device*. **Sources:**
+  [device/capprobe-r28_2026-11-19T1400.json](device/capprobe-r28_2026-11-19T1400.json) (recorded power saving off) and
+  [device/capprobe-r28_2026-11-19T1406.json](device/capprobe-r28_2026-11-19T1406.json) (power saving on); scorer
+  output [memo-33-work/score-r68-capprobes.txt](memo-33-work/score-r68-capprobes.txt).
+- *Owner, 2026-11-19:* **both probes ran with the deep-sleeping list on** (the Toss app was in deep sleep). The 14:00
+  probe's recorded label "deep-sleeping list off" is a mis-selection on the start screen; the raw file is left as it
+  is. The list state is not a factor of the cap-probe prediction, so the scored outcome is unchanged.
+- **Scored (E, P 0.65, "the cap follows power saving"): MISS.** Power saving on: max7 <= 2150 in 89 % of samples
+  (hit). Power saving off: max7 >= 2841 in 3 % of samples (miss).
+- **Lead's cross-tab of the cap against Android `thermal_status` (descriptive, unscored):**
+
+  | power saving | thermal_status | cpu 7 cap (samples) |
+  |---|---|---|
+  | off | 0 | 2841: 10, 2150: 10 |
+  | off | 1 | 1555: 223, 1670: 40, 1785: 10 |
+  | off | 2 | 1555: 50 |
+  | off | 3 | 1420: 17 |
+  | on | 0 | 2035: 244, 2841: 38, 2150: 10 |
+  | on | 1 | 1555: 50, 1670: 10, 1785: 7, 2150: 1 |
+
+  Two mechanisms: thermal status >= 1 caps policies 4 and 7 at 1420 to 1785 whatever power saving is; at status 0,
+  power saving on holds 2035/2035 (R64's value) and off allows 2419/2841. The off probe ran first and started at
+  status 3 (battery 31.2 °C, phone warm from use). Under the spin load the on probe stayed at status 0 (2035) and the
+  off probe at status 1 (1555). The kit's gate (headroom <= 0.65) does not ensure status 0: status 1 appeared at
+  headroom 0.77 to 1.0.
+- **Consequence:** memo-31's leading explanation is half right. A claim needs power saving off **and** thermal status
+  0; C1's strict uncapped rule (per-run cap before and after) already enforces it. For a later kit: record
+  `thermal_status` per run and gate on status 0 as well as headroom.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-28, code audit of the kit app and runtime: thread pin lost in gated runs, per-run waste](memo-28-code-audit.md);
 [memo-29, joint round (Bonnie and Ebony): TEST list T1-T11 and TRY list Y1-Y12 for Tom; working files in `memo-29-work/`](memo-29-joint-test-and-try-lists.md);

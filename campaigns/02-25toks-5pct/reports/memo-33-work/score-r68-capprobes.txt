@@ -1,0 +1,5 @@
+== T-A cap probes (E; P 0.65 that the cap follows power saving; 'most' = more than half of all samples; off predicts max7 >= 2841 by C1's strict reading) ==
+  capprobe-r28_2026-11-19T1400.json (started 2026-11-19T14:00:06.701110): power saving off ('power-save off', 'deep-sleeping list off'), samples 360; share of samples as predicted (max7 >= 2841): 0.03 (no load 0.06, load 0.00); written reading (>= 2419) share 0.03; max7 values [1420, 1555, 1670, 1785, 2150, 2841]: scored
+  capprobe-r28_2026-11-19T1406.json (started 2026-11-19T14:06:54.947547): power saving on ('power-save on', 'deep-sleeping list on'), samples 360; share of samples as predicted (max7 <= 2150): 0.89 (no load 0.79, load 1.00); written reading (>= 2419) share 0.11; max7 values [1555, 1670, 1785, 2035, 2150, 2841]: scored
+  prediction 'cap follows power saving': MISS (on True, off False)
+== still open after amendment 2 (met in this scoring): 0 ==
