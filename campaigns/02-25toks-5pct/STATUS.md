@@ -1,9 +1,11 @@
 # Campaign 2 status and hand-off
 
 **Read this first, update it last.** Every session appends a line to the session log below and refreshes the
-sections above it. Last updated: 2026-11-18 (retroactive prereg tags recorded).
+sections above it. Last updated: 2026-11-19 (R68 session B scored).
 
 ## State in one paragraph
+
+**As of 2026-11-19 (R68 session B, *device*, partial):** the claim-format rehearsal ran with power saving off in 72 of 72 runs and is not void. OLMoE num + touch (b5) has a median of 25.47 tok/s, 10 of 10 runs uncapped, 3 of 10 below 25.0; OLMoE off (b1) 23.03; Granite num (b2) 22.59. The go rule (median >= 25.7 and at most 2 runs below 25.0) is **missed**, provisionally until session A. Touch passes on both models (OLMoE +1.43 ± 0.94, Granite +0.76 ± 0.71 tok/s). Nice is void on both (pool threads already at -10 in every run; no contrast). 25 tok/s is **not claimed**. Details: R68 (session B) in [reports/README.md](reports/README.md).
 
 **As of 2026-11-16 (R62, *device*):** Granite skip 130 + head2 passes (+2.37 ± 0.69 tok/s; 17.65 tok/s at three threads) and is frozen; OLMoE's num arm is not shown in two rounds and its repaired head saves nothing on the phone; four threads lose on both models; every gate wait timed out in R60 and R62 and no cell is near 25. The state before a run (heat, pages) decides the number.
 
@@ -58,6 +60,8 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 (CAMPAIGN.md, decisions 9 and 10); the contact e-mail and the private path were removed from campaign-1 files.
 
 ## Next actions, in order
+
+**Update 2026-11-19 (R68 session B scored):** the owner runs, in order: the T-A cap probes (power saving on and off), session A (deep-sleeping list on), session R (campaign 1's APK, then stock). Then the final scoring of R68 (A8 over both c2 sessions) and the close of campaign 2. Tom: why did the nice restore not return the pool threads to their old value (is the pool persistent across runs, or was the baseline set before the first run)? The older updates below are otherwise unchanged.
 
 **Update 2026-11-18 (memo-31 merged):** no claim round yet ([memo-31](reports/memo-31-claim-confidence.md)). Next: Tom builds kit r28 from the memo-31 test list (T-A..T-E) and try list (Y1 b touches, worker nice -10, MASS=900 block); R68 is a rehearsal in claim format and waits on the owner's answer about power saving and the cap probe runs. Nothing below is superseded otherwise.
 
@@ -348,3 +352,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-18 | 4 (continued) | Owner sets campaign 3: a dense 7B-class model, 15 tok/s, the model file used freely, quality budget +5 %. Planning files are in [../03-dense15-5pct/](../03-dense15-5pct/CAMPAIGN.md). Campaign 2 is closed first, after R68. The campaign 3 joint feasibility round (Bonnie and Ebony) has started. Nothing measured. |
 | 2026-11-18 | 4 (continued) | R68 amendment 2 fixes the scoring readings before any data was seen. It is based on Ebony's audit ([reports/memo-33-work/ebony-r68-audit.md](reports/memo-33-work/ebony-r68-audit.md)) and uses strict uncapped thresholds (policy 4 >= 2,419 and policy 7 >= 2,841, before and after the run) and a mirror control on nice. See [prereg/R68-amendment-2.md](prereg/R68-amendment-2.md). The scoring script is in progress (Bonnie). Nothing measured yet. |
 | 2026-11-18 | 4 (continued) | R68 amendment 3 fixes the last nine scoring readings before the data arrives ([prereg/R68-amendment-3.md](prereg/R68-amendment-3.md)). The R68 scorer `score_r68.py` (Bonnie) is committed with its selftest passing on synthetic data only; nothing measured. Run it as `python3 -I campaigns/02-25toks-5pct/reports/memo-33-work/score_r68.py <json...>`. |
+| 2026-11-19 | 4 (continued) | R68 session B arrived and was scored (raw report `reports/device/r28_2026-11-18.json`, sha256 `c0b5af60…179a433d63`; scorer field-reading fix, no rule changed: `reports/memo-33-work/scorer-fix-2026-11-19.md`). All numbers *device*. No void; power saving off in 72 of 72 runs. b1 OLMoE off 23.03 (prediction of 4 to 7 runs below 25.0: MISS, 10 of 10), b2 Granite num 22.59, b5 OLMoE num + touch 25.47 (3 of 10 below 25.0; b5 minus b1 +2.44, band miss high). Go rule missed, provisional for A8. Touch PASS on both (+1.43 ± 0.94; +0.76 ± 0.71). Nice void on both: threads already at -10 in all runs, so no contrast; lead keeps B3's -10 test (alternative reading reported, not scored). All runs ran at nice -10. Open for Tom: why restore did not return the threads. Still to come: T-A cap probes, session A, session R. Rehearsal, not a claim. |

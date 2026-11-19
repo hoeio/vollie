@@ -10,6 +10,19 @@ reports, in any order. Numbers printed from a phone report are *device*; the ban
 *estimated* predictions. --selftest numbers are synthetic and mean nothing.
 Whatever the amendment leaves open is printed as "AMBIGUOUS: <item>" and scored with the most literal reading.
 The field layout follows tools/c2_research_parse.py (r28_runs, r28_checks, r28_tables); nothing is imported from the repo.
+
+Correction 2026-11-19 (Ebony; field reading only, after the first real report, session B, sha256 c0b5af60...3d63; see
+memo-33-work/scorer-fix-2026-11-19.md). No threshold, band, rule or reading of amendments 2 and 3 changed.
+  1. Runs carry block: null (only group b1..b5 and phase). The block kind is now filled per group from design.blocks
+     (by group number), else from the run id suffix (_claim -> claim, _q... -> quad). Before: no claim block and no
+     quad was found, so the claim lines, both factors and the go rule printed nothing or "MISSED" on no data.
+  2. "N runs 0" was the same bug (no quads), not the cell reading: the cell is, and was, read from env
+     (VOLLIE_TOUCH / VOLLIE_NICE); the run's spec fields touch / nice are null and are not read. A check line now
+     counts scored runs whose id suffix (_q_touch, _q_nice, _q_touch_nice) disagrees with the block or the env cell.
+     The c2-nice line (w0=tid:value:s..:f..:e..) and workers_after rows (tid, nice, priority, policy, cpu, cgroup)
+     match the real layout as written; amendment 3's "to be confirmed" is confirmed.
+  3. D3: the kit writes storage.models.<m>.present_sha256 (action: present) for a copy already in place; it is read
+     when sha256 is absent (as tools/c2_research_parse.py does). Before: VOID on a correct copy.
 """
 import base64, gzip, hashlib, json, os, re, statistics as st, sys
 
@@ -51,6 +64,7 @@ POOL_RE = re.compile(r'c2-pool run=(\S+) pool=(\d)')
 POOLW_RE = re.compile(r' w(\d+)=(-?\d+):0x')
 IO_RE = re.compile(r'c2-io run=(\S+) .*? majflt=(-?\d+)/(-?\d+)/(-?\d+)')
 SKIP_RE = re.compile(r'c2-skip-run: run=(\S+) .*?decode_pairs_skipped=([\d.]+)%')
+ID_RE = re.compile(r'_(claim|q)(_touch)?(_nice)?$')     # 2026-11-19: the run id suffix names the block kind and the quad cell
 
 AMB = []
 
@@ -227,6 +241,35 @@ def short(h):
     return f'{h[:8]}…{h[-8:]}' if isinstance(h, str) and len(h) > 16 else repr(h)
 
 
+def id_block(x):
+    m = ID_RE.search(str(x.get('id')))
+    return {'claim': 'claim', 'q': 'quad'}[m.group(1)] if m else None
+
+
+def fill_blocks(r, runs):
+    """2026-11-19: real r28 runs carry block: null. Per group: the run's own block, else design.blocks[group number - 1],
+    else the run id suffix; warm-ups (no suffix) take their group's kind."""
+    db = (r.get('design') or {}).get('blocks') or []
+    by = {}
+    for x in runs:
+        i = gkey(x.get('group')) - 1
+        b = x.get('block') or (db[i].get('block') if 0 <= i < len(db) else None) or id_block(x)
+        if b:
+            by.setdefault(x.get('group'), b)
+    for x in runs:
+        if x.get('block') is None:
+            x['block'] = by.get(x.get('group'))
+
+
+def layout_bad(x):
+    """Scored run whose id suffix disagrees with the block used or, in a quad, with the env cell (None: the id has no suffix)."""
+    m = ID_RE.search(str(x.get('id')))
+    if not m:
+        return None
+    return id_block(x) != {'ref': 'claim'}.get(x.get('block'), x.get('block')) or (
+        m.group(1) == 'q' and (bool(m.group(2)), bool(m.group(3))) != (touch_on(x), nice_on(x)))
+
+
 # --- one kit report ----------------------------------------------------------------------------------------------------
 class Session:
     def __init__(self, r, path):
@@ -235,6 +278,7 @@ class Session:
         lab = r.get('session_label')
         self.name = f'R-{self.rt}' if self.rt != 'c2' else 'A' if lab == 'deep-sleeping list on' else 'B' if lab == 'deep-sleeping list off' else '?'
         self.runs = [x for x in r.get('runs', []) if x.get('proto') == 'r28']
+        fill_blocks(r, self.runs)
         self.scored = [x for x in self.runs if x.get('phase') == 'on']
         self.models = list(dict.fromkeys(x.get('model') for x in self.runs))
         self.complete = r.get('kit') == 'r28' and not r.get('stopped_early') and len(self.scored) == N_SCORED.get(self.rt)
@@ -293,9 +337,10 @@ def void_checks(s, out):
             out.append('    ' + amb(f'model {m!r} has no hash in the pre-registration; not checked'))
             continue
         got = ((r.get('models') or {}).get(m) or {}).get('sha256_end')
-        copy = (((r.get('storage') or {}).get('models') or {}).get(m) or {}).get('sha256')
+        e = ((r.get('storage') or {}).get('models') or {}).get(m) or {}
+        copy = e.get('sha256') or e.get('present_sha256')      # 2026-11-19: present_sha256 when action = present
         out.append(f"    D3 model {m}: models.sha256_end {short(got)}: {'ok' if got == want else 'VOID (model hash differs or is missing)'}; "
-                   f"storage.models.sha256 {short(copy)}: {'ok' if copy == want else 'VOID (internal copy fails its sha256 or has none)'}")
+                   f"storage.models.{'sha256' if e.get('sha256') or 'present_sha256' not in e else 'present_sha256'} {short(copy)}: {'ok' if copy == want else 'VOID (internal copy fails its sha256 or has none)'}")
     want = LIB_SHA.get(s.rt)
     libsets = [('build', (r.get('build') or {}).get('libs') or {})] + [(x.get('run_tag'), x['libs']) for x in s.runs if x.get('libs')]
     lib_bad, seen = [], 0
@@ -324,6 +369,10 @@ def void_checks(s, out):
     for g in sorted(s.void_blocks, key=gkey):
         b = s.block(g)
         out.append(f"    D2 VOID block {g} ({b[0].get('id')}): {len(s.valid(g))} valid runs of {len(b)} (fewer than 8)")
+    lb = [layout_bad(x) for x in s.scored]
+    out.append(f"    layout check (2026-11-19): block kind per group from the run, design.blocks or the id suffix; cell from env; the run id "
+               f"suffix disagrees in {sum(1 for b in lb if b)} of {len(lb)} scored runs ({sum(1 for b in lb if b is None)} without a suffix)"
+               + ''.join(f"; {x.get('run_tag')}" for x, b in zip(s.scored, lb) if b))
     if (r.get('storage') or {}).get('used') != 'internal':
         out.append(f"    storage.used = {(r.get('storage') or {}).get('used')!r}: not the internal copies the pre-registration names")
 
@@ -1012,6 +1061,37 @@ def selftest():
     for x in quad_runs(r, 'b5'):
         x['env_set'] = x['env'] = {k: v for k, v in x['env'].items() if k != 'VOLLIE_SKIP_MASS'}
     has(score(r), 'b5 eligible for the go rule: NO: the num arm did not run in every run')
+    # 9. the real r28 layout (session B, 2026-11-18): block null in the runs, the kind in design.blocks; spec fields touch / nice null;
+    #    storage.models.<m>.present_sha256; six threads in workers_after. Same numbers as case 1.
+    def real(r, design=True):
+        if design:
+            r['design'] = {'blocks': [{'model': m, 'block': b, 'arm': a} for m, b, a in (
+                ('olmoe', 'claim', 'off'), ('granite', 'claim', 'num'), ('olmoe', 'quad', 'off'), ('granite', 'quad', 'num'), ('olmoe', 'claim', 'num'))]}
+        for x in r['runs']:
+            x['block'] = x['touch'] = x['nice'] = None
+            x['workers_after'] += [[900 + k, x['workers_after'][0][1], 10, 0, 4, '0::/'] for k in range(3)]
+        r['storage']['models'] = {m: {'present_sha256': h, 'hash_ms': 6000, 'action': 'present'} for m, h in MODEL_SHA.items()}
+        return r
+    for design in (True, False):                      # False: the id suffix alone
+        t = score(real(synth(), design))
+        has(t, 'b1 olmoe off (olmoe_off_claim): valid 10 of 10, median 24.60 tok/s, below 25.0: 10, uncapped 10 of 10', 'not capped')
+        has(t, 'b2 granite num (granite_num_claim): valid 10 of 10, median 23.40 tok/s')
+        has(t, 'C5 b5 median minus b1 median', '= +2.10 tok/s: MISS (0.4 to 1.6)')
+        has(t, 'B1/B2 nice permission', 'N runs 16', ': permitted;')
+        has(t, 'A5 touch (T - t), tok/s paired per quad: +0.40 ± 0.00 (n 4 quads)')
+        has(t, 'A6 end pass', '18 of 18: prediction hit')
+        has(t, 'VERDICT nice, olmoe, session B: PASS (tok/s positive beyond 2 x SE)')
+        has(t, 'D3 model olmoe', 'storage.models.present_sha256 5abf710b…8e444abb: ok')
+        has(t, 'layout check', 'disagrees in 0 of 62 scored runs (0 without a suffix)')
+        has(t, 'VERDICT go rule: session B part met by b5; session A pending')
+        assert not any('VOID' in l for l in t), [l for l in t if 'VOID' in l]
+    r = real(synth())                                 # a wrong present_sha256 still voids; an id that contradicts env is listed
+    r['storage']['models']['granite']['present_sha256'] = '0' * 64
+    x = next(x for x in quad_runs(r, 'b3') if nice_on(x) and not touch_on(x))
+    x['id'] = 'olmoe_off_q_touch'
+    t = score(r)
+    has(t, 'D3 model granite', 'VOID (internal copy fails its sha256 or has none)')
+    has(t, 'layout check', 'disagrees in 1 of 62 scored runs', x['run_tag'])
     # 8. the compressed form loads
     with tempfile.TemporaryDirectory() as d:
         p = os.path.join(d, 'z.json')

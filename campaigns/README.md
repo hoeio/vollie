@@ -7,7 +7,7 @@ added beside it.
 | # | goal | status | where |
 |---|---|---|---|
 | 1 | 20 tok/s on a Snapdragon 888 phone, one frozen 7B MoE file (Granite-4.0-H-Tiny), runtime only, quality budget +2 % | **done**: median 20.51 tok/s (*device*, R49). Frozen at commit `686f17d` | the repository root as it is: [README](../README.md), [RULES.md](../RULES.md), [reports/](../reports/README.md), [patches/](../patches/README.md), [models/](../models/) |
-| 2 | 25 tok/s on the same phone, a 7B-class model, runtime only, quality budget +5 % | **in progress**: device rounds R52 to R68, 25 tok/s not claimed (R67 OLMoE scored-run median 25.03, *device*, not a claim; R68 rehearsal awaits its report); see [STATUS.md](02-25toks-5pct/STATUS.md) (corrected 2026-11-17, was "planning") | [02-25toks-5pct/](02-25toks-5pct/CAMPAIGN.md) |
+| 2 | 25 tok/s on the same phone, a 7B-class model, runtime only, quality budget +5 % | **in progress**: device rounds R52 to R68, 25 tok/s not claimed (R67 OLMoE scored-run median 25.03, *device*, not a claim; R68 session B is in: b5 median 25.47 tok/s, *device*, rehearsal, not a claim; go rule missed; sessions A and R pending); see [STATUS.md](02-25toks-5pct/STATUS.md) (corrected 2026-11-17, was "planning") | [02-25toks-5pct/](02-25toks-5pct/CAMPAIGN.md) |
 | 3 | 15 tok/s on the same phone, a **dense** 7B-class model, file not changed (used freely), quality budget +5 % | **research**: host screens done (memo-02); R69 device probe pre-registered 2026-11-19, not run; 15 tok/s out of reach by the arithmetic (*estimated*, memo-01) | [03-dense15-5pct/](03-dense15-5pct/CAMPAIGN.md) |
 
 ## Principles shared by every campaign

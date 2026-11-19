@@ -874,6 +874,46 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   Kit r28 is three APKs (c2, c1, stock); their hashes are in the pre-registration. Sessions A, B and R and the T-A
   probes are described there; no result exists yet. Memo: [memo-32](memo-32-kit-r28.md).
 
+### R68 (session B of A/B/R; partial)
+
+- **Date:** session started 2026-11-18 21:02 local; scored 2026-11-19. **Label:** *device*. Pre-registration:
+  [prereg/R68-rehearsal-touch-nice-references-device.md](../prereg/R68-rehearsal-touch-nice-references-device.md)
+  with [amendment 1](../prereg/R68-amendment-1.md), [2](../prereg/R68-amendment-2.md) and
+  [3](../prereg/R68-amendment-3.md). **Source:** [device/r28_2026-11-18.json](device/r28_2026-11-18.json) (sha256
+  `c0b5af60c548aff2a5e222979b1e494653c78f7ae96031b47df59f179a433d63`), scored with
+  [memo-33-work/score_r68.py](memo-33-work/score_r68.py); output in
+  [memo-33-work/score-r68-sessionB.txt](memo-33-work/score-r68-sessionB.txt). The scorer needed a field-reading fix
+  against the real report layout, no rule changed:
+  [memo-33-work/scorer-fix-2026-11-19.md](memo-33-work/scorer-fix-2026-11-19.md). This is session B only (c2 APK,
+  deep-sleeping list off). **Still to come:** the T-A cap probes (power saving on and off), session A (list on),
+  session R (c1, then stock).
+- **Validity (D1 to D4):** no void; power saving off in 72 of 72 runs; texts identical per model and arm.
+- **Claim-format blocks (10 runs each; all uncapped by the strict reading unless noted):**
+  - **b1 OLMoE off:** median 23.03 tok/s, in the band 23.0 to 25.4; 9 of 10 uncapped (run 1 capped, 2150 to 1785);
+    all 10 runs below 25.0, prediction 4 to 7 below 25.0: **MISS**.
+  - **b2 Granite num:** median 22.59 tok/s, in the band (22.5 to 24.5); 10 of 10 uncapped.
+  - **b5 OLMoE num (MASS=900 + HEAD2=1024) + touch (+ nice, see below):** median **25.47 tok/s**, 10 of 10 uncapped,
+    3 runs below 25.0 (23.22, 23.52, 24.20). b5 minus b1 = +2.44 tok/s (band +0.4 to +1.6): **MISS, high**.
+    Position is confounded (b5 last, b1 first).
+- **Go rule: MISSED** (needs median >= 25.7 and at most 2 runs below 25.0; here 25.47 and 3). Session A is still
+  to come, so this is provisional for A8. Rehearsal, **not a claim**.
+- **Touch (T minus t, paired over 4 quads):**
+  - **OLMoE: PASS**, +1.43 ± 0.94 tok/s. Wanted MB missing at run start: median T 0 against t 1756 (-100 %, beyond
+    the -90 % band edge: band **miss**, rule pass).
+  - **Granite: PASS**, +0.76 ± 0.71 tok/s; missing T 0 against t 867 (same band miss).
+  - A6 (end pass) holds in 18 of 18 (OLMoE) and 8 of 8 (Granite) gated T runs.
+- **Nice:** the set is permitted (read-back -10; prediction **hit**), but the factor is **VOID on both models**
+  under B3 as adopted. Every pool thread already read -10 in all 72 runs, including the first warm-up, and all
+  `c2-nice` lines show zero sets, so N and n had no contrast (0 whole quads, fewer than 3).
+  - **Lead's decision, 2026-11-19:** B3's adopted -10 test stands. The alternative "first value" reading is
+    reported, not scored: N minus n would read -0.45 ± 0.58 (OLMoE) and -0.51 ± 0.13 (Granite) tok/s on a factor
+    with no physical contrast.
+  - **Consequence:** every run of this session ran with pool threads at -10. b5 measures num + touch at nice -10,
+    and so do b1 and b2.
+  - **Open question for Tom:** why restore did not return the threads to their old value. Is the pool persistent
+    across runs, or was the baseline set before the first run?
+- **First warm-ups** were capped at 1555/1555 with power saving off (likely heat or prior use; not established).
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-28, code audit of the kit app and runtime: thread pin lost in gated runs, per-run waste](memo-28-code-audit.md);
 [memo-29, joint round (Bonnie and Ebony): TEST list T1-T11 and TRY list Y1-Y12 for Tom; working files in `memo-29-work/`](memo-29-joint-test-and-try-lists.md);
