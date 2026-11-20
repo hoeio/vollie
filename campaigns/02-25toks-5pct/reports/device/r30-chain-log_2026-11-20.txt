@@ -1,0 +1,88 @@
+2026-11-20T20:59:58.090972 chain start: deep-sleeping list on, plan [(c2, c2), (cool, ), (c1, c1), (stock, stock)], test plan false
+2026-11-20T20:59:58.096025 segment 0 c2 start (attempt 1), process runtime {active: c2, stored: c2, preload: null, cpuModule: null, nativeLibraryDir: /data/app/~~SOiLGJu9WAm3fbaBtNKhkA==/com.insaneutils.vollie.c2-2NsO0Lc95RCG5aTw_p2KPg==/lib/arm64}
+2026-11-20T20:59:58.100766 segment 0 start: battery 100 %, plugged false, power-save off
+2026-11-20T21:00:59.218353 run olmoe_off_wu.0: battery 99 %, plugged false, power-save false, tok/s 17.79069420436572
+2026-11-20T21:00:59.220569 mapped (maps + sha256) at olmoe_off_wu.0: {"runtime":"c2","ok":true,"want":{"libllama.so":"126bfb4f04ec7fff1135cf6e7c1c65e191556aad695c52f718e0e3a645d9ede8","libggml-cpu-android_armv8.2_2.so":"6f1d859a962f473c7f7b5d1547a2530157a3ca98bbe046524bce3d90b4e3d28e"},"mapped":{"libggml-cpu-android_armv8.2_2.so":"6f1d859a962f473c7f7b5d1547a2530157a3ca98bbe046524bce3d90b4e3d28e","libllama.so":"126bfb4f04ec7fff1135cf6e7c1c65e191556aad695c52f718e0e3a645d9ede8"}}
+2026-11-20T21:01:06.366858 run olmoe_off_wu.1: battery 99 %, plugged false, power-save false, tok/s 19.786093184839768
+2026-11-20T21:02:43.811632 run olmoe_off_claim.0: battery 99 %, plugged false, power-save false, tok/s 25.51413030148649
+2026-11-20T21:04:19.779728 run olmoe_off_claim.1: battery 98 %, plugged false, power-save false, tok/s 25.50963729410225
+2026-11-20T21:05:55.648793 run olmoe_off_claim.2: battery 98 %, plugged false, power-save false, tok/s 25.525516871131547
+2026-11-20T21:07:01.396350 run olmoe_off_claim.3: battery 98 %, plugged false, power-save false, tok/s 25.25982994430615
+2026-11-20T21:07:51.973981 run olmoe_off_claim.4: battery 97 %, plugged false, power-save false, tok/s 25.468852825358432
+2026-11-20T21:08:37.601838 run olmoe_off_claim.5: battery 97 %, plugged false, power-save false, tok/s 25.554996826234266
+2026-11-20T21:08:43.087539 run olmoe_off_claim.6: battery 97 %, plugged false, power-save false, tok/s 25.583130318815318
+2026-11-20T21:09:58.852080 run olmoe_off_claim.7: battery 97 %, plugged false, power-save false, tok/s 25.61344193432714
+2026-11-20T21:10:39.351745 run olmoe_off_claim.8: battery 97 %, plugged false, power-save false, tok/s 25.540511370470885
+2026-11-20T21:11:30.017690 run olmoe_off_claim.9: battery 97 %, plugged false, power-save false, tok/s 25.628497566532822
+2026-11-20T21:11:41.649221 run granite_num_wu.0: battery 97 %, plugged false, power-save false, tok/s 23.000257454494733
+2026-11-20T21:11:41.649721 mapped (maps + sha256) at granite_num_wu.0: {"runtime":"c2","ok":true,"want":{"libllama.so":"126bfb4f04ec7fff1135cf6e7c1c65e191556aad695c52f718e0e3a645d9ede8","libggml-cpu-android_armv8.2_2.so":"6f1d859a962f473c7f7b5d1547a2530157a3ca98bbe046524bce3d90b4e3d28e"},"mapped":{"libggml-cpu-android_armv8.2_2.so":"6f1d859a962f473c7f7b5d1547a2530157a3ca98bbe046524bce3d90b4e3d28e","libllama.so":"126bfb4f04ec7fff1135cf6e7c1c65e191556aad695c52f718e0e3a645d9ede8"}}
+2026-11-20T21:11:46.973857 run granite_num_wu.1: battery 97 %, plugged false, power-save false, tok/s 23.72270454136742
+2026-11-20T21:13:27.956025 run granite_num_claim.0: battery 96 %, plugged false, power-save false, tok/s 23.541901927474235
+2026-11-20T21:15:03.794308 run granite_num_claim.1: battery 96 %, plugged false, power-save false, tok/s 23.731476051878538
+2026-11-20T21:16:26.407139 run granite_num_claim.2: battery 96 %, plugged false, power-save false, tok/s 23.858248142712345
+2026-11-20T21:17:06.880088 run granite_num_claim.3: battery 96 %, plugged false, power-save false, tok/s 23.851162590297807
+2026-11-20T21:17:12.235389 run granite_num_claim.4: battery 96 %, plugged false, power-save false, tok/s 23.843439362287988
+2026-11-20T21:18:17.910092 run granite_num_claim.5: battery 96 %, plugged false, power-save false, tok/s 23.851603020074588
+2026-11-20T21:18:23.325715 run granite_num_claim.6: battery 96 %, plugged false, power-save false, tok/s 23.60049089021052
+2026-11-20T21:19:18.982963 run granite_num_claim.7: battery 95 %, plugged false, power-save false, tok/s 23.899633873028186
+2026-11-20T21:20:54.764571 run granite_num_claim.8: battery 95 %, plugged false, power-save false, tok/s 23.778786714254924
+2026-11-20T21:21:42.299943 run granite_num_claim.9: battery 95 %, plugged false, power-save false, tok/s 23.741054026214716
+2026-11-20T21:21:56.369608 run olmoe_off_wu.2: battery 95 %, plugged false, power-save false, tok/s 22.476553691773944
+2026-11-20T21:21:56.370172 mapped (maps + sha256) at olmoe_off_wu.2: {"runtime":"c2","ok":true,"want":{"libllama.so":"126bfb4f04ec7fff1135cf6e7c1c65e191556aad695c52f718e0e3a645d9ede8","libggml-cpu-android_armv8.2_2.so":"6f1d859a962f473c7f7b5d1547a2530157a3ca98bbe046524bce3d90b4e3d28e"},"mapped":{"libggml-cpu-android_armv8.2_2.so":"6f1d859a962f473c7f7b5d1547a2530157a3ca98bbe046524bce3d90b4e3d28e","libllama.so":"126bfb4f04ec7fff1135cf6e7c1c65e191556aad695c52f718e0e3a645d9ede8"}}
+2026-11-20T21:22:01.883757 run olmoe_off_wu.3: battery 95 %, plugged false, power-save false, tok/s 24.17289703593496
+2026-11-20T21:23:39.124955 run olmoe_off_q_touch_nice.0: battery 94 %, plugged false, power-save false, tok/s 25.609506248719523
+2026-11-20T21:25:15.000046 run olmoe_off_q.0: battery 94 %, plugged false, power-save false, tok/s 25.616151065879784
+2026-11-20T21:26:00.575111 run olmoe_off_q_nice.0: battery 94 %, plugged false, power-save false, tok/s 25.527744953123648
+2026-11-20T21:26:41.368153 run olmoe_off_q_touch.0: battery 94 %, plugged false, power-save false, tok/s 25.50858775406759
+2026-11-20T21:27:21.944438 run olmoe_off_q.1: battery 94 %, plugged false, power-save false, tok/s 25.569414361432745
+2026-11-20T21:28:07.770542 run olmoe_off_q_touch.1: battery 94 %, plugged false, power-save false, tok/s 25.59178949349721
+2026-11-20T21:28:13.519977 run olmoe_off_q_touch_nice.1: battery 94 %, plugged false, power-save false, tok/s 25.611600898554105
+2026-11-20T21:28:59.172044 run olmoe_off_q_nice.1: battery 94 %, plugged false, power-save false, tok/s 25.552721859446837
+2026-11-20T21:29:04.870389 run olmoe_off_q_touch.2: battery 94 %, plugged false, power-save false, tok/s 25.61280706450792
+2026-11-20T21:30:40.828684 run olmoe_off_q_nice.2: battery 93 %, plugged false, power-save false, tok/s 25.540132610959517
+2026-11-20T21:31:21.449968 run olmoe_off_q.2: battery 93 %, plugged false, power-save false, tok/s 25.58781821753608
+2026-11-20T21:31:57.273993 run olmoe_off_q_touch_nice.2: battery 93 %, plugged false, power-save false, tok/s 25.557314338477774
+2026-11-20T21:32:02.771986 run olmoe_off_q_nice.3: battery 93 %, plugged false, power-save false, tok/s 25.59504347854805
+2026-11-20T21:32:58.805195 run olmoe_off_q_touch_nice.3: battery 93 %, plugged false, power-save false, tok/s 25.61532556665645
+2026-11-20T21:33:04.560540 run olmoe_off_q_touch.3: battery 93 %, plugged false, power-save false, tok/s 25.536177349575443
+2026-11-20T21:34:40.631722 run olmoe_off_q.3: battery 93 %, plugged false, power-save false, tok/s 25.57428711674662
+2026-11-20T21:34:54.359638 run granite_num_wu.2: battery 92 %, plugged false, power-save false, tok/s 21.4977257486583
+2026-11-20T21:34:54.361236 mapped (maps + sha256) at granite_num_wu.2: {"runtime":"c2","ok":true,"want":{"libllama.so":"126bfb4f04ec7fff1135cf6e7c1c65e191556aad695c52f718e0e3a645d9ede8","libggml-cpu-android_armv8.2_2.so":"6f1d859a962f473c7f7b5d1547a2530157a3ca98bbe046524bce3d90b4e3d28e"},"mapped":{"libggml-cpu-android_armv8.2_2.so":"6f1d859a962f473c7f7b5d1547a2530157a3ca98bbe046524bce3d90b4e3d28e","libllama.so":"126bfb4f04ec7fff1135cf6e7c1c65e191556aad695c52f718e0e3a645d9ede8"}}
+2026-11-20T21:34:59.696688 run granite_num_wu.3: battery 92 %, plugged false, power-save false, tok/s 23.743817990614296
+2026-11-20T21:36:37.458541 run granite_num_q_touch.0: battery 92 %, plugged false, power-save false, tok/s 20.308984825912695
+2026-11-20T21:38:13.721215 run granite_num_q_nice.0: battery 92 %, plugged false, power-save false, tok/s 23.570702984811344
+2026-11-20T21:39:52.885769 run granite_num_q.0: battery 92 %, plugged false, power-save false, tok/s 23.719237679003733
+2026-11-20T21:40:38.704884 run granite_num_q_touch_nice.0: battery 91 %, plugged false, power-save false, tok/s 23.802704755089362
+2026-11-20T21:40:44.121280 run granite_num_q_nice.1: battery 91 %, plugged false, power-save false, tok/s 23.800767613143858
+2026-11-20T21:41:40.090373 run granite_num_q_touch_nice.1: battery 91 %, plugged false, power-save false, tok/s 23.87575978829133
+2026-11-20T21:42:30.935178 run granite_num_q_touch.1: battery 91 %, plugged false, power-save false, tok/s 23.79256566748124
+2026-11-20T21:43:41.889662 run granite_num_q.1: battery 91 %, plugged false, power-save false, tok/s 23.555694019133302
+2026-11-20T21:44:27.662715 run granite_num_q_touch_nice.2: battery 91 %, plugged false, power-save false, tok/s 23.77709054316079
+2026-11-20T21:44:33.107697 run granite_num_q.2: battery 91 %, plugged false, power-save false, tok/s 23.725137395331963
+2026-11-20T21:45:18.675768 run granite_num_q_nice.2: battery 91 %, plugged false, power-save false, tok/s 23.582555299190357
+2026-11-20T21:45:24.389648 run granite_num_q_touch.2: battery 90 %, plugged false, power-save false, tok/s 23.74801972158128
+2026-11-20T21:47:00.199681 run granite_num_q.3: battery 90 %, plugged false, power-save false, tok/s 23.689113247716293
+2026-11-20T21:47:50.977890 run granite_num_q_touch.3: battery 90 %, plugged false, power-save false, tok/s 23.804130400562084
+2026-11-20T21:48:41.806324 run granite_num_q_touch_nice.3: battery 90 %, plugged false, power-save false, tok/s 23.805263727766075
+2026-11-20T21:49:27.476082 run granite_num_q_nice.3: battery 90 %, plugged false, power-save false, tok/s 23.729550485766865
+2026-11-20T21:49:38.559443 run olmoe_num_wu.0: battery 90 %, plugged false, power-save false, tok/s 26.820669218956155
+2026-11-20T21:49:38.560098 mapped (maps + sha256) at olmoe_num_wu.0: {"runtime":"c2","ok":true,"want":{"libllama.so":"126bfb4f04ec7fff1135cf6e7c1c65e191556aad695c52f718e0e3a645d9ede8","libggml-cpu-android_armv8.2_2.so":"6f1d859a962f473c7f7b5d1547a2530157a3ca98bbe046524bce3d90b4e3d28e"},"mapped":{"libggml-cpu-android_armv8.2_2.so":"6f1d859a962f473c7f7b5d1547a2530157a3ca98bbe046524bce3d90b4e3d28e","libllama.so":"126bfb4f04ec7fff1135cf6e7c1c65e191556aad695c52f718e0e3a645d9ede8"}}
+2026-11-20T21:49:43.448929 run olmoe_num_wu.1: battery 90 %, plugged false, power-save false, tok/s 28.62805142706219
+2026-11-20T21:51:20.170262 run olmoe_num_claim.0: battery 89 %, plugged false, power-save false, tok/s 28.567163243829032
+2026-11-20T21:52:56.077848 run olmoe_num_claim.1: battery 89 %, plugged false, power-save false, tok/s 27.450924830512676
+2026-11-20T21:53:41.413189 run olmoe_num_claim.2: battery 89 %, plugged false, power-save false, tok/s 28.4126060317213
+2026-11-20T21:54:26.831582 run olmoe_num_claim.3: battery 89 %, plugged false, power-save false, tok/s 28.574878625898613
+2026-11-20T21:54:32.092791 run olmoe_num_claim.4: battery 89 %, plugged false, power-save false, tok/s 28.618537057312775
+2026-11-20T21:55:52.720192 run olmoe_num_claim.5: battery 89 %, plugged false, power-save false, tok/s 28.59335453545945
+2026-11-20T21:57:08.442075 run olmoe_num_claim.6: battery 89 %, plugged false, power-save false, tok/s 27.52013408519523
+2026-11-20T21:57:13.724080 run olmoe_num_claim.7: battery 89 %, plugged false, power-save false, tok/s 28.486886842734005
+2026-11-20T21:57:59.090911 run olmoe_num_claim.8: battery 88 %, plugged false, power-save false, tok/s 28.44757021043861
+2026-11-20T21:58:04.307166 run olmoe_num_claim.9: battery 88 %, plugged false, power-save false, tok/s 28.478067753916424
+2026-11-20T21:58:20.658255 segment 0 c2 done in 3502 s: /storage/emulated/0/Android/data/com.insaneutils.vollie.c2/files/r30-chain-0-c2-c2-2026-11-20T2059.json
+2026-11-20T21:58:20.661038 segment 1 cool start (attempt 1), process runtime {active: c2, stored: c2, preload: null, cpuModule: null, nativeLibraryDir: /data/app/~~SOiLGJu9WAm3fbaBtNKhkA==/com.insaneutils.vollie.c2-2NsO0Lc95RCG5aTw_p2KPg==/lib/arm64}
+2026-11-20T21:58:20.665548 segment 1 start: battery 88 %, plugged false, power-save off
+2026-11-20T21:58:20.665969 cool-down 1800 s start (no model run)
+2026-11-20T22:29:49.259284 cool-down end (complete), 61 samples: /data/user/0/com.insaneutils.vollie.c2/files/r30-chain-1-cool-2026-11-20T2158.json
+2026-11-20T22:29:49.265334 segment 1 cool done in 1888 s: /data/user/0/com.insaneutils.vollie.c2/files/r30-chain-1-cool-2026-11-20T2158.json
+2026-11-20T22:29:49.270876 restart into c1 for segment 2 (this process: {active: c2, stored: c2, preload: null, cpuModule: null, nativeLibraryDir: /data/app/~~SOiLGJu9WAm3fbaBtNKhkA==/com.insaneutils.vollie.c2-2NsO0Lc95RCG5aTw_p2KPg==/lib/arm64})
+2026-11-20T23:18:35.419117 CHAIN STOPPED: restart into c1 did not happen within 30 s
