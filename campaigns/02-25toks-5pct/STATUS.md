@@ -1,9 +1,11 @@
 # Campaign 2 status and hand-off
 
 **Read this first, update it last.** Every session appends a line to the session log below and refreshes the
-sections above it. Last updated: 2026-11-19 (R68 session R, c1 run, void).
+sections above it. Last updated: 2026-11-20 (kit r30 built, R71 pre-registered).
 
 ## State in one paragraph
+
+**As of 2026-11-20:** at the owner's request, kit r30 is one APK (versionCode 30, installs over r28-c1) that holds the c2, c1 and stock runtimes (libraries byte-identical to R68 §0, chosen per process, hash-checked per load) and runs R68 unattended: c2 b1-b5, 30 min cool-down, c1, stock (app patch 0013; emulator chain test passed, nothing run on the phone). R71 pre-registers the re-run ([prereg](prereg/R71-r68-rerun-one-app-unattended-device.md)). Waiting on the owner: the HF write token for the `r30/` upload, then the run.
 
 **As of 2026-11-19 (R68 sessions A and B, *device*):** session A (deep-sleeping list on) is in: power saving off in 72 of 72 runs, no void. OLMoE num + touch (b5) median 27.25 tok/s, 0 of 10 below 25.0 (session B, list off: 25.47, 3 of 10 below); b1 OLMoE off 25.20 (A) / 23.03 (B); Granite num 23.27 (A) / 22.59 (B). Rehearsal, not a claim. **Go rule missed**: it reads session B (b5 25.47 < 25.7, 3 below 25.0), and b5 is ineligible anyway (A6 failed in 2 of 18 OLMoE T runs in session A). Touch PASS on both models in both sessions; nice VOID in both (no contrast). Session A ran faster than B on every block (b1 +2.17, b2 +0.68, b5 +1.78 tok/s), but the sessions differ in day and phone state, so this is not a controlled list effect (lead, unscored). *Session R, c1 run (2026-11-19 19:09, *device*): VOID, power saving on in 24 of 24 runs; descriptive only: c1 Granite median 20.08 tok/s, c1 OLMoE 22.66 (R68, session R). The owner reruns c1 with power saving off; the stock APK install failed on the phone ("package invalid"), the Hugging Face file checks out, so the cause is likely the phone's download.* Still to come: session R rerun (c1, power saving off) and stock, then the close. Details: R68 (session A; sessions A and B together) in [reports/README.md](reports/README.md).
 
@@ -49,7 +51,9 @@ there ([reports/memo-02-lever-applicability.md](reports/memo-02-lever-applicabil
 
 ## Open decisions (need the owner)
 
-**Open (2026-11-19):** may a claim round run with the deep-sleeping list on? R68's go rule read session B (list off) as the strict state and missed; session A (list on) gave b5 27.25 tok/s (*device*, rehearsal), but a claim with the list on is a bench condition the owner has not yet ruled on.
+**Open (2026-11-20):** R70 names the unchanged r28 c2 APK at versionCode 28; once r30 (30) is installed it is a downgrade. Either R70 runs on r30's c2 runtime by amendment (libraries identical, kit code differs; lead recommends) or the owner uninstalls before R70 (the internal model copies are lost).
+
+*Answered 2026-11-19 (R70): a claim round may run with the list on. The question below is kept as it was asked:* may a claim round run with the deep-sleeping list on? R68's go rule read session B (list off) as the strict state and missed; session A (list on) gave b5 27.25 tok/s (*device*, rehearsal), but a claim with the list on is a bench condition the owner has not yet ruled on.
 
 Otherwise none. (2026-11-15, answered: option (a). R61, *host*: on a KleidiAI build stock is OLMoE
 11.7132 / 11.7159 and Granite 9.2795 / 9.2732 (`-b 512` / `-ub 1`); both num settings are inside the existing
@@ -64,6 +68,8 @@ Answered 2026-11-13: push to `main` directly, no PR; the publisher's Q4_0 is a s
 (CAMPAIGN.md, decisions 9 and 10); the contact e-mail and the private path were removed from campaign-1 files.
 
 ## Next actions, in order
+
+**Update 2026-11-20 (kit r30):** push R71, upload `r30/` to HF (token from the owner), the owner runs Auto once (battery ≥ 60 %, power saving off, list on, 30 min rest), sends every `vollie-r30-*` file; score S1 with `score_r68.py`, S2/S3 descriptively. The owner's answer on R70 and versionCode decides R70's amendment. Campaign 3's next kit is r31 (r30 is taken).
 
 **Update 2026-11-19 (R68 session B scored):** the owner runs, in order: the T-A cap probes (power saving on and off), session A (deep-sleeping list on), session R (campaign 1's APK, then stock). Then the final scoring of R68 (A8 over both c2 sessions) and the close of campaign 2. Tom: why did the nice restore not return the pool threads to their old value (is the pool persistent across runs, or was the baseline set before the first run)? The older updates below are otherwise unchanged.
 
@@ -360,3 +366,4 @@ earlier "no on OLMoE" reading is withdrawn until OLMoE has been measured in the 
 | 2026-11-19 | 4 (continued) | R68 cap probes in (*device*, `reports/device/capprobe-r28_2026-11-19T1400.json` and `T1406.json`). Prediction "cap follows power saving" MISS: on 89 % <= 2150 (hit), off 3 % >= 2841 (miss). Cap also follows thermal_status: status >= 1 caps at 1420 to 1785 whatever power saving; at status 0, on = 2035, off = 2419/2841. Owner: both probes ran with the deep-sleeping list on (14:00 label 'off' is a mis-selection; Toss in deep sleep). Still to come: session A, session R. |
 | 2026-11-19 | 4 (continued) | R68 session A arrived and was scored (raw report `reports/device/r28_2026-11-19.json`, sha256 `54af112b...f23fba4`; scorer output `reports/memo-33-work/score-r68-sessionsAB.txt`). All numbers *device*. List on; power saving off in 72 of 72; no void; texts identical. b1 25.20 (4 of 10 below 25.0: hit), b2 23.27, b5 27.25 (0 of 10 below; b5 minus b1 +2.05, band miss high). Touch PASS (OLMoE +0.14 ± 0.28, Granite +0.54 ± 0.57); A6 failed in 2 of 18 OLMoE T runs, so b5 is ineligible under C5. A8: touch PASS both models; nice VOID both sessions. Go rule MISSED (reads session B). Open owner decision: claim round with the list on. Still to come: session R, then the close. Rehearsal, not a claim. |
 | 2026-11-19 | 4 (continued) | R68 session R, c1 APK, arrived and was scored (raw report `reports/device/r28-c1_2026-11-19T1909.json`, sha256 `5facdf8a...1085855`; scorer output `reports/memo-33-work/score-r68-sessionR-c1-1909.txt`). All numbers *device*. VOID by D1/D2: power saving on at start, at end and in 24 of 24 runs. Descriptive only: cap 2035/2035; c1 Granite median 20.08 tok/s (near R49's 20.51), c1 OLMoE 22.66. Owner reruns c1 with power saving off. Stock APK install failed on the phone ("package invalid"); the HF copy re-checked intact (sha256 `c9b156a1...`, versionCode 28, alignment ok). |
+| 2026-11-20 | 5 | Owner asks for one app re-running all of R68, as an update over c1, unattended. Tom builds kit r30 (app patch 0013, sha256 `fd0d6b78…`; APK `5459fc67…`): three runtimes in one APK, byte-identical to r28's (lead re-checked), per-process choice by preloaded libllama + `VOLLIE_CPU_MODULE`, chain c2 → cool 30 min → c1 → stock with resume and stops (battery < 15 %, hash mismatch, power saving). Emulator: chain, restarts, resume after kill and stops work (*host*, no speed). R71 pre-registered. Open: R70 vs versionCode 30. |

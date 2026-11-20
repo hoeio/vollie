@@ -235,3 +235,31 @@ fields: `campaigns/02-25toks-5pct/reports/memo-32-kit-r28.md`.
   session label (deep-sleeping list, required before the kit or the probe can start), power-save state at start and end
   (read only, warning when on), and T-A's cap probe (`capProbe`, six minutes, no model run, its own report and "Save cap
   probe to Downloads"). Kotlin: a read-only `powerState` channel method.
+
+## 0013-kit-r30.patch (on top of 0012)
+
+Kit r30 (version 1.30.0+30, owner 2026-11-20): one APK that re-runs all of R68, unattended. Same package
+(`com.insaneutils.vollie.c2`) and debug key: installs as an update over r28 / r28-c1 / r29 and keeps the internal model
+copies. Built with `tools/c2_build_kit.sh` and `LIBS_FROM` (r28's c2 libraries) plus `EXTRA_RUNTIMES` (r28-c1's and
+r28-stock's `libllama.so` and CPU module, byte-identical, packed as `libllama_rt_<rt>.so` and `libggml_cpu_rt_<rt>.so`).
+
+- **Runtime per process** (`MainActivity.preloadRuntime`, before Flutter starts): the stored choice (default c2). For c1 /
+  stock, `System.loadLibrary("llama_rt_<rt>")` first (SONAME `libllama.so`, so libllamadart's DT_NEEDED and Dart's opens by
+  name resolve to it) and `VOLLIE_CPU_MODULE=libggml_cpu_rt_<rt>.so`. c2 sets nothing: r28's loading path as it was.
+- **llamadart** (`llama_cpp_service.dart`): with `VOLLIE_CPU_MODULE` set, the CPU backend candidates are exactly that file
+  and `GpuBackend.auto` skips `ggml_backend_load_all_from_path` (it would also register the standard-named CPU module).
+  Unset: unchanged.
+- **Proof per load:** `Research.runtimeCheck` compares the mapped libllama / CPU module (`/proc/self/maps`, sha256) with
+  `kit_build.json`'s `runtimes.<rt>` (R68 §0 / amendment 5); a mismatch stops the kit (row `runtime_check`, report
+  `runtime_info`, `runtime_expected`). The run list follows the active runtime (R68's plans unchanged; rows keep proto `r28`).
+- **Switch:** runtime chips in settings (store, then restart through `RestartActivity`, its own process; no permission).
+- **Unattended chain** (Auto button): c2 plan, 30 min idle cool-down, restart into c1 and its reference plan, restart into
+  stock and the same; state in `<files>/r30-chain.json` (resume at the first unfinished segment, a cut-off segment run
+  again at most twice, partial report kept), log `<files>/r30-chain-log.txt` (restarts, mapped libraries per segment,
+  battery % and charger per run), one report file per segment. Stops (recorded): battery below 15 %, mapped-library
+  check failed, power saving on at a segment start after three re-checks 10 min apart, owner's Stop. End summary over
+  every screen, "Save chain files to Downloads". Cap probes are not in the chain.
+- Static kit screen moved into `KitScreen`, shown over every screen (main.dart) so a resumed chain has it.
+- Session label preset "on" (the chain's default). `test/runtime_check_test.dart`.
+- Test builds only: `--dart-define=VOLLIE_CHAIN_TEST=true` shortens the chain (a small model, 20 s cool-down) for the
+  emulator; false and compiled out in the kit APK.

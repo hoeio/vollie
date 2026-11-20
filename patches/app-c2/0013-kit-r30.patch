@@ -1,0 +1,1002 @@
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -24,7 +24,14 @@
+             android:name=".ModelDownloadService"
+             android:exported="false"
+             android:foregroundServiceType="dataSync" />
++        <!-- Kit r30: process restart for the runtime switch (its own process; no UI). -->
+         <activity
++            android:name=".RestartActivity"
++            android:exported="false"
++            android:process=":restart"
++            android:excludeFromRecents="true"
++            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
++        <activity
+             android:name=".MainActivity"
+             android:exported="true"
+             android:launchMode="singleTop"
+Binary files a/android/app/src/main/jniLibs/arm64-v8a/libggml-cpu-android_armv8.2_2.so and b/android/app/src/main/jniLibs/arm64-v8a/libggml-cpu-android_armv8.2_2.so differ
+--- a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt
++++ b/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt
+@@ -22,6 +22,43 @@
+ 
+ /** Platform side of Vollie: model download (ModelDownloadService) and device info. */
+ class MainActivity : FlutterActivity() {
++    // Kit r30: the runtime (c2 = the standard-named libraries; c1 / stock = libllama_rt_<rt>.so and
++    // libggml_cpu_rt_<rt>.so, copied byte-identical from the r28 APKs) is chosen per process, before Dart starts:
++    // the renamed libllama is loaded first, so every later "libllama.so" (libllamadart's DT_NEEDED, Dart's opens by
++    // name) resolves to it by soname, and VOLLIE_CPU_MODULE tells llamadart which CPU module file to load.
++    companion object {
++        const val RT_PREFS = "vollie_runtime"
++        val RUNTIMES = listOf("c2", "c1", "stock")
++        var rtStored = "c2"
++        var rtActive = "c2"
++        var rtPreload: String? = null // null = nothing to preload (c2), "ok", or the error
++        private var rtDone = false
++
++        fun preloadRuntime(ctx: Context) {
++            if (rtDone) return
++            rtDone = true
++            rtStored = ctx.getSharedPreferences(RT_PREFS, Context.MODE_PRIVATE).getString("runtime", "c2") ?: "c2"
++            if (rtStored == "c2" || rtStored !in RUNTIMES) return
++            rtPreload = runCatching {
++                System.loadLibrary("llama_rt_$rtStored")
++                android.system.Os.setenv("VOLLIE_CPU_MODULE", "libggml_cpu_rt_$rtStored.so", true)
++                rtActive = rtStored
++                "ok"
++            }.getOrElse { "$it" }
++        }
++    }
++
++    override fun onCreate(savedInstanceState: android.os.Bundle?) {
++        preloadRuntime(this)
++        // Kit r30: a chain restart keeps the screen on from the first frame (the kit sets it again when it resumes).
++        val p = getSharedPreferences(RT_PREFS, Context.MODE_PRIVATE)
++        if (p.getBoolean("screen_on", false)) {
++            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
++            p.edit().putBoolean("screen_on", false).apply()
++        }
++        super.onCreate(savedInstanceState)
++    }
++
+     // Fixed per device, and Android rate-limits the call: read it once.
+     private var moderateAt: Double? = null
+     private var moderateAtRead = false
+@@ -138,6 +175,33 @@
+                             lines.firstOrNull { it.startsWith("Features") }?.substringAfter(":")?.trim()
+                         }
+                     }.getOrNull() ?: "")
++
++                    // Kit r30: the runtime of this process, the stored choice, and a switch (store, then restart).
++                    "runtime" -> result.success(mapOf(
++                        "active" to rtActive, "stored" to rtStored, "preload" to rtPreload,
++                        "cpuModule" to System.getenv("VOLLIE_CPU_MODULE"),
++                        "nativeLibraryDir" to applicationInfo.nativeLibraryDir,
++                    ))
++
++                    "setRuntime", "restartInto" -> {
++                        val rt = call.argument<String>("runtime")
++                        if (rt !in RUNTIMES) {
++                            result.error("runtime", "unknown runtime $rt", null)
++                        } else {
++                            val restart = call.method == "restartInto"
++                            getSharedPreferences(RT_PREFS, Context.MODE_PRIVATE).edit()
++                                .putString("runtime", rt).putBoolean("screen_on", restart && call.argument<Boolean>("screenOn") == true)
++                                .commit()
++                            result.success(true)
++                            if (restart) {
++                                // RestartActivity (its own process, started while this app is in the foreground) kills
++                                // this process and starts MainActivity again (no permission needed).
++                                startActivity(Intent(this, RestartActivity::class.java)
++                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
++                                    .putExtra("pid", android.os.Process.myPid()))
++                            }
++                        }
++                    }
+ 
+                     "keepScreenOn" -> {
+                         val flag = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+@@ -241,7 +305,7 @@
+                             val name = call.argument<String>("name")!!
+                             val v = ContentValues().apply {
+                                 put(MediaStore.Downloads.DISPLAY_NAME, name)
+-                                put(MediaStore.Downloads.MIME_TYPE, "application/json")
++                                put(MediaStore.Downloads.MIME_TYPE, call.argument<String>("mime") ?: "application/json")
+                                 put(MediaStore.Downloads.IS_PENDING, 1)
+                             }
+                             val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v)
+--- a/lib/assistant.dart
++++ b/lib/assistant.dart
+@@ -485,6 +485,7 @@
+   /// speculation phase), and the run's state.
+   final int _rollback = 0;
+   bool researching = false;
++  bool _chainRunning = false; // r30: the unattended chain (ResearchChain) is driving the kit
+ 
+   /// Kit r21: the last message of the second model's download or of a kit that could not start (settings shows it).
+   String? kitNote;
+--- a/lib/device.dart
++++ b/lib/device.dart
+@@ -890,9 +890,23 @@
+       return await _channel.invokeMethod<String>('cpuFeatures') ?? '';
+     } on MissingPluginException {
+       return '';
++    }
++  }
++
++  /// Kit r30: this process's runtime (MainActivity.preloadRuntime): active, stored, preload ("ok", an error, or null
++  /// for c2), cpuModule (VOLLIE_CPU_MODULE), nativeLibraryDir. Empty off Android.
++  static Future<Map<String, Object?>> runtimeInfo() async {
++    try {
++      return Map<String, Object?>.from(await _channel.invokeMethod<Map>('runtime') ?? const {});
++    } on MissingPluginException {
++      return const {};
+     }
+   }
+ 
++  /// Kit r30: stores [runtime] for the next process; [restart]: then restarts the app into it (this process ends).
++  static Future<void> switchRuntime(String runtime, {bool restart = true, bool screenOn = false}) =>
++      _channel.invokeMethod(restart ? 'restartInto' : 'setRuntime', {'runtime': runtime, 'screenOn': screenOn});
++
+   static Future<void> keepScreenOn(bool on) async {
+     try {
+       await _channel.invokeMethod('keepScreenOn', {'on': on});
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -1,3 +1,5 @@
++import 'dart:async';
++
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:provider/provider.dart';
+@@ -7,6 +9,7 @@
+ import 'chat_screen.dart';
+ import 'device.dart';
+ import 'model_store.dart';
++import 'settings_screen.dart';
+ import 'setup_screen.dart';
+ import 'theme.dart';
+ 
+@@ -31,6 +34,8 @@
+     ],
+     child: const VollieApp(),
+   ));
++  // r30: an unfinished unattended chain continues after a restart (or shows its summary when it has ended).
++  unawaited(assistant.chainResume());
+ }
+ 
+ class VollieApp extends StatelessWidget {
+@@ -45,6 +50,21 @@
+       theme: vollieTheme(Brightness.light),
+       darkTheme: vollieTheme(Brightness.dark),
+       themeMode: context.watch<ThemeController>().value,
++      // r30: the kit's static dark screen and the chain's summary cover every screen; the screen below is neither
++      // painted nor animated meanwhile.
++      builder: (context, child) {
++        final kit = context.select<Assistant, bool>((a) => a.researching);
++        return ValueListenableBuilder<String?>(
++          valueListenable: Research.chainSummary,
++          builder: (_, summary, __) {
++            final cover = kit || summary != null;
++            return Stack(children: [
++              TickerMode(enabled: !cover, child: Offstage(offstage: cover, child: child)),
++              if (kit) const KitScreen() else if (summary != null) ChainSummaryScreen(text: summary),
++            ]);
++          },
++        );
++      },
+       home: AnimatedSwitcher(
+         duration: const Duration(milliseconds: 300),
+         child: ready ? const ChatScreen() : const SetupScreen(),
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -46,12 +46,13 @@
+ /// power saving and thermal status), T-D's smaps match by inode, the session label (deep-sleeping list) and the power-save
+ /// state read at the start, and T-A's cap probe ([capProbe], no model).
+ extension Research on Assistant {
+-  static const kit = 'r28';
+-  static const app = '1.28.0+28';
++  static const kit = 'r30';
++  static const app = '1.30.0+30';
+ 
+   /// r28: the owner's label for the session, chosen on the start screen before the kit can start (memo-31 §7: session A
+   /// with Samsung's deep-sleeping list, session B without). Recorded in the report and in every cap probe.
+-  static final deepSleep = ValueNotifier<bool?>(null);
++  /// r30 (owner, 2026-11-20): preset to "on" (session A, the unattended chain's default); the owner can change it.
++  static final deepSleep = ValueNotifier<bool?>(true);
+   static String get sessionLabel =>
+       deepSleep.value == null ? 'unset' : 'deep-sleeping list ${deepSleep.value! ? 'on' : 'off'}';
+ 
+@@ -197,6 +198,37 @@
+   /// campaign 1's shipped runtime (patches/llama.cpp 0001-0003 on 620d2225c, commit 686f17d); 'stock' = 620d2225c with
+   /// no patch. The two reference runtimes run [refPlan]. Read by [researchRun] before the run list is used.
+   static String runtime = 'c2';
++
++  /// r30: the mapped libllama and CPU module (row 'libs': file name -> sha256 of every mapped ggml / llama library)
++  /// against kit_build.json's runtimes.<rt> (the R68 §0 / amendment-5 hashes): ok only when exactly those two files are
++  /// mapped, with those hashes, and no other libllama / CPU module.
++  static Map<String, Object?> runtimeCheck(Map<String, String?> libs, Map? build, String rt) {
++    final e = (build?['runtimes'] as Map?)?[rt] as Map?;
++    final want = e == null ? null : {for (final k in ['llama', 'cpu']) (e[k] as Map)['file'] as String: (e[k] as Map)['sha256'] as String};
++    final mapped = {
++      for (final k in libs.keys)
++        if (k == 'libllama.so' || k.startsWith('libllama_rt_') || k.startsWith('libggml-cpu-') || k.startsWith('libggml_cpu_rt_'))
++          k: libs[k],
++    };
++    final ok = want != null && mapped.length == want.length && want.entries.every((w) => mapped[w.key] == w.value);
++    return {'runtime': rt, 'ok': ok, 'want': want, 'mapped': mapped};
++  }
++
++  /// r30 (owner, 2026-11-20): the unattended chain, segments in order: R68's c2 plan, a 30 min cool-down, a process
++  /// restart into c1 and its reference plan, a restart into stock and the same. Cap probes are not in it.
++  static const chainPlan = [('c2', 'c2'), ('cool', ''), ('c1', 'c1'), ('stock', 'stock')];
++  /// Test builds only (flutter build --dart-define=VOLLIE_CHAIN_TEST=true; false and compiled out otherwise): each
++  /// run segment is one load of the file chain-test.gguf in the app's external files folder and 8 tokens, the
++  /// cool-down 20 s, the power re-check 10 s.
++  static const chainTest = bool.fromEnvironment('VOLLIE_CHAIN_TEST');
++  static const chainCool = chainTest ? Duration(seconds: 20) : Duration(minutes: 30);
++  static const chainPowerWait = chainTest ? Duration(seconds: 10) : Duration(minutes: 10);
++  static const chainPowerTries = 3, chainBatteryMin = 15, chainAttempts = 2, chainRestarts = 2;
++  /// The reason a chain segment must stop (set by researchRun's runtime check, the battery check, a failed write).
++  static String? chainStop;
++  /// The end-of-chain summary the app shows over every screen until the owner closes it.
++  static final chainSummary = ValueNotifier<String?>(null);
++  static String? _chainDir;
+ 
+   /// r28 reference blocks (lead, 2026-11-18): per model 10 claim-format runs, r16's gate, the hold, 3 threads, the app's
+   /// DartWorker pin (the runtime pin and every c2 knob need c1-olmoe patches the reference runtimes do not have).
+@@ -858,6 +890,7 @@
+         'session_label': Research.sessionLabel, 'deep_sleeping_list': Research.deepSleep.value,
+         'power_start': p0, 'label': label, 'power_end': await DeviceProfile.powerState(),
+         'model_loaded': _loadedPath?.split('/').last, 'kernel_release': DeviceProfile.unameRelease(),
++        'runtime_info': await DeviceProfile.runtimeInfo(), // r30
+         'design': 'memo-31 T-A: 1 sample/s for ${Research.probeSeconds} s; spinner in odd minutes (1, 3, 5); from '
+             '${half}s three isolates spin on cpus 4-7 (mask 0xf0) to the end; headroom every second sample',
+         'fields': ['ms', 'max0', 'max4', 'max7', 'cur0', 'cur4', 'cur7', 'headroom', 'thermal_status', 'power_save',
+@@ -881,20 +914,23 @@
+     }
+   }
+ 
+-  Future<void> researchRun() async {
+-    if (_loadedPath == null || isBusy || optimizing != null || researching) return;
++  /// r30: [name] = the report file's name without .json (default research-<kit>-<start>); [onRow] sees every row
++  /// after it is stored (the chain's log and battery stop). Returns the report file's path (null: not started / not
++  /// written).
++  Future<String?> researchRun({String? name, void Function(Map<String, Object?> row)? onRow}) async {
++    if (_loadedPath == null || isBusy || optimizing != null || researching) return null;
+     final dir = _kitDir!;
+     final home = _loadedPath!;
+     final odd = [for (final m in Research.kitModels) if (m.template != 'model') m.id];
+     if (odd.isNotEmpty) {
+       kitNote = 'Kit ${Research.kit} has no template source other than the model\'s own (${odd.join(', ')}).';
+       _kitChanged();
+-      return;
++      return null;
+     }
+     if (Research.deepSleep.value == null) {
+       kitNote = 'Kit ${Research.kit}: choose the session label (deep-sleeping list on or off) first.';
+       _kitChanged();
+-      return;
++      return null;
+     }
+     newChatKeepingHistory();
+     researching = true;
+@@ -905,12 +941,10 @@
+     // r28 (owner, 2026-11-18): power saving read at the start, never changed; a session with it on is labelled so.
+     final power0 = await DeviceProfile.powerState();
+     final powerLabel = Research.powerLabel(power0);
+-    // r28: which runtime this APK carries decides the run list (c2 = R68's rehearsal, c1 / stock = the reference blocks)
+-    try {
+-      Research.runtime = ((jsonDecode(await rootBundle.loadString('assets/kit_build.json')) as Map)['runtime'] as String?) ?? 'c2';
+-    } catch (_) {
+-      Research.runtime = 'c2';
+-    }
++    // r30: the runtime this process mapped (MainActivity.preloadRuntime) decides the run list (c2 = R68's rehearsal,
++    // c1 / stock = the reference blocks); every load row checks the mapped libraries against it ([runtimeCheck]).
++    final rtInfo = await DeviceProfile.runtimeInfo();
++    Research.runtime = (rtInfo['active'] as String?) ?? 'c2';
+     // r27: the storage step first (exec check, internal copies), before the idle baseline and every warm-up.
+     final ({Map<String, String>? paths, Map<String, Object?> rec}) storage;
+     try {
+@@ -921,7 +955,7 @@
+       researching = false;
+       optimizing = null;
+       _kitChanged();
+-      return;
++      return null;
+     }
+     if (storage.paths == null) {
+       kitNote ??= 'Kit ${Research.kit}: the storage step stopped (${storage.rec['stopped']}).';
+@@ -929,9 +963,10 @@
+       researching = false;
+       optimizing = null;
+       _kitChanged();
+-      return;
++      return null;
+     }
+     final paths = storage.paths!;
++    String? written;
+     _contextSize = Research.nCtx; // r27 (memo-28 §2.6): fixed, recorded; the app's next load() sets its own again
+     final w = autoThreads;
+     final rows = <Map<String, Object?>>[];
+@@ -1070,6 +1105,8 @@
+       notes.add('build info missing: $e');
+     }
+     report['runtime'] = Research.runtime;
++    report['runtime_info'] = rtInfo; // r30: active / stored / preload / VOLLIE_CPU_MODULE of this process
++    report['runtime_expected'] = ((report['build'] as Map?)?['runtimes'] as Map?)?[Research.runtime];
+     Future<void> save() => _prefs.setString(Assistant._researchKey, jsonEncode(report));
+     void show(String s) {
+       final t = DateTime.now().difference(started).inSeconds;
+@@ -1320,6 +1357,15 @@
+           row['reload_ms'] = reload;
+           row['load_env_set'] = loadSeen; // r23: the env native code saw during this load (OLMoE: VOLLIE_HEAD2_REPACK=1)
+           row['libs'] = {for (final l in Research._nativeLibs()) l.split('/').last: libHash[l] ??= await DeviceProfile.sha256(l)};
++          // r30: the mapped libllama and CPU module must be this runtime's (R68 §0 / amendment 5); else stop (D3)
++          final rc = row['runtime_check'] =
++              Research.runtimeCheck(Map<String, String?>.from(row['libs'] as Map), report['build'] as Map?, Research.runtime);
++          if (rc['ok'] != true) {
++            Research.chainStop ??= 'mapped-library check failed (runtime ${Research.runtime}): ${jsonEncode(rc)}';
++            notes.add('runtime check failed: ${jsonEncode(rc)}');
++            _stopTest = true;
++            throw StateError('runtime check failed');
++          }
+           if (!(report['templates'] as Map).containsKey(s.model)) await describe(s.model);
+         }
+         row['loaded_file'] = _loadedPath?.split('/').last;
+@@ -1536,6 +1582,7 @@
+       }
+       rows.add(row);
+       await save();
++      onRow?.call(row);
+     }
+ 
+     try {
+@@ -1590,10 +1637,12 @@
+       report['power_end'] = await DeviceProfile.powerState();
+       await save();
+       try {
+-        File('$dir/research-${Research.kit}-${started.toIso8601String().replaceAll(':', '').substring(0, 15)}.json')
+-            .writeAsStringSync(jsonEncode(report));
+-      } catch (_) {
++        final f = File('$dir/${name ?? 'research-${Research.kit}-${started.toIso8601String().replaceAll(':', '').substring(0, 15)}'}.json');
++        f.writeAsStringSync(jsonEncode(report), flush: true);
++        written = f.path;
++      } catch (e) {
+         // the clipboard copy and "Save to Downloads" are the channels
++        Research.chainStop ??= name == null ? null : 'report not written: $e';
+       }
+       await DeviceProfile.keepScreenOn(false);
+       researching = false;
+@@ -1601,6 +1650,345 @@
+       status = EngineStatus.idle;
+       _loadedPath = null;
+       await load(home);
++    }
++    return written;
++  }
++}
++
++/// r30: the unattended chain ([Research.chainPlan]). State in <internal>/r30-chain.json (segment index, attempts,
++/// restarts, report paths, stop reason), written before and after every step; a log in <internal>/r30-chain-log.txt.
++/// A process that starts with an unfinished chain resumes it at its first unfinished segment ([chainResume]); a
++/// finished segment is never run again; a segment that was cut off (crash, kill) is run again from its start at most
++/// [Research.chainAttempts] times, its partial report kept.
++extension ResearchChain on Assistant {
++  Future<String> _chainFolder() async => Research._chainDir ??=
++      '${(await const MethodChannel('vollie/downloads').invokeMethod<Map>('kitStorage'))!['internal']}';
++  Future<File> _chainFile() async => File('${await _chainFolder()}/r30-chain.json');
++
++  Future<Map<String, Object?>?> chainState() async {
++    try {
++      final f = await _chainFile();
++      return f.existsSync() ? Map<String, Object?>.from(jsonDecode(f.readAsStringSync()) as Map) : null;
++    } catch (_) {
++      return null;
++    }
++  }
++
++  Future<void> _chainWrite(Map<String, Object?> st) async {
++    final f = await _chainFile();
++    final t = File('${f.path}.tmp');
++    t.writeAsStringSync(jsonEncode(st), flush: true);
++    t.renameSync(f.path);
++  }
++
++  Future<void> _chainLog(String line) async {
++    debugPrint('vollie-chain: $line'); // also in logcat (tag flutter)
++    try {
++      File('${await _chainFolder()}/r30-chain-log.txt')
++          .writeAsStringSync('${DateTime.now().toIso8601String()} $line\n', mode: FileMode.append, flush: true);
++    } catch (_) {}
++  }
++
++  static String _stamp(DateTime t) => t.toIso8601String().replaceAll(':', '').substring(0, 15);
++
++  bool get chainActive => _chainRunning;
++
++  /// The Auto button: a new chain from segment 0 with the session label chosen now.
++  Future<void> chainStart() async {
++    if (_chainRunning || researching || isBusy || optimizing != null) return;
++    if (Research.deepSleep.value == null) {
++      kitNote = 'Choose the session label first.';
++      _kitChanged();
++      return;
++    }
++    final now = DateTime.now();
++    await _chainWrite({
++      'kit': Research.kit, 'app': Research.app, 'started': now.toIso8601String(), 'test_plan': Research.chainTest,
++      'session_label': Research.sessionLabel, 'deep_sleeping_list': Research.deepSleep.value, 'owner_note': Research.ownerNote,
++      'plan': [for (final p in Research.chainPlan) {'segment': p.$1, 'runtime': p.$2}],
++      'index': 0, 'attempts': <String, Object?>{}, 'restarts': <String, Object?>{}, 'reports': <Object?>[], 'stop': null,
++      'done': false, 'acknowledged': false,
++    });
++    await _chainLog('chain start: ${Research.sessionLabel}, plan ${Research.chainPlan}, test plan ${Research.chainTest}');
++    await chainResume();
++  }
++
++  /// At every app start (main) and from [chainStart]: continue an unfinished chain, or show a finished one's summary.
++  Future<void> chainResume() async {
++    if (_chainRunning) return;
++    final st = await chainState();
++    if (Research.chainTest && st == null) {
++      // test builds only: the emulator test starts the chain with a marker file instead of the button
++      final ext = (await const MethodChannel('vollie/downloads').invokeMethod<Map>('kitStorage'))!['external'];
++      final f = File('$ext/chain-test.start');
++      if (f.existsSync()) {
++        f.deleteSync();
++        return chainStart();
++      }
++    }
++    if (st == null) return;
++    if (st['done'] == true || st['stop'] != null) {
++      if (st['acknowledged'] != true) Research.chainSummary.value = _chainSummaryText(st);
++      return;
++    }
++    _chainRunning = true;
++    _stopTest = false;
++    Research.deepSleep.value = st['deep_sleeping_list'] as bool?;
++    await DeviceProfile.keepScreenOn(true);
++    try {
++      await _chainLoop(st);
++    } catch (e) {
++      await _chainEnd(st, 'chain error: $e');
++    } finally {
++      _chainRunning = false;
++      _kitChanged();
++    }
++  }
++
++  Future<void> _chainEnd(Map<String, Object?> st, String? stop) async {
++    if (stop != null) st['stop'] = stop;
++    if (stop == null) st['done'] = true;
++    st['finished'] = DateTime.now().toIso8601String();
++    await _chainWrite(st);
++    await _chainLog(stop == null ? 'chain done' : 'CHAIN STOPPED: $stop');
++    await DeviceProfile.keepScreenOn(false);
++    Research.chainSummary.value = _chainSummaryText(st);
++  }
++
++  Future<void> _chainLoop(Map<String, Object?> st) async {
++    final dir = await _chainFolder();
++    while (true) {
++      final i = st['index'] as int;
++      if (i >= Research.chainPlan.length) {
++        // the next process starts on c2 again (R68 session R ended with the c2 APK reinstalled); this one ends as it is
++        await DeviceProfile.switchRuntime('c2', restart: false);
++        await _chainLog('stored runtime set back to c2 for the next start (no restart)');
++        return _chainEnd(st, null);
++      }
++      final (seg, rt) = Research.chainPlan[i];
++      final info = await DeviceProfile.runtimeInfo();
++      final active = (info['active'] as String?) ?? 'c2';
++      if (rt.isNotEmpty && rt != active) {
++        final restarts = st['restarts'] as Map;
++        final n = ((restarts['$i'] as int?) ?? 0) + 1;
++        if (n > Research.chainRestarts) {
++          return _chainEnd(st, 'segment $i ($seg): the process did not come up in runtime $rt after ${n - 1} restarts ($info)');
++        }
++        restarts['$i'] = n;
++        await _chainWrite(st);
++        await _chainLog('restart into $rt for segment $i (this process: $info)');
++        await DeviceProfile.switchRuntime(rt, screenOn: true);
++        await Future<void>.delayed(const Duration(seconds: 30)); // the process is killed meanwhile
++        return _chainEnd(st, 'restart into $rt did not happen within 30 s');
++      }
++      final attempts = st['attempts'] as Map;
++      final a = ((attempts['$i'] as int?) ?? 0) + 1;
++      if (a > Research.chainAttempts) {
++        return _chainEnd(st, 'segment $i ($seg) was cut off ${a - 1} times (crash or kill); not run again');
++      }
++      if (a > 1 && seg != 'cool') {
++        // the cut-off attempt's report, as far as it got (the kit stores it after every run)
++        final r = _prefs.getString(Assistant._researchKey);
++        if (r != null) {
++          final f = File('$dir/r30-chain-$i-$seg-$rt-attempt${a - 1}-partial.json')..writeAsStringSync(r, flush: true);
++          (st['reports'] as List).add({'segment': seg, 'runtime': rt, 'index': i, 'attempt': a - 1, 'path': f.path, 'partial': true});
++        }
++      }
++      attempts['$i'] = a;
++      await _chainWrite(st);
++      await _chainLog('segment $i $seg start (attempt $a), process runtime $info');
++      // segment-start checks: battery, power saving (record, wait, re-check up to 3 times)
++      var p = await DeviceProfile.powerState();
++      await _chainLog('segment $i start: battery ${p['level']} %, plugged ${(await DeviceProfile.battery()).plugged}, ${Research.powerLabel(p)}');
++      if (p['level'] is int && (p['level'] as int) < Research.chainBatteryMin) {
++        return _chainEnd(st, 'battery ${p['level']} % < ${Research.chainBatteryMin} % at segment $i start');
++      }
++      for (var k = 1; Research.powerLabel(p) == 'power-save on'; k++) {
++        if (k > Research.chainPowerTries) {
++          return _chainEnd(st, 'power saving on at segment $i start (read ${Research.chainPowerTries + 1} times, '
++              '${Research.chainPowerWait.inMinutes} min apart)');
++        }
++        await _chainLog('power saving ON at segment $i start: waiting ${Research.chainPowerWait.inSeconds} s (check $k of ${Research.chainPowerTries})');
++        if (!await _chainIdle(Research.chainPowerWait, 'power saving is on: waiting to re-check ($k of ${Research.chainPowerTries})')) {
++          return _chainEnd(st, Research.chainStop ?? 'stopped by the owner');
++        }
++        p = await DeviceProfile.powerState();
++      }
++      Research.chainStop = null;
++      final t0 = DateTime.now();
++      final String? path;
++      if (seg == 'cool') {
++        path = await _chainCool(i, dir);
++      } else if (Research.chainTest) {
++        path = await _chainTestSegment(i, seg, rt, dir);
++      } else {
++        path = await _chainKit(i, seg, rt);
++      }
++      if (Research.chainStop != null) return _chainEnd(st, 'segment $i ($seg): ${Research.chainStop}');
++      if (_stopTest) return _chainEnd(st, 'segment $i ($seg): stopped by the owner');
++      if (path == null) return _chainEnd(st, 'segment $i ($seg): no report (${kitNote ?? 'the kit did not start'})');
++      (st['reports'] as List).add({'segment': seg, 'runtime': rt.isEmpty ? active : rt, 'index': i, 'attempt': a, 'path': path,
++        'started': t0.toIso8601String(), 'finished': DateTime.now().toIso8601String()});
++      st['index'] = i + 1;
++      await _chainWrite(st);
++      await _chainLog('segment $i $seg done in ${DateTime.now().difference(t0).inSeconds} s: $path');
+     }
+   }
++
++  /// Waits [d] idle on the kit's static screen ([status] shown); false when stopped (owner, or battery below the floor).
++  Future<bool> _chainIdle(Duration d, String status, [List<List<Object?>>? samples]) async {
++    researching = true;
++    final t0 = DateTime.now();
++    try {
++      for (var m = 0; !_stopTest; m++) {
++        final left = d - DateTime.now().difference(t0);
++        if (left <= Duration.zero) return true;
++        _researchStatus('Research ${Research.kit} chain · $status · ${(left.inSeconds + 59) ~/ 60} min left');
++        if (samples != null || m % 6 == 0) {
++          final p = await DeviceProfile.powerState();
++          final h = (await DeviceProfile.thermal()).headroom;
++          final b = await DeviceProfile.battery();
++          samples?.add([DateTime.now().difference(t0).inMilliseconds, h, p['level'], b.plugged, p['powerSave'], p['status']]);
++          if (p['level'] is int && (p['level'] as int) < Research.chainBatteryMin) {
++            Research.chainStop = 'battery ${p['level']} % < ${Research.chainBatteryMin} %';
++            return false;
++          }
++        }
++        await Future<void>.delayed(left < const Duration(seconds: 10) ? left : const Duration(seconds: 10));
++      }
++      return false;
++    } finally {
++      researching = false;
++      optimizing = null;
++      _kitChanged();
++    }
++  }
++
++  Future<String?> _chainCool(int i, String dir) async {
++    final t0 = DateTime.now();
++    final samples = <List<Object?>>[];
++    await _chainLog('cool-down ${Research.chainCool.inSeconds} s start (no model run)');
++    final ok = await _chainIdle(Research.chainCool, 'cool-down', samples);
++    final f = File('$dir/r30-chain-$i-cool-${_stamp(t0)}.json');
++    f.writeAsStringSync(jsonEncode({
++      'kind': 'chain_cool', 'kit': Research.kit, 'app': Research.app, 'started': t0.toIso8601String(),
++      'finished': DateTime.now().toIso8601String(), 'planned_s': Research.chainCool.inSeconds, 'completed': ok,
++      'model_loaded': _loadedPath?.split('/').last, 'fields': ['ms', 'headroom', 'battery_pct', 'plugged', 'power_save', 'thermal_status'],
++      'samples': samples,
++    }), flush: true);
++    await _chainLog('cool-down end (${ok ? 'complete' : 'cut'}), ${samples.length} samples: ${f.path}');
++    return ok ? f.path : null;
++  }
++
++  /// One of R68's plans in this process's runtime (researchRun's run list follows it), logged per run.
++  Future<String?> _chainKit(int i, String seg, String rt) async {
++    final t0 = DateTime.now();
++    while (_loadedPath == null || status != EngineStatus.ready || isBusy || optimizing != null) {
++      if (_stopTest) return null;
++      if (DateTime.now().difference(t0) > const Duration(minutes: 20)) {
++        Research.chainStop = 'the app\'s model was not loaded within 20 min (status $status)';
++        return null;
++      }
++      await Future<void>.delayed(const Duration(seconds: 2));
++    }
++    if (!kitModelReady) {
++      Research.chainStop = 'kit models missing: ${kitModelsMissing.map((m) => m.file).join(', ')}';
++      return null;
++    }
++    return researchRun(name: 'r30-chain-$i-$seg-$rt-${_stamp(t0)}', onRow: (row) {
++      final p = row['power'] as Map?;
++      final rc = row['runtime_check'];
++      _chainLog('run ${row['run_tag']}: battery ${p?['level']} %, plugged ${row['plugged_run']}, '
++          'power-save ${p?['powerSave']}, tok/s ${row['decode_tps']}${row['error'] != null ? ', error ${row['error']}' : ''}');
++      if (rc != null) _chainLog('mapped (maps + sha256) at ${row['run_tag']}: ${jsonEncode(rc)}');
++      if (p?['level'] is int && (p!['level'] as int) < Research.chainBatteryMin) {
++        Research.chainStop = 'battery ${p['level']} % < ${Research.chainBatteryMin} % after run ${row['run_tag']}';
++        _stopTest = true;
++      }
++    });
++  }
++
++  /// Test builds only ([Research.chainTest]): one small load and 8 tokens, with the mapped-library check.
++  Future<String?> _chainTestSegment(int i, String seg, String rt, String dir) async {
++    researching = true;
++    _researchStatus('Research ${Research.kit} chain TEST · segment $i $seg');
++    final t0 = DateTime.now();
++    final keep = _loadedPath;
++    try {
++      final ext = (await const MethodChannel('vollie/downloads').invokeMethod<Map>('kitStorage'))!['external'];
++      _loadedPath = '$ext/chain-test.gguf';
++      DeviceProfile.stderrTo('$ext/chain-test-native.log');
++      await LlamaLogging.configure(level: LlamaLogLevel.none, nativeLevel: LlamaLogLevel.info);
++      _contextSize = 512;
++      _repack = false;
++      await _engine.unloadModel();
++      await _loadOn(Accel.cpu, 2, 2);
++      final c = await _kitComplete('Once upon a time', 8, false, (_) {});
++      final build = jsonDecode(await rootBundle.loadString('assets/kit_build.json')) as Map;
++      final libs = {for (final l in Research._nativeLibs()) l.split('/').last: await DeviceProfile.sha256(l)};
++      final info = await DeviceProfile.runtimeInfo();
++      final rc = Research.runtimeCheck(libs, build, (info['active'] as String?) ?? 'c2');
++      await _chainLog('mapped (maps + sha256) in test segment $i: ${jsonEncode(rc)}; text ${jsonEncode(c.text)}');
++      if (rc['ok'] != true) Research.chainStop = 'mapped-library check failed: ${jsonEncode(rc)}';
++      await Future<void>.delayed(const Duration(seconds: 15)); // time for a forced kill in the emulator test
++      final f = File('$dir/r30-chain-$i-$seg-$rt-${_stamp(t0)}.json');
++      f.writeAsStringSync(jsonEncode({
++        'kind': 'chain_test', 'kit': Research.kit, 'runtime_info': info, 'runtime_check': rc, 'libs': libs, 'text': c.text,
++        'tokens': c.usage?.completionTokens, 'started': t0.toIso8601String(), 'finished': DateTime.now().toIso8601String(),
++      }), flush: true);
++      return f.path;
++    } catch (e) {
++      Research.chainStop = 'test segment: $e';
++      return null;
++    } finally {
++      try {
++        await _engine.unloadModel();
++      } catch (_) {}
++      _repack = null;
++      _loadedPath = keep;
++      researching = false;
++      optimizing = null;
++      _kitChanged();
++    }
++  }
++
++  String _chainSummaryText(Map<String, Object?> st) {
++    final reps = (st['reports'] as List?) ?? const [];
++    return [
++      'Research ${st['kit']} unattended chain ${st['done'] == true ? 'DONE' : 'STOPPED'}${st['test_plan'] == true ? ' (TEST PLAN)' : ''}',
++      'Started ${st['started']}, ended ${st['finished']}. Label: ${st['session_label']}.',
++      'Segments done: ${st['index']} of ${Research.chainPlan.length}.',
++      if (st['stop'] != null) 'Stop reason: ${st['stop']}',
++      'Report files:',
++      for (final r in reps) '  ${(r as Map)['segment']} (${r['runtime']})${r['partial'] == true ? ' PARTIAL' : ''}: ${(r['path'] as String).split('/').last}',
++      'Chain log: r30-chain-log.txt',
++    ].join('\n');
++  }
++
++  /// The chain's files (state, log, every segment report) copied into Downloads; returns the names.
++  Future<List<String>> chainSaveToDownloads() async {
++    final st = await chainState();
++    final dir = await _chainFolder();
++    final files = [
++      '$dir/r30-chain.json', '$dir/r30-chain-log.txt',
++      for (final r in (st?['reports'] as List?) ?? const []) (r as Map)['path'] as String,
++    ];
++    final out = <String>[];
++    for (final p in files) {
++      if (!File(p).existsSync()) continue;
++      final name = 'vollie-${p.split('/').last}';
++      out.add((await const MethodChannel('vollie/downloads').invokeMethod<String>(
++          'saveToDownloads', {'path': p, 'name': name, 'mime': p.endsWith('.txt') ? 'text/plain' : 'application/json'}))!);
++    }
++    return out;
++  }
++
++  Future<void> chainAcknowledge() async {
++    final st = await chainState();
++    if (st != null) {
++      st['acknowledged'] = true;
++      await _chainWrite(st);
++    }
++    Research.chainSummary.value = null;
++  }
+ }
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -76,33 +76,7 @@
+ 
+     // Kit r27 (memo-28 §2.2): while the kit runs, a static dark screen (no progress indicator, no animation; the text
+     // changes only when the kit's status does) instead of this page with its spinner.
+-    if (assistant.researching) {
+-      return Scaffold(
+-        backgroundColor: Colors.black,
+-        body: SafeArea(
+-          child: Padding(
+-            padding: const EdgeInsets.all(24),
+-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+-              Text(assistant.optimizing ?? 'Research kit ${Research.kit}',
+-                  style: const TextStyle(color: Color(0xFF808080), fontSize: 14)),
+-              // r28 (T-A): the cap probe's spinner, drawn only in its spinner minutes; the kit never sets it
+-              ValueListenableBuilder<bool>(
+-                valueListenable: Research.probeSpinner,
+-                builder: (_, on, __) => on
+-                    ? const Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())
+-                    : const SizedBox.shrink(),
+-              ),
+-              const Spacer(),
+-              TextButton(
+-                onPressed: assistant.stopResearch,
+-                style: TextButton.styleFrom(foregroundColor: const Color(0xFF808080), splashFactory: NoSplash.splashFactory),
+-                child: const Text('Stop'),
+-              ),
+-            ]),
+-          ),
+-        ),
+-      );
+-    }
++    if (assistant.researching) return const KitScreen();
+ 
+     return Scaffold(
+       appBar: AppBar(title: const Text('Settings')),
+@@ -381,6 +355,22 @@
+               icon: const Icon(Icons.thermostat_rounded),
+               label: const Text('Run phone test (10 min)'),
+             ),
++      // Research kit r30: the runtime of this process (c2 / c1 / stock); a switch restarts the app into another.
++      if (!assistant.researching)
++        FutureBuilder<Map<String, Object?>>(
++          future: DeviceProfile.runtimeInfo(),
++          builder: (_, s) => Wrap(spacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
++            Text('Runtime: ${s.data?['active'] ?? '?'}${s.data?['preload'] is String && s.data!['preload'] != 'ok' ? ' (preload failed: ${s.data!['preload']})' : ''}'),
++            for (final rt in const ['c2', 'c1', 'stock'])
++              ChoiceChip(
++                label: Text(rt),
++                selected: s.data?['active'] == rt,
++                onSelected: busy || optimizing || assistant.chainActive || s.data?['active'] == rt
++                    ? null
++                    : (_) => DeviceProfile.switchRuntime(rt),
++              ),
++          ]),
++        ),
+       // Research kit r28 (memo-32): the session label first (deep-sleeping list on / off); the kit and the cap probe
+       // start only after it is chosen. The power-save state is read and shown (the kit never changes it).
+       if (!assistant.researching)
+@@ -411,7 +401,7 @@
+           builder: (_, v, __) => OutlinedButton.icon(
+             onPressed: busy || optimizing || v == null ? null : assistant.capProbe,
+             icon: const Icon(Icons.speed_rounded),
+-            label: const Text('Run cap probe r28 (6 min, no model)'),
++            label: const Text('Run cap probe (6 min, no model)'),
+           ),
+         ),
+       if (!assistant.researching && assistant.capProbeReport != null)
+@@ -439,7 +429,7 @@
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.downloadKitModels,
+                 icon: const Icon(Icons.download_rounded),
+-                label: Text('Download kit r28 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
++                label: Text('Download kit r30 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
+                     '(${(assistant.kitMissingBytes / 1e9).toStringAsFixed(1)} GB, Wi-Fi)'),
+               ),
+       if (assistant.kitModelReady)
+@@ -454,10 +444,21 @@
+                 builder: (_, v, __) => OutlinedButton.icon(
+                   onPressed: busy || optimizing || v == null ? null : assistant.researchRun,
+                   icon: const Icon(Icons.science_rounded),
+-                  label: Text(v == null ? 'Run research kit r28: choose the session label first' : 'Run research kit r28 (~50-110 min)'),
++                  label: Text(v == null ? 'Run research kit r30: choose the session label first' : 'Run research kit r30 once, this runtime (~20-110 min)'),
+                 ),
+               ),
++      // r30 (owner, 2026-11-20): all of R68 unattended: c2 plan, 30 min cool-down, restart into c1, restart into stock.
+       if (assistant.kitModelReady && !assistant.researching)
++        ValueListenableBuilder<bool?>(
++          valueListenable: Research.deepSleep,
++          builder: (_, v, __) => FilledButton.icon(
++            onPressed: busy || optimizing || v == null || assistant.chainActive ? null : assistant.chainStart,
++            icon: const Icon(Icons.play_circle_rounded),
++            label: Text('Auto: all of R68 unattended (c2, cool-down, c1, stock; ~2.5-3.5 h)'
++                '${Research.chainTest ? ' TEST PLAN' : ''}'),
++          ),
++        ),
++      if (assistant.kitModelReady && !assistant.researching)
+         Padding(
+           padding: const EdgeInsets.symmetric(vertical: 4),
+           child: Text(Research.ownerNote, style: const TextStyle(fontWeight: FontWeight.bold)),
+@@ -558,3 +559,75 @@
+     ]);
+   }
+ }
++
++/// Kit r27 (memo-28 §2.2): while the kit runs, a static dark screen (no progress indicator, no animation; the text
++/// changes only when the kit's status does). r30: shown over every screen (main.dart), so a chain resumed after a
++/// restart has it too.
++class KitScreen extends StatelessWidget {
++  const KitScreen({super.key});
++
++  @override
++  Widget build(BuildContext context) {
++    final assistant = context.watch<Assistant>();
++    return Scaffold(
++        backgroundColor: Colors.black,
++        body: SafeArea(
++          child: Padding(
++            padding: const EdgeInsets.all(24),
++            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
++              Text(assistant.optimizing ?? 'Research kit ${Research.kit}',
++                  style: const TextStyle(color: Color(0xFF808080), fontSize: 14)),
++              // r28 (T-A): the cap probe's spinner, drawn only in its spinner minutes; the kit never sets it
++              ValueListenableBuilder<bool>(
++                valueListenable: Research.probeSpinner,
++                builder: (_, on, __) => on
++                    ? const Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())
++                    : const SizedBox.shrink(),
++              ),
++              const Spacer(),
++              TextButton(
++                onPressed: assistant.stopResearch,
++                style: TextButton.styleFrom(foregroundColor: const Color(0xFF808080), splashFactory: NoSplash.splashFactory),
++                child: const Text('Stop'),
++              ),
++            ]),
++          ),
++        ),
++      );
++  }
++}
++
++/// r30: the unattended chain's end summary (segments, report files, stop reason), over every screen until closed.
++class ChainSummaryScreen extends StatelessWidget {
++  const ChainSummaryScreen({super.key, required this.text});
++  final String text;
++
++  @override
++  Widget build(BuildContext context) {
++    final assistant = context.read<Assistant>();
++    return Scaffold(
++      body: SafeArea(
++        child: ListView(padding: const EdgeInsets.all(24), children: [
++          SelectableText(text),
++          const SizedBox(height: 16),
++          Builder(
++            builder: (ctx) => FilledButton.icon(
++              onPressed: () async {
++                final m = ScaffoldMessenger.of(ctx);
++                try {
++                  final names = await assistant.chainSaveToDownloads();
++                  m.showSnackBar(SnackBar(content: Text('Saved ${names.length} files to Downloads. Send all of them.')));
++                } catch (e) {
++                  m.showSnackBar(SnackBar(content: Text('Could not save ($e).')));
++                }
++              },
++              icon: const Icon(Icons.save_alt_rounded),
++              label: const Text('Save chain files to Downloads'),
++            ),
++          ),
++          TextButton(onPressed: assistant.chainAcknowledge, child: const Text('Close')),
++        ]),
++      ),
++    );
++  }
++}
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.28.0+28
++version: 1.30.0+30
+ 
+ environment:
+   sdk: ^3.10.7
+--- a/third_party/llamadart/lib/src/backends/llama_cpp/llama_cpp_service.dart
++++ b/third_party/llamadart/lib/src/backends/llama_cpp/llama_cpp_service.dart
+@@ -2601,7 +2601,10 @@
+ 
+     switch (preferredBackend) {
+       case GpuBackend.auto:
+-        final loadedAll = backendModuleDirectory == null
++        // Vollie kit r30: with VOLLIE_CPU_MODULE set, load-all would also register the standard-named CPU module.
++        final loadedAll = _vollieCpuModule != null
++            ? false
++            : backendModuleDirectory == null
+             ? _tryLoadAllBackendsBestEffort()
+             : _tryLoadAllBackendsFromPathBestEffort(backendModuleDirectory);
+ 
+@@ -3706,8 +3709,15 @@
+     }
+     return 'libllamadart.so';
+   }
++
++  /// Vollie kit r30: `VOLLIE_CPU_MODULE` (set by the app's Android side before Dart starts, for its c1 / stock
++  /// runtimes) names the one CPU module file to load from the module directory. Unset (null): unchanged behaviour.
++  static final String? _vollieCpuModule =
++      Platform.isAndroid ? Platform.environment['VOLLIE_CPU_MODULE'] : null;
+ 
+   List<String> _backendLibraryCandidateFileNames(String backend) {
++    final vollie = _vollieCpuModule;
++    if (vollie != null && backend == 'cpu') return <String>[vollie];
+     final baseName = _backendLibraryFileName(backend);
+     final backendModuleDirectory = _backendModuleDirectory;
+     if (backendModuleDirectory == null) {
+diff --git a/test/runtime_check_test.dart b/test/runtime_check_test.dart
+new file mode 100644
+--- /dev/null
++++ b/test/runtime_check_test.dart
+@@ -0,0 +1,36 @@
++// Kit r30: the mapped-library check (Research.runtimeCheck) passes only on the active runtime's two files and hashes.
++import 'dart:convert';
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:vollie/assistant.dart';
++
++void main() {
++  final build = jsonDecode(File('assets/kit_build.json').readAsStringSync()) as Map;
++  final rts = build['runtimes'] as Map;
++  Map<String, String?> mapped(String rt) => {
++        'libggml-base.so': 'x', 'libggml.so': 'y', 'libllama-common.so': 'z', 'libllamadart.so': 'w',
++        for (final k in ['llama', 'cpu']) (rts[rt][k] as Map)['file'] as String: (rts[rt][k] as Map)['sha256'] as String,
++      };
++
++  test('each runtime passes on its own files', () {
++    for (final rt in ['c2', 'c1', 'stock']) {
++      expect(Research.runtimeCheck(mapped(rt), build, rt)['ok'], true, reason: rt);
++    }
++  });
++  test('the wrong runtime, a changed hash, an extra module or a missing entry fail', () {
++    expect(Research.runtimeCheck(mapped('c2'), build, 'c1')['ok'], false);
++    expect(Research.runtimeCheck({...mapped('c1'), 'libllama_rt_c1.so': '0' * 64}, build, 'c1')['ok'], false);
++    expect(Research.runtimeCheck({...mapped('c1'), 'libggml-cpu-android_armv8.2_2.so': 'h'}, build, 'c1')['ok'], false);
++    expect(Research.runtimeCheck({...mapped('stock'), 'libllama.so': 'h'}, build, 'stock')['ok'], false);
++    expect(Research.runtimeCheck(mapped('c2'), const {}, 'c2')['ok'], false);
++  });
++  test('the R68 hashes', () {
++    expect((rts['c2']['llama'] as Map)['sha256'], startsWith('126bfb4f'));
++    expect((rts['c2']['cpu'] as Map)['sha256'], startsWith('6f1d859a'));
++    expect((rts['c1']['llama'] as Map)['sha256'], startsWith('f2f4f88a'));
++    expect((rts['c1']['cpu'] as Map)['sha256'], startsWith('53bfee45'));
++    expect((rts['stock']['llama'] as Map)['sha256'], startsWith('de2ccec7'));
++    expect((rts['stock']['cpu'] as Map)['sha256'], startsWith('604e0f69'));
++  });
++}
+diff --git a/android/app/src/main/kotlin/com/example/vollie/RestartActivity.kt b/android/app/src/main/kotlin/com/example/vollie/RestartActivity.kt
+new file mode 100644
+--- /dev/null
++++ b/android/app/src/main/kotlin/com/example/vollie/RestartActivity.kt
+@@ -0,0 +1,22 @@
++package com.insaneutils.vollie
++
++import android.app.Activity
++import android.content.Intent
++import android.os.Bundle
++import android.view.WindowManager
++
++/** Kit r30: process restart (as ProcessPhoenix): runs in its own process (":restart"), kills the app's main process,
++ *  starts MainActivity in a new one, then ends itself. Started from the foreground app, so Android 15's background
++ *  activity-start limits do not apply; no permission is needed. */
++class RestartActivity : Activity() {
++    override fun onCreate(savedInstanceState: Bundle?) {
++        super.onCreate(savedInstanceState)
++        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
++        val pid = intent.getIntExtra("pid", -1)
++        if (pid > 0) android.os.Process.killProcess(pid)
++        startActivity(Intent(this, MainActivity::class.java)
++            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
++        finish()
++        Runtime.getRuntime().exit(0)
++    }
++}

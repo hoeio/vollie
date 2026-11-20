@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""R68 scoring (kit r28). Standalone: python3 -I score_r68.py <report.json> [more.json] | --selftest | --write-synthetic DIR
+"""R68 scoring (kit r28; kit r30 = the same plans from one APK). Standalone: python3 -I score_r68.py <report.json> [more.json] | --selftest | --write-synthetic DIR
 
 Scores what prereg/R68-rehearsal-touch-nice-references-device.md §3 predicts and §4 scores, per session and per model,
 with the readings fixed in prereg/R68-amendment-2.md. The item IDs in the output (A1 ... E) are those of
@@ -281,7 +281,7 @@ class Session:
         fill_blocks(r, self.runs)
         self.scored = [x for x in self.runs if x.get('phase') == 'on']
         self.models = list(dict.fromkeys(x.get('model') for x in self.runs))
-        self.complete = r.get('kit') == 'r28' and not r.get('stopped_early') and len(self.scored) == N_SCORED.get(self.rt)
+        self.complete = r.get('kit') in ('r28', 'r30') and not r.get('stopped_early') and len(self.scored) == N_SCORED.get(self.rt)
         # D1: power saving on -> not scored; '?' is scored only if the session reads off at start and end. D2 / R63 §4: plugged.
         soff = power(r.get('power_start')) == 'off' and power(r.get('power_end')) == 'off'
         self.dropped = {}
@@ -342,11 +342,16 @@ def void_checks(s, out):
         out.append(f"    D3 model {m}: models.sha256_end {short(got)}: {'ok' if got == want else 'VOID (model hash differs or is missing)'}; "
                    f"storage.models.{'sha256' if e.get('sha256') or 'present_sha256' not in e else 'present_sha256'} {short(copy)}: {'ok' if copy == want else 'VOID (internal copy fails its sha256 or has none)'}")
     want = LIB_SHA.get(s.rt)
-    libsets = [('build', (r.get('build') or {}).get('libs') or {})] + [(x.get('run_tag'), x['libs']) for x in s.runs if x.get('libs')]
+    b = r.get('build') or {}
+    # kit r30 (one APK, three runtimes): build.libs are c2's; the active runtime's files are build.runtimes[rt]
+    blibs = {e['file']: e['sha256'] for e in (b['runtimes'][s.rt]['llama'], b['runtimes'][s.rt]['cpu'])} \
+        if s.rt in (b.get('runtimes') or {}) else b.get('libs') or {}
+    libsets = [('build', blibs)] + [(x.get('run_tag'), x['libs']) for x in s.runs if x.get('libs')]
     lib_bad, seen = [], 0
     for where, libs in libsets:
         for name, h in libs.items():
-            k = 'cpu' if name.startswith('libggml-cpu') else 'llama' if name == 'libllama.so' else None
+            k = 'cpu' if name.startswith(('libggml-cpu', 'libggml_cpu_rt_')) else \
+                'llama' if name == 'libllama.so' or name.startswith('libllama_rt_') else None
             if k and want:
                 seen += 1
                 if h != want[k]:
@@ -1098,6 +1103,27 @@ def selftest():
         with open(p, 'w') as f:
             f.write('c2gz:' + base64.b64encode(gzip.compress(json.dumps(synth()).encode())).decode())
         has(run([p]), 'VERDICT touch, olmoe, session B: PASS')
+    # 9. kit r30 (one APK): build.libs are c2's, build.runtimes holds each runtime's files; c1 / stock rows map renamed files
+    def r30(rt, **k):
+        r = synth(rt=rt, **k)
+        r['kit'], r['app'] = 'r30', '1.30.0+30'
+        names = {'c2': ('libllama.so', 'libggml-cpu-android_armv8.2_2.so')}
+        names.update({x: (f'libllama_rt_{x}.so', f'libggml_cpu_rt_{x}.so') for x in ('c1', 'stock')})
+        r['build'] = {'runtime': 'c2', 'libs': {'libllama.so': LIB_SHA['c2']['llama'], 'libggml-cpu-android_armv8.2_2.so': LIB_SHA['c2']['cpu']},
+                      'runtimes': {x: {'llama': {'file': names[x][0], 'sha256': LIB_SHA[x]['llama']},
+                                       'cpu': {'file': names[x][1], 'sha256': LIB_SHA[x]['cpu']}} for x in names}}
+        for x in r['runs']:
+            if x.get('libs'):
+                x['libs'] = {names[rt][0]: LIB_SHA[rt]['llama'], names[rt][1]: LIB_SHA[rt]['cpu'], 'libggml.so': 'e' * 64}
+        return r
+    t = score(r30('c2'), r30('c1', started='2026-11-20T03:00:00'), r30('stock', started='2026-11-20T03:30:00'))
+    has(t, 'D3 libraries (runtime c2', ': ok')
+    has(t, 'D3 libraries (runtime c1', ': ok')
+    has(t, 'D3 libraries (runtime stock', ': ok')
+    assert not any('not complete' in l for l in t), '\n'.join(t)
+    r = r30('c1')
+    next(x for x in r['runs'] if x.get('libs'))['libs']['libllama_rt_c1.so'] = LIB_SHA['c2']['llama']
+    has(score(r), 'D3 libraries (runtime c1', 'VOID (library hash differs)', 'libllama_rt_c1.so=126bfb4f')
     print('selftest OK')
     return 0
 

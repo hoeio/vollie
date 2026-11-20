@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Campaign 2 research-kit report parser (kits r17 to r28; schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
+"""Campaign 2 research-kit report parser (kits r17 to r28 and r30 (r28's protocol, one APK); schemas in campaigns/02-25toks-5pct/reports/memo-10-kit-r17.md,
 memo-12-kit-r18.md, memo-14-kit-r19.md, memo-17-kit-r20.md, memo-19-kit-r21.md, memo-20-kit-r22.md, memo-22-kit-r23.md, memo-23-kit-r24.md, memo-26-kit-r25.md, memo-27-kit-r26.md, memo-30-kit-r27.md and memo-32-kit-r28.md).
 Standard library only.
 
@@ -1740,6 +1740,13 @@ def r28_checks(r):
         for arm in sorted({str(x.get('arm')) for x in runs if x.get('model') == m}):
             t = {md5(x['text'])[:8] for x in runs if x.get('model') == m and str(x.get('arm')) == arm and x.get('text') is not None}
             out.append(f"{m} {arm} (r28) texts: {sorted(t)}: {'same' if len(t) == 1 else 'DIFFER (kill rule)'}")
+    if r.get('kit') == 'r30':  # kit r30 (app patch 0013): one APK, runtime per process, mapped libraries checked per load
+        rc = [x.get('runtime_check') for x in runs if x.get('runtime_check') is not None]
+        bad = [x.get('run_tag') for x in runs if (x.get('runtime_check') or {}).get('ok') is False]
+        info = r.get('runtime_info') or {}
+        out.append(f"r30: process runtime {info.get('active')} (stored {info.get('stored')}, preload {info.get('preload')}, "
+                   f"VOLLIE_CPU_MODULE {info.get('cpuModule')}); mapped-library checks {len(rc)}, failed "
+                   f"{','.join(map(str, bad)) or 'none'}{'' if rc else ' (none recorded: D3 cannot be excluded)'}")
     return out + storage_lines(r)
 
 
@@ -1867,7 +1874,7 @@ def main(argv=None):
         else (r25_checks(r), r25_tables(r)) if r.get('kit') == 'r25' \
         else (r26_checks(r), r26_tables(r)) if r.get('kit') == 'r26' \
         else (r27_checks(r), r27_tables(r)) if r.get('kit') == 'r27' \
-        else (r28_checks(r), r28_tables(r)) if r.get('kit') == 'r28' else (
+        else (r28_checks(r), r28_tables(r)) if r.get('kit') in ('r28', 'r30') else (
         checks(r, o.prompt), identity(r), groups(r, o.min_mhz, o.fault_run), ab(r, o.min_mhz, o.sigma),
         r16_compare(r, r16), waits(r), warm(r))
     for part in parts:
@@ -2408,6 +2415,15 @@ def selftest():
     assert any(l.startswith('  olmoe: 36 of 36 | 400 / 40 / 12 | 36 |') for l in t), t
     assert any(l == '  granite: 0 | 2900 | 2300 | 0 of 26' for l in t), t
     assert smaps_model28(r28['runs'][14], 'smaps_before') == 2900 and smaps_model28(r28['runs'][2], 'smaps_before') == 2950
+    # kit r30: the same rows under kit r30, with the per-load mapped-library check (one failed)
+    r30 = dict(r28, kit='r30', runtime_info={'active': 'c2', 'stored': 'c2', 'preload': None, 'cpuModule': None},
+               runs=[dict(x) for x in r28['runs']])
+    r30['runs'][0]['runtime_check'] = {'runtime': 'c2', 'ok': True}
+    r30['runs'][12]['runtime_check'] = {'runtime': 'c2', 'ok': False}
+    c = r28_checks(r30)
+    assert any(l.startswith('r30: process runtime c2 (stored c2, preload None, VOLLIE_CPU_MODULE None); mapped-library checks 2, '
+                            'failed ' + str(r30['runs'][12]['run_tag'])) for l in c), c
+    assert r28_tables(r30) == t
     # the plateau gate, as the app's unit test (R62's pos 4 and 6 series, every 5 s)
     p4 = [0.873, 0.873, 0.873, 0.873, 0.802, 0.788, 0.755, 0.741, 0.721, 0.735, 0.725, 0.735, 0.748, 0.764, 0.77]
     p6 = [0.725, 0.767, 0.789, 0.81, 0.833, 0.833, 0.808, 0.778, 0.753, 0.741, 0.717, 0.737, 0.753, 0.776, 0.79]

@@ -5,6 +5,8 @@ R68's reports, the lead scores them and closes campaign 2.
 
 ## Next actions
 
+*Note 2026-11-20: kit r30 is campaign 2's one-app R68 re-run (R71); campaign 3's next kit after r29 is r31, not r30.*
+
 1. R69 (device probe: read rate, compute ceiling, residency, GPU headroom) is pre-registered
    (prereg/R69-probe-read-rate-capacity-gpu-device.md; probe patch patches/llama.cpp-c3/0001-probe.patch, app patch
    patches/app-c3/0001-kit-r29-probe.patch). Next: the owner creates tag `prereg-R69`; the lead uploads probe kit r29

@@ -22,6 +22,14 @@
 #   kit_build.json gets "app_id", and the APK and BUILD names get -app. r28 stock app (with LIBS_FROM, step 2):
 #   LIBS_FROM=<lib/arm64-v8a of the r28-stock APK> APP_ID_SUFFIX=.c2stock APP_LABEL="Vollie stock r28" RUNTIME=stock \
 #     tools/c2_build_kit.sh lab/llama.cpp-r28stock lab/app-c2 none
+#   EXTRA_RUNTIMES="<rt>=<apk> ..." (default unset: one runtime): kit r30's multi-runtime APK. Each <apk>'s libllama.so and
+#   libggml-cpu-android_armv8.2_2.so are copied byte-identical into the app as libllama_rt_<rt>.so and
+#   libggml_cpu_rt_<rt>.so (names llamadart's CPU pattern and ggml's load-all do not match; the app's Android side loads
+#   them for runtime <rt>, app patch 0013) and removed again after the build; kit_build.json gets "runtimes" (per runtime
+#   the file names and sha256 of both, and the source APK's own kit_build.json). kit r30 (c2 libraries from the r28 APK):
+#   LIBS_FROM=<lib/arm64-v8a of the r28 APK> EXTRA_RUNTIMES="c1=lab/dist-c2/vollie-c2-1.28.0+28-research-r28-c1.apk
+#     stock=lab/dist-c2/vollie-c2-1.28.0+28-research-r28-stock.apk" tools/c2_build_kit.sh lab/llama.cpp-c1r28 lab/app-c2 \
+#     patches/llama.cpp patches/llama.cpp-c1-olmoe
 # out: lab/dist-c2/vollie-c2-<version>-research-<kit>.apk and BUILD-<kit>.txt; the app's assets/kit_build.json
 #      (llama.cpp commit, sha256 of every series patch, app patch and built library) goes into the kit's report.
 set -eu
@@ -48,6 +56,15 @@ rm -rf "$X"
 if [ -n "${LIBS_FROM:-}" ]; then M=$(cd "$LIBS_FROM" && pwd); else sh "$R/android/build_cpu.sh" "$SRC" "$M"; fi
 J=$APP/android/app/src/main/jniLibs/arm64-v8a; B=$APP/third_party/llamadart/third_party/bin/android-arm64
 cp "$M/libggml-cpu-android_armv8.2_2.so" "$J/"; cp "$M/libllama.so" "$B/"
+EXTRA=; XR=$(mktemp -d); G=$APP/android/app/build.gradle; MF=$APP/android/app/src/main/AndroidManifest.xml
+cleanup() { [ -z "$EXTRA" ] || rm -f $EXTRA; rm -rf "$XR"; [ ! -f "$G.orig" ] || mv "$G.orig" "$G"; [ ! -f "$MF.orig" ] || mv "$MF.orig" "$MF"; }
+trap cleanup EXIT
+for e in ${EXTRA_RUNTIMES:-}; do
+  rt=${e%%=*}; apk=${e#*=}; mkdir -p "$XR/$rt"
+  unzip -o -q "$apk" lib/arm64-v8a/libllama.so lib/arm64-v8a/libggml-cpu-android_armv8.2_2.so assets/flutter_assets/assets/kit_build.json -d "$XR/$rt"
+  cp "$XR/$rt/lib/arm64-v8a/libllama.so" "$J/libllama_rt_$rt.so"; cp "$XR/$rt/lib/arm64-v8a/libggml-cpu-android_armv8.2_2.so" "$J/libggml_cpu_rt_$rt.so"
+  EXTRA="$EXTRA $J/libllama_rt_$rt.so $J/libggml_cpu_rt_$rt.so"
+done
 
 # 3. Build record for the report.
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
@@ -58,11 +75,29 @@ sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
   printf '],\n "libs": {"libggml-cpu-android_armv8.2_2.so": "%s", "libllama.so": "%s"}}\n' \
     "$(sha "$M/libggml-cpu-android_armv8.2_2.so")" "$(sha "$M/libllama.so")"; } > "$APP/assets/kit_build.json"
 python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$APP/assets/kit_build.json"
+if [ -n "${EXTRA_RUNTIMES:-}" ]; then
+  python3 -I - "$APP/assets/kit_build.json" "$XR" "$J" $EXTRA_RUNTIMES <<'PY'
+import hashlib, json, os, sys
+kb, xr, j, extra = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+sha = lambda f: hashlib.sha256(open(f, 'rb').read()).hexdigest()
+b = json.load(open(kb))
+rts = {b['runtime']: {'llama': {'file': 'libllama.so', 'sha256': b['libs']['libllama.so']},
+                      'cpu': {'file': 'libggml-cpu-android_armv8.2_2.so', 'sha256': b['libs']['libggml-cpu-android_armv8.2_2.so']}}}
+for e in extra:
+    rt, apk = e.split('=', 1)
+    rts[rt] = {'llama': {'file': f'libllama_rt_{rt}.so', 'sha256': sha(f'{j}/libllama_rt_{rt}.so')},
+               'cpu': {'file': f'libggml_cpu_rt_{rt}.so', 'sha256': sha(f'{j}/libggml_cpu_rt_{rt}.so')},
+               'apk': os.path.basename(apk), 'apk_sha256': sha(apk),
+               'build': json.load(open(f'{xr}/{rt}/assets/flutter_assets/assets/kit_build.json'))}
+b['runtimes'] = rts
+json.dump(b, open(kb, 'w'), indent=1)
+open(kb, 'a').write('\n')
+PY
+fi
 
 # 4. APK. With APP_ID_SUFFIX the app copy's gradle and manifest are swapped for this build only (restored on exit).
-G=$APP/android/app/build.gradle; MF=$APP/android/app/src/main/AndroidManifest.xml
 if [ -n "${APP_ID_SUFFIX:-}" ]; then
-  cp "$G" "$G.orig"; cp "$MF" "$MF.orig"; trap 'mv "$G.orig" "$G"; mv "$MF.orig" "$MF"' EXIT
+  cp "$G" "$G.orig"; cp "$MF" "$MF.orig"
   sed -i '' "s/applicationIdSuffix \".c2\"/applicationIdSuffix \"$APP_ID_SUFFIX\"/" "$G"
   sed -i '' "s/android:label=\"Vollie C2\"/android:label=\"${APP_LABEL:-Vollie $APP_ID_SUFFIX}\"/" "$MF"
   grep -q "applicationIdSuffix \"$APP_ID_SUFFIX\"" "$G" && ! cmp -s "$MF" "$MF.orig" || { echo "app id or label swap failed"; exit 2; }
@@ -73,7 +108,7 @@ fi
 rm -rf "$APP/.dart_tool/hooks_runner/shared/llamadart" "$APP/.dart_tool/hooks_runner/llamadart" "$APP/.dart_tool/flutter_build"
 (cd "$APP" && flutter clean >/dev/null && LLAMADART_ALLOW_LEGACY_LOCAL_BUNDLES=1 flutter build apk --release)
 A=$APP/build/app/outputs/flutter-apk/app-release.apk; X=$(mktemp -d)
-for f in "$M/libllama.so" "$M/libggml-cpu-android_armv8.2_2.so"; do
+for f in "$M/libllama.so" "$M/libggml-cpu-android_armv8.2_2.so" $EXTRA; do
   b=$(basename "$f"); unzip -o -q "$A" "lib/arm64-v8a/$b" -d "$X"
   cmp -s "$X/lib/arm64-v8a/$b" "$f" || { echo "MISMATCH: the APK's $b is not the one just built"; exit 1; }; done
 unzip -o -q "$A" assets/flutter_assets/assets/kit_build.json -d "$X"
