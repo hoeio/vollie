@@ -358,6 +358,13 @@ def void_checks(s, out):
                     lib_bad.append(f'{where}:{name}={short(h)}')
     out.append(f"    D3 libraries (runtime {s.rt}, memo-32 §5's full values): {seen} hashes in build.libs + {len(libsets) - 1} load rows: "
                f"{'none recorded: VOID cannot be excluded' if not seen else 'ok' if not lib_bad else 'VOID (library hash differs): ' + ', '.join(lib_bad)}")
+    if b.get('runtimes'):  # kit r30 (R71 §4): the label must be the process's own, and every load row's runtime_check must pass
+        act = (r.get('runtime_info') or {}).get('active')
+        rc_bad = [str(x.get('run_tag')) for x in s.runs if x.get('libs') and not (
+            (x.get('runtime_check') or {}).get('ok') is True and (x.get('runtime_check') or {}).get('runtime') == s.rt)]
+        out.append(f"    D3 runtime identity (r30): runtime {r.get('runtime')!r}, runtime_info.active {act!r}: "
+                   f"{'ok' if act and act == r.get('runtime') == s.rt else 'VOID (runtime label missing or differs from the process)'}; "
+                   f"runtime_check failed or missing in {len(rc_bad)} load rows{': VOID ' + ', '.join(rc_bad) if rc_bad else ''}")
     pw = [x for x in s.runs if power(x.get('power')) == 'on']
     unk = [x for x in s.runs if power(x.get('power')) == '?']
     out.append(f"    D1 power saving: at start {power(r.get('power_start'))}, at end {power(r.get('power_end'))}, session_power "
@@ -1115,6 +1122,8 @@ def selftest():
         for x in r['runs']:
             if x.get('libs'):
                 x['libs'] = {names[rt][0]: LIB_SHA[rt]['llama'], names[rt][1]: LIB_SHA[rt]['cpu'], 'libggml.so': 'e' * 64}
+                x['runtime_check'] = {'runtime': rt, 'ok': True}
+        r['runtime'], r['runtime_info'] = rt, {'active': rt}
         return r
     t = score(r30('c2'), r30('c1', started='2026-11-20T03:00:00'), r30('stock', started='2026-11-20T03:30:00'))
     has(t, 'D3 libraries (runtime c2', ': ok')
@@ -1124,6 +1133,11 @@ def selftest():
     r = r30('c1')
     next(x for x in r['runs'] if x.get('libs'))['libs']['libllama_rt_c1.so'] = LIB_SHA['c2']['llama']
     has(score(r), 'D3 libraries (runtime c1', 'VOID (library hash differs)', 'libllama_rt_c1.so=126bfb4f')
+    has(t, 'D3 runtime identity (r30)', ': ok', 'in 0 load rows')
+    r = r30('c1'); r['runtime_info'] = {}                       # label not backed by the process: VOID
+    has(score(r), 'D3 runtime identity (r30)', 'VOID (runtime label missing')
+    r = r30('stock'); next(x for x in r['runs'] if x.get('libs'))['runtime_check'] = {'runtime': 'stock', 'ok': False}
+    has(score(r), 'D3 runtime identity (r30)', 'runtime_check failed or missing in 1 load rows: VOID')
     print('selftest OK')
     return 0
 
