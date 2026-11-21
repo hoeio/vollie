@@ -181,6 +181,7 @@ cites as `lab/...` are not in this repository.
 - **Build versions.** The 20.51 was measured on research build 2.2.21+44. The Google Play build carries the
   same configuration: the production build 2.3.0+45 has the same native code (see the paragraph after R49 in
   [reports/03_final.md](reports/03_final.md)).
+  *Correction 2026-11-21: the Google Play build is now 3.0.0+46 (owner). The app offers two runtimes, shown as C1 (campaign 1) and C2 (campaign 2). The sentence above describes the state at campaign 1's close.*
 
 ## How AI is used in this project
 
