@@ -1,0 +1,69 @@
+== session A (r31_2026-11-21T1122.json): kit r31, runtime c2, label 'deep-sleeping list on', started 2026-11-21T11:22:12.403683, r28 runs 72 (scored 62) ==
+  void checks (§4, kit not lever; D1 to D3):
+    D3 model olmoe: models.sha256_end 5abf710b…8e444abb: ok; storage.models.present_sha256 5abf710b…8e444abb: ok
+    D3 model granite: models.sha256_end 8df94de7…a0bc0f45: ok; storage.models.present_sha256 8df94de7…a0bc0f45: ok
+    D3 libraries (runtime c2, memo-32 §5's full values): 12 hashes in build.libs + 5 load rows: ok
+    D3 runtime identity (r30): runtime 'c2', runtime_info.active 'c2': ok; runtime_check failed or missing in 0 load rows
+    D1 power saving: at start off, at end off, session_power 'power-save off'; reads on in 0 of 72 runs (none); unread ('?') in 0 (scored only when start and end both read off)
+    prediction 'power saving reads off in every run' (P 0.95): hit
+    D2 scored runs left out of every statistic: 0 of 62
+    layout check (2026-11-19): block kind per group from the run, design.blocks or the id suffix; cell from env; the run id suffix disagrees in 0 of 62 scored runs (0 without a suffix)
+  claim-format blocks (descriptive; D2: valid runs only; C1 strict: uncapped = policy 4 >= 2419 and policy 7 >= 2841 in cap_before and cap_after):
+    b1 olmoe off (olmoe_off_claim): valid 10 of 10, median 25.14 tok/s, below 25.0: 3, uncapped 10 of 10 (written reading, cpu 7 before >= 2419: 10); C2c block is not capped (0 capped runs); cap states ['2419/2841->2419/2841']
+      C3 prediction, median uncapped: inside (23 to 25.4)
+      prediction, runs below 25.0 in b1: 3: MISS (4 to 7)
+      C2a prediction, uncapped in at least 9 of 10 runs of b1 (P 0.75): hit (10; written reading 10)
+    b2 granite num (granite_num_claim): valid 10 of 10, median 23.21 tok/s, below 25.0: 10, uncapped 10 of 10 (written reading, cpu 7 before >= 2419: 10); C2c block is not capped (0 capped runs); cap states ['2419/2841->2419/2841']
+      C3 prediction, median uncapped: inside (22.5 to 24.5)
+    b5 olmoe num (olmoe_num_claim): valid 10 of 10, median 27.21 tok/s, below 25.0: 1, uncapped 8 of 10 (written reading, cpu 7 before >= 2419: 8); C2c block is capped (2 capped runs); cap states ['2150/2150->2150/2150', '2150/2150->2419/2841', '2419/2841->2419/2841']
+    C5 b5 median minus b1 median (OLMoE num + touch + nice; position confounded: b5 last, b1 first): 27.21 - 25.14 = +2.07 tok/s: MISS (0.4 to 1.6)
+  identity of the greedy text (§4, D4): md5 of text per model and arm, all r28 rows:
+    olmoe num: 12 rows, ['40f6ce50']: same
+    olmoe off: 30 rows, ['f8a9fdc4']: same
+    granite num: 30 rows, ['13584df0']: same
+  B1/B2 nice permission (session, every quad N run of both models): N runs 16; every pool thread at -10 with f0 (and -10 in workers_after) in 16; any thread at -10 in 16; per thread ok / not ok {'w0': (16, 0), 'w1': (16, 0), 'w2': (16, 0)}; errnos none (13 = EACCES): permitted; prediction 'the set succeeds' (P 0.5): hit
+  olmoe: factors (D2: 4 whole valid quads)
+    A5 touch (T - t), tok/s paired per quad: +0.97 ± 0.44 (n 4 quads): prediction inside (-0.5 to 1.5); not negative beyond 2 x SE
+    A6 end pass (src=want, pages / set >= 0.90, set x 4096 within 1 % of want_mb) in every gated T run: 15 of 18: prediction MISS; failing: olmoe_num_claim.0(src=want pages/set=1.000 set=2887MB want=2973), olmoe_num_claim.1(src=want pages/set=1.000 set=2895MB want=2980), olmoe_num_claim.2(src=want pages/set=1.000 set=2899MB want=2985)
+    A1 source of 'mapped' for olmoe: smaps by inode (> 0 in every scored quad run)
+    A3 waits >= 60 s (wait_ms): T 1 of 8 runs, t 3 of 8; A4 quads holding a T and a t run over 60 s: 1 of 4
+    A1/A4 missing MB at run start (want - mapped, scored): median T 0 / t 2735: effect 1.00 (= -100 %); prediction MISS (-90 to -30); §3 mechanism 'lower by at least half': hit
+    A1/A4 missing MB at run start (want - resident, reported only): median T 0 / t 454: effect 1.00 (= -100 %)
+    A2 unscored: wait_lost_mb (before the hold) T - t -375 ± 224 (n 4 quads); TTFT ms T - t -368 ± 239 (n 4 quads); decode majflt T - t -48 ± 27 (n 4 quads); final pass medians: ms 212.6, majflt 0, minflt 0
+    A4/A7 loss endpoint: not testable this session (1 quads with a T and a t run over 60 s, fewer than 3)
+    VERDICT touch, olmoe, session A: loss not testable, speed not negative (neither pass nor kill; §7's 'it stays on' does not follow)
+      A2 (lead): the loss rule is read after touch's own final pass, so it is a mechanism check of the final pass.
+      A2 §7 'it stays on' needs: loss rule pass (no), tok/s condition of §4 (yes), wait_lost_mb not higher with T (yes): does not hold in this session
+      AMBIGUOUS: A2 'wait_lost_mb not higher with T' has no stated statistic; read as the paired per-quad mean (T - t) <= 0, without an SE margin
+    B3 quads dropped from the nice factor (restore failed or an n run's pool thread still at -10): 4 of 4 (olmoe_off_q.0, olmoe_off_q_touch.0, olmoe_off_q.1, olmoe_off_q_touch.1, olmoe_off_q_touch.2, olmoe_off_q.2, olmoe_off_q_touch.3, olmoe_off_q.3)
+    AMBIGUOUS: D2's 'fewer than 3 whole quads voids the factor' is written for invalid runs; applied to quads dropped by B3 too
+    VERDICT nice, olmoe, session A: VOID factor (0 whole quads, fewer than 3)
+  granite: factors (D2: 4 whole valid quads)
+    A5 touch (T - t), tok/s paired per quad: -0.69 ± 1.23 (n 4 quads): prediction MISS (-0.5 to 1); not negative beyond 2 x SE
+    A6 end pass (src=want, pages / set >= 0.90, set x 4096 within 1 % of want_mb) in every gated T run: 8 of 8: prediction hit
+    A1 source of 'mapped' for granite: smaps by inode (> 0 in every scored quad run)
+    A3 waits >= 60 s (wait_ms): T 3 of 8 runs, t 3 of 8; A4 quads holding a T and a t run over 60 s: 2 of 4
+    A1/A4 missing MB at run start (want - mapped, scored): median T 0 / t 2068: effect 1.00 (= -100 %); prediction MISS (-90 to -30); §3 mechanism 'lower by at least half': hit
+    A1/A4 missing MB at run start (want - resident, reported only): median T 0 / t 289: effect 1.00 (= -100 %)
+    A2 unscored: wait_lost_mb (before the hold) T - t -138 ± 84 (n 4 quads); TTFT ms T - t -319 ± 158 (n 4 quads); decode majflt T - t -140 ± 84 (n 4 quads); final pass medians: ms 186.7, majflt 0, minflt 0
+    A4/A7 loss endpoint: not testable this session (2 quads with a T and a t run over 60 s, fewer than 3)
+    VERDICT touch, granite, session A: loss not testable, speed not negative (neither pass nor kill; §7's 'it stays on' does not follow)
+      A2 (lead): the loss rule is read after touch's own final pass, so it is a mechanism check of the final pass.
+      A2 §7 'it stays on' needs: loss rule pass (no), tok/s condition of §4 (yes), wait_lost_mb not higher with T (yes): does not hold in this session
+      AMBIGUOUS: A2 'wait_lost_mb not higher with T' has no stated statistic; read as the paired per-quad mean (T - t) <= 0, without an SE margin
+    B3 quads dropped from the nice factor (restore failed or an n run's pool thread still at -10): 4 of 4 (granite_num_q_touch.0, granite_num_q.0, granite_num_q_touch.1, granite_num_q.1, granite_num_q.2, granite_num_q_touch.2, granite_num_q.3, granite_num_q_touch.3)
+    AMBIGUOUS: D2's 'fewer than 3 whole quads voids the factor' is written for invalid runs; applied to quads dropped by B3 too
+    VERDICT nice, granite, session A: VOID factor (0 whole quads, fewer than 3)
+== levers over the c2 sessions scored (A) (A8) ==
+  one c2 session supplied: A8 needs both; the lines below are provisional
+  VERDICT touch, olmoe, both sessions: mixed (per session {'A': 'untestable'})
+  VERDICT touch, granite, both sessions: mixed (per session {'A': 'untestable'})
+  VERDICT nice, olmoe, both sessions: mixed (per session {'A': 'void'})
+  VERDICT nice, granite, both sessions: mixed (per session {'A': 'void'})
+  AMBIGUOUS: A8 is listed under touch in amendment 2; its wording ('a lever') is applied to nice as well
+== go rule (memo-31 §4, R68 §4; C2, C4, C5) ==
+  no scoreable session B (deep-sleeping list off): the go rule cannot be read
+== still open after amendment 2 (met in this scoring): 3 ==
+  1. A2 'wait_lost_mb not higher with T' has no stated statistic; read as the paired per-quad mean (T - t) <= 0, without an SE margin
+  2. D2's 'fewer than 3 whole quads voids the factor' is written for invalid runs; applied to quads dropped by B3 too
+  3. A8 is listed under touch in amendment 2; its wording ('a lever') is applied to nice as well

@@ -986,6 +986,82 @@ size (about 2.0 GB) at which OLMoE cannot (its decode alone needs 2.15 GB).
   matches, signature `c49dde85...`, versionCode 28 as c1, zip alignment ok. The file is intact; the likely cause is
   the phone's download.
 
+### R71 R68 re-run in one unattended app (kit r30 S1 and cool, kit r31 S2 and S3)
+
+- **Date:** S1 2026-11-20 20:59 to 21:58, cool-down to 22:29; S2/S3 2026-11-21 10:01 to 11:18 (Resume chain).
+  **Label:** *device*.
+- **Sources:**
+  - [device/r30-chain-0-c2-c2-2026-11-20T2059.json](device/r30-chain-0-c2-c2-2026-11-20T2059.json),
+    [device/r30-chain-2-c1-c1-2026-11-21T1001.json](device/r30-chain-2-c1-c1-2026-11-21T1001.json),
+    [device/r30-chain-3-stock-stock-2026-11-21T1031.json](device/r30-chain-3-stock-stock-2026-11-21T1031.json);
+  - chain state and logs `device/r30-chain*_2026-11-2{0,1}.*`;
+  - scorer output [score-r71-S1.txt](memo-33-work/score-r71-S1.txt) and [score-r71-S2S3.txt](memo-33-work/score-r71-S2S3.txt).
+  - Pre-registration [R71](../prereg/R71-r68-rerun-one-app-unattended-device.md), [amendment 1](../prereg/R71-amendment-1.md).
+- **Valid:** power saving off in 120 of 120 runs. Every load's runtime check is ok (the c2, c1 and stock libraries
+  are byte-identical to R68 §0). Texts are identical within each arm.
+- **S1, c2 (list on):** b1 OLMoE off 25.53 tok/s (0 of 10 below 25.0); b2 Granite num 23.81; b5 OLMoE num + touch
+  28.48 (0 of 10 below 25.0). Every claim-format run was uncapped. The R71 §4 go-rule reading is met (rehearsal).
+  - Touch: neither pass nor kill on either model (loss endpoint not testable).
+  - Nice: void (no contrast).
+- **S2/S3 (a day later):** c1 Granite 21.68, c1 OLMoE 24.28, stock Granite 16.61, stock OLMoE 23.68 tok/s.
+- **Predictions:**
+
+  | prediction | result |
+  |---|---|
+  | b1, b2, below-25 count | inside |
+  | b5 (band 25.0 to 27.8) | MISS high |
+  | c1 both models, stock Granite | inside |
+  | stock OLMoE (band 6 to 18) | MISS high |
+  | order c2 > c1 > stock on both models | hit |
+  | chain finishes without a stop | MISS |
+  | nice void | hit |
+  | touch pass | MISS on both (not testable) |
+- **Chain:** r30 stopped at the restart into c1. Diagnosis (inferred, emulator-reproduced): r30 cleared
+  keep-screen-on at the end of S1; the 10 min screen timeout, confirmed by the owner, put the phone to sleep; Android
+  15 then blocked the restart. r31's restart worked on the phone on the first try.
+- **Lead's reading (cross-day, not scored):**
+  - OLMoE: c2's lead over stock is mostly the num arm (28.48 / 25.53 / 23.68).
+  - Granite: it is mostly the runtime (23.81 against 16.61).
+
+### R70 Claim round: OLMoE num + touch, list on, power saving off (kit r31 c2 runtime, amendments 1 and 2)
+
+- **Date:** 2026-11-21 11:22 to 12:23 local. **Label:** *device*.
+- **Sources:** [device/r31_2026-11-21T1122.json](device/r31_2026-11-21T1122.json) (sha256 `4cae5203...131d8a6`);
+  scorer output [memo-33-work/score-r70.txt](memo-33-work/score-r70.txt); pre-registration
+  [R70](../prereg/R70-claim-olmoe-num-touch-list-on-device.md),
+  [amendment 1](../prereg/R70-amendment-1.md), [amendment 2](../prereg/R70-amendment-2.md).
+- **Void checks (§2 and amendments):** none met.
+  - Model and library hashes ok; runtime c2, `runtime_check` ok in every load.
+  - Power saving off in 72 of 72 runs; charger out; not killed; label "list on"; 10 of 10 scored b5 runs.
+  - b5 text `40f6ce50` in all 12 rows, equal to R68's.
+- **Claim rule (§2): PASS.** The b5 median is **27.21 tok/s**, at least 25.0 (1 of 10 below 25.0; 2 of 10 capped at
+  2150 at the start, counted as the rule says).
+- **Deviation, stated with the claim:**
+  - R70's phone state asks for a 30 min rest before the start; amendment 1 asks for it after R71.
+  - The session started 3 min 52 s after R71's S3 ended (11:18:20), at battery 47 %, so the start was **warm,
+    not cool**.
+  - The rest rule is not in §2's void list, so the verdict stands as written.
+  - The claim is therefore stated with "warm start" in place of §4's "cool start".
+  - The deviation works against the claim: a warm phone, and two capped runs, none of them in S1 of R71.
+- **Other blocks:** b1 OLMoE off 25.14 (3 of 10 below 25.0); b2 Granite num 23.21 (10 of 10 below 25.0; Granite
+  does not reach 25).
+- **Predictions (§3):**
+
+  | prediction | result |
+  |---|---|
+  | b5 (band 24.8 to 28.0) | inside |
+  | below 25.0: 1 (band 0 to 3) | inside |
+  | P(pass) 0.80 | pass |
+  | uncapped in at least 9 of 10 b5 runs | MISS (8) |
+  | b1 (band 23.0 to 26.0) | inside |
+  | b2 (band 22.0 to 24.5) | inside |
+- **Result (§4):** campaign 2's goal is met on OLMoE-1B-7B (`olmoe-Mi`, budget +5 %): **median 27.21 tok/s,
+  *device*, R70**.
+  - Conditions: power saving off, deep-sleeping list on, warm start, internal model copy.
+  - Granite-4.0-H-Tiny reaches 23.21 tok/s (num) under the same conditions; it does not reach 25.
+  - References under power saving off and list on (R71): campaign 1's runtime OLMoE 24.28 / Granite 21.68, stock
+    OLMoE 23.68 / Granite 16.61.
+
 Memos (not R-entries): [memo-01, candidate re-check and host screen plan](memo-01-candidates-and-host-screen.md);
 [memo-28, code audit of the kit app and runtime: thread pin lost in gated runs, per-run waste](memo-28-code-audit.md);
 [memo-29, joint round (Bonnie and Ebony): TEST list T1-T11 and TRY list Y1-Y12 for Tom; working files in `memo-29-work/`](memo-29-joint-test-and-try-lists.md);
