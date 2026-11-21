@@ -24,6 +24,8 @@
 #   eval with C3_GRP4=<table.npz> and groups 'grp4': per token, the 4 neurons of a group are zeroed together when the
 #   group's largest |a| is under the layer's train threshold at quantile <sparsity> (= skipping their 4 gate/up rows
 #   and 4 down columns).
+# memo-07 U1(b): C3_DENSE_W=attn_k,attn_v (weight names) keeps those mat-muls on the unedited input: they are not
+#   targets, so the consumer plan restores the shared input after the last target reader (refused if they read first).
 # memo-05 T5: C3_KEEPSTAT=<out.npz> (eval, element rule) saves per input and column how often it was kept, and the mean
 #   fraction of columns kept by at least one token of each 32-token window (the 32-token union).
 import sys, os, re, time, json, ctypes as C, numpy as np, collections
@@ -36,7 +38,7 @@ L.llama_vocab_bos.restype = C.c_int32; L.llama_vocab_bos.argtypes = [C.c_void_p]
 KIND = {'attn_q': 'qkv', 'attn_k': 'qkv', 'attn_v': 'qkv', 'attn_qkv': 'qkv', 'attn_output': 'o', 'ffn_gate': 'gu', 'ffn_up': 'gu', 'ffn_down': 'down',
         'channel_mix_key': 'cmix_k', 'channel_mix_value': 'cmix_v'}   # RWKV-7: cmix_v's input is relu(k)^2 (H4 counts its exact zeros)
 CBLK = int(os.environ.get('C3_BLOCK', '0'))   # H3b: 0 = per element; 32 or 64 = whole input blocks (needs a table from this calib)
-QS = (0.02, 0.05, 0.08, 0.1, 0.15, 0.2, 0.3, 0.35, 0.4, 0.45, 0.5, 0.6, 0.7, 0.8)   # tables store their own list as 'qs'
+QS = (0.02, 0.05, 0.08, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.42, 0.45, 0.5, 0.6, 0.7, 0.8)   # tables store their own list as 'qs'
 if mode == 'calib': UB, out_path, NT = 512, sys.argv[6], int(sys.argv[7]) if len(sys.argv) > 7 else 8
 elif mode == 'eval':
     UB, tab, SP, GROUPS, NDENSE = int(sys.argv[6]), sys.argv[7], float(sys.argv[8]), sys.argv[9], int(sys.argv[10]); NT = int(sys.argv[11]) if len(sys.argv) > 11 else 8
@@ -60,6 +62,7 @@ if G4:
     _g = np.load(G4); _ql = list(_g['qs']); G4THR = {int(k[4:]): float(_g[k][_ql.index(SP)]) for k in _g.files if k.startswith('thr:')}; G4P = {l: _g['perm:%d' % l] for l in G4THR}
 KEEP = os.environ.get('C3_KEEPSTAT'); kc = {}; kn = collections.Counter(); ku = collections.defaultdict(lambda: [0.0, 0])
 def ptr(p): return C.cast(p, C.POINTER(ggml_tensor)).contents
+DENSE_W = set(filter(None, os.environ.get('C3_DENSE_W', '').split(',')))
 nodes = []; mmk = {}; XREST = {}; RESTORE = set(); pend = collections.defaultdict(list); unedited = collections.Counter()
 inp = {}; outn = {}; phase = ['discover']; pos0 = [0]; samp = collections.defaultdict(list); rng = np.random.default_rng(0)
 cnt = collections.defaultdict(lambda: [0.0, 0])   # group -> [zeroed elements, elements]
@@ -70,7 +73,7 @@ def cb(t, ask, ud):
         op = ggml.ggml_op_desc(t); nodes.append((C.cast(t, C.c_void_p).value, bytes(tt.name), op, [s for s in tt.src if s], tt.view_src))
         if op != b'MUL_MAT': return True
         s0 = ptr(tt.src[0]); m = re.match(rb'^blk\.(\d+)\.(\w+)\.weight$', s0.name)
-        if m and m.group(2).decode() in KIND:
+        if m and m.group(2).decode() in KIND and m.group(2).decode() not in DENSE_W:
             k = '%s:%s' % (int(m.group(1)), KIND[m.group(2).decode()]); inp[bytes(ptr(tt.src[1]).name)] = k; outn[bytes(tt.name)] = k; mmk[len(nodes)-1] = (k, bytes(ptr(tt.src[1]).name))
             if k.endswith(':down'): resin[b'ffn_inp-%d' % int(m.group(1))] = int(m.group(1))
             if m.group(2) == b'ffn_gate': gaten[bytes(tt.name)] = int(m.group(1))
@@ -211,7 +214,7 @@ if mode == 'calib':
     print('exact float zeros per input: ' + ', '.join('%s %.4f' % (g[7:], z/n) for g, (z, n) in sorted(cnt.items(), key=lambda a: (a[0].split(':')[-1], int(a[0].split(':')[1]) if a[0].count(':') == 2 else -1)) if g.count(':') == 2))
 else:
     per_chunk = [float(v.mean()) for v in nll]
-    tag = ('sp %g groups %s dense_first %d%s%s' % (SP, ','.join(sorted(GROUPS)), NDENSE, ' block %d' % CBLK if CBLK else '', ' grp4 %s' % os.path.basename(G4) if G4 else '')) if mode == 'eval' else ('ablate %s layer %s' % (AKIND, ALAYER)) if mode == 'ablate' else ('ffnskip %s %g%s' % (RULE, SKF, ' dense_first %d' % FDENSE if FDENSE else ''))
+    tag = ('sp %g groups %s dense_first %d%s%s' % (SP, ','.join(sorted(GROUPS)), NDENSE, ' block %d' % CBLK if CBLK else '', ' grp4 %s' % os.path.basename(G4) if G4 else '') + (' densew %s' % ','.join(sorted(DENSE_W)) if DENSE_W else '')) if mode == 'eval' else ('ablate %s layer %s' % (AKIND, ALAYER)) if mode == 'ablate' else ('ffnskip %s %g%s' % (RULE, SKF, ' dense_first %d' % FDENSE if FDENSE else ''))
     real = ', '.join('%s %.4f' % (g, z/max(n, 1)) for g, (z, n) in sorted(cnt.items()) if g != 'ablated')
     print('RESULT ub %d %s: PPL %.4f over %d chunks; realised zeroed fraction: %s%s' % (UB, tag, np.exp(np.concatenate(nll).mean()), n_chunks, real or '-', '; UNEDITED inputs %s' % dict(unedited) if unedited else ''))
     print('PERCHUNK ' + json.dumps({'ub': UB, 'tag': tag, 'nll': per_chunk}))
