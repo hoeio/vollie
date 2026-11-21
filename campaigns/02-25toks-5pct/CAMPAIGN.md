@@ -135,3 +135,14 @@ budget means the served GGUF run by the unmodified runtime (no skip, no two-stag
   Granite's, so campaign 1 behaves as before).
 - The private `lab/` layout that some tools still assume (`ppl.sh`, `host_bench.sh`, `checks/`) is replaced by
   arguments when those tools are first used for a new model.
+
+## Result (closed 2026-11-21)
+
+Closed by the owner on 2026-11-21, who accepted the claim as stated (warm start, no confirmation run). All throughput numbers are *device*; sources are the R70 and R71 entries in [reports/README.md](reports/README.md) and the scorer outputs [score-r70.txt](reports/memo-33-work/score-r70.txt), [score-r71-S1.txt](reports/memo-33-work/score-r71-S1.txt) and [score-r71-S2S3.txt](reports/memo-33-work/score-r71-S2S3.txt).
+
+- **Goal met on OLMoE-1B-7B (`olmoe-Mi`, budget +5 %):** R70 claim rule PASS, b5 num + touch median 27.21 tok/s, 1 of 10 runs below 25.0 (kit r31, c2 runtime).
+- **Conditions:** power saving off, deep-sleeping list on, internal model copy, and a warm start. Deviation stated with the claim: the session began 3 min 52 s after R71 ended (battery 47 %), not after the 30 min rest.
+- **Not met on Granite-4.0-H-Tiny:** num 23.21 tok/s under the same conditions (10 of 10 runs below 25.0).
+- **References (R71, same conditions):** campaign 1's runtime OLMoE 24.28 / Granite 21.68; stock runtime OLMoE 23.68 / Granite 16.61 tok/s.
+- **Budgets (*host*, R61, `-b 512` / `-ub 1`):** OLMoE num PPL 12.0927 / 12.0976 against 12.3003; Granite num 9.5056 / 9.5120 against 9.6879.
+- **Next:** campaign 3 ([../03-dense15-5pct/CAMPAIGN.md](../03-dense15-5pct/CAMPAIGN.md)).
