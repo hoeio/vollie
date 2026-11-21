@@ -310,3 +310,51 @@ differently both orders are given.
 | 7 | The type that fits C, if the 3.4 step is not held | B D4 | test 8 | Yi | 5.6 (7.3 with a 1.5 x kernel); a floor, with no sparsity lever on it |
 | 8 | Group skip: up rule or Y8 | E Z5, B D5 | tests 6, 7, 10 | Mistral, Qwen2.5, Yi | −0.3 to +0.8 |
 | 9 | Two-stage head, with an input-sparse screen | E Z6, memo-06 Y11 | none | all | +0.1 to +0.35 |
+
+## 8. Answers to Bonnie's challenges (her final §4), and what is agreed (2026-11-22)
+
+**Agreed conventions for the merged memo.**
+- **c = 40.4 GB/s of Q4_0 = 71.8 G weights/s** on X1 + 2 A78 (R69's pre-registered centre, the number R69 scores).
+  The weight line at 12 printed is 5.11 G. My §3 tables were computed at 69.9 and read 0.2 to 0.3 tok/s low in
+  compute-bound cells; they are left as written and this note governs.
+- **Fourth core: centre x 1.15 (1.00 to 1.25)** on compute, with x 1.245 as the perfect-scaling end; she accepts
+  this centre. I add, and ask that the merged table carry it: the fourth core's read rate is R69's own four-core
+  cell (pre-registered 27 GB/s, 21 to 35), not the column's r.
+- Printed = 0.95 x steady; O = 8 ms (6 to 12).
+
+**Her challenges, one by one.**
+1. **C6, u too high: conceded on the centre, kept on the kill line.** I checked her arithmetic: for independent
+   half-normal channels u = 0.18 puts the threshold at the 0.81 quantile and removes 8.1 % of the input energy,
+   against 3.5 % at the element frontier s 0.40 (*estimated*, my recomputation; it matches hers). My 0.18 was a
+   guess between two measured points, not a calculation, and hers is the better centre under independence.
+   What I keep: independence is not what the block screen showed. Blocks of 32 held 9 to 10 % on the `down`
+   input (*host*, memo-02 §8), and the same equal-energy rule under independence gives about 5 % for a block of
+   32 (*estimated*), so real inputs beat independence by about a factor of two on that group. A unit of eight is
+   never worse than a block of 32 on the same input. **My §3.1 prediction (0.18; 0.12 to 0.25) stands as written
+   for scoring; my amended view is 0.13 (0.08 to 0.18) on Yi and Mistral and 0.04 on the Llama-2 class, hers is
+   0.10 (0.06 to 0.15) and 0.02.** The kill line of U2 stays at 0.12. At u 0.10 to 0.13 the lever is worth about
+   +0.5 to +0.8 tok/s when compute-bound (*estimated*), which is under the cost of a new kernel path: if U2 lands
+   where she predicts, C6 closes and I will not argue for it.
+2. **Drop the C6 and C3 + C7 columns from the headline table: agreed.** They need r of 44 to 49 and are kept only
+   as §3.2's detail.
+3. **Groups price under E1: agreed**, and conceded in §4 (the double use of the budget in memo-06 §2.3).
+4. **Up rule: agreed.** The lever is the `gate` third only, about 9 % of FFN compute; `down` through K1 adds
+   bytes saved and costs compute. U4 runs after U1.
+5. **Hypothesis A changes slot 3 only: agreed**, and her price for Llama-2 with k and v dense (8.0 to 9.6 at r 35)
+   is the right size. It makes U1 (b) the first cell to run on the files already on disk.
+6. **Layout behind my P(resident) 0.3:** I assumed K1 reads a column-major copy and the row layout is not held
+   (prefill then runs through the column layout or a per-token path). I did not check the patch. If both layouts
+   must be resident the Yi corner closes on residency alone. Tom states which; her request stands as mine.
+
+**Still disagreed (recorded in §4 above, not repeated):** her four-core columns at a fixed r; whether ChatGLM3
+may hold rank 3 before its level is verified (she now makes the verification test 1, which I accept as the
+resolution: until it passes, Qwen2.5 is third).
+
+**Joint lists: I confirm Bonnie's final §6 as the joint list**, in her order, in place of my §7 above, with three
+amendments:
+- Test 1 (ChatGLM3 with the publisher's code) waits for consent; **test 2 (U1, cell (b) first) starts without
+  waiting for it.**
+- Test 6's kill line reads "under 0.12 on Yi and Mistral → closed" with both predictions beside it (hers 0.10,
+  mine 0.18 as written, 0.13 amended).
+- Try 4 (X1 + 3 A78) records the four-core read rate beside the compute gain, and every "4 cores" price in the
+  merged memo uses that pair.
