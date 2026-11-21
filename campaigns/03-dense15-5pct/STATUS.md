@@ -14,6 +14,15 @@ them on the pool, Clyde re-plans rounds and kill lines at 12 tok/s, Annie keeps 
 subjects plus two reserves by memo-06 section 1 (owner delegated: "proceed without asking"). R69 (model-independent
 probe) is still the next device round. The items below are from before the amendment.
 
+**State at end of session 5 (2026-11-21):** memo-06 sections 2 to 6 filled. Provisional subjects (section 6):
+Yi-1.5-6B-Chat, ChatGLM3-6B, DeepSeek-LLM-7B-chat; reserves Llama-2-7b-chat, Granite-7b-instruct. No candidate is
+priced at 12 tok/s (*estimated*); Clyde's P(all three) 0.05 to 0.15, Ebony's at most 0.02 (judgements).
+R69 amendment 1 committed before any R69 data (owner to tag). Next:
+1. Owner frees laptop disk (about 0.2 GB free, swap full; about 16 GB per model needed). Then Tom runs H3 and
+   Q4_0-vs-F16 on the five, and finishes Ebony T1 (Qwen2.5, `-ub 1`); the lead settles slot 3 and freezes.
+2. Owner runs R69 (kit r29).
+3. Lead's provisional answers to (a) to (d) are in memo-06 section 5, pending owner confirmation.
+
 
 *Note 2026-11-21: campaign 2 is closed (owner, 2026-11-21). R69 can run (probe kit r29 is uploaded), and owner questions (a) to (d) below are due now.*
 
@@ -71,3 +80,4 @@ Collected here; the owner asked not to be asked until the R68 JSON arrives.
 | 2026-11-21 | 5 | Owner Amendment 1: goal 12 tok/s (was 15), exactly three dense 7B-class models of different families on the same phone, campaign goal met only if all three pass; subjects reselected. Lead wrote memo-06 section 1 (selection rule) before any pricing and started joint round 4 (Bonnie, Ebony, Tom, Clyde, Annie). CAMPAIGN.md stale campaign-2 sentence corrected. |
 | 2026-11-21 | 5 (hand-offs) | Joint round 4 hand-offs recorded (all open, nothing measured): Bonnie, candidate pool and pricing, memo-06-work/bonnie-pool.md; Ebony, new levers for 12 tok/s and challenge of Bonnie's pricing, memo-06-work/ebony-levers.md; Tom, model-generic host screens on the pool (*host*), memo-06-work/tom-screens.md; Clyde, re-plan of rounds and kill lines at 12 tok/s and a possible R69-amendment-1.md, memo-06-work/clyde-replan.md. |
 | 2026-11-21 | 5 (clyde) | memo-06 §5 re-plan at 12 tok/s (*estimated*; work file memo-06-work/clyde-replan.md): 12 needs bytes/token ≤ r × 75 ms (1.81 GB at r 24) **and** touched weights × k ≤ about 5.4 G Q4_0 weights at R69's central c_b 40.4, so every 6.0 to 8.5 B dense body is compute-bound below 12 at stock Q4_0 cost (about 9.5 tok/s at 7.0 B multiplied); the reaching corner needs a 3.1 to 3.7 bpw file inside F16 × 1.20 and C, column sparsity d about 0.60 with a low-bit exact kernel at k ≤ 1.3 to 1.5, and r ≥ about 20 to 28 or extra compute; lead's prior P(all three) 0.05 to 0.15. Rounds S0 to S6 with kill lines K0, K-type, K-F, K1 and go/claim at 12. prereg/R69-amendment-1.md written before any R69 data (Rules A to C and §6 adapted to three unchosen subjects; nothing measured or predicted changes). Owner questions (a) to (d): lead's provisional answers yes / yes / yes (proxy least certain) / superseded (we quantise from publisher BF16), to be confirmed by the owner. |
+| 2026-11-21 | 5 | Joint round 4 done: Bonnie pool (28 eligible, 22 families), Ebony scout and challenge, Tom model-generic tools (olmo2 post-norm bug fixed) and T1 four-row groups on Mistral (*host*, -b 512: about 30 % file order, 33 to 35 % clustered inside +4.5 %), Clyde re-plan and R69 amendment 1. Lead's provisional subjects Yi-1.5-6B, ChatGLM3-6B, DeepSeek-LLM-7B; reserves Llama-2-7B, Granite-7B. Screens blocked by laptop disk. |
