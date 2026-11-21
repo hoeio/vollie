@@ -43,7 +43,146 @@ different families on the same Snapdragon 888 phone, met only when all three pas
 
 ## 2. Candidate pool (Bonnie)
 
+Full draft, sources and script: [memo-06-work/bonnie-pool.md](memo-06-work/bonnie-pool.md). Read 2026-11-21 from the
+Hugging Face API, each `config.json`, cards and licence files (*published*); llama.cpp support from the base tree
+`620d2225c` (*host*: converter class and architecture are present; tokenizer hash and an actual load are not
+checked). About 95 publisher accounts were listed for models of 5.8 to 9.0 B.
+
+**Eligible (28 models, 22 families).** Shape = layers / width / FFN / vocabulary; GQA = heads / key-value heads.
+All have a SiLU-gated FFN except Apertus (xIELU, two FFN matrices). **None has a ReLU-family activation**, so there
+is no published exact-zero sparsity to rank on.
+
+| model | released | total params | shape | GQA | tied head | licence | base arch | family |
+|---|---|---|---|---|---|---|---|---|
+| Yi-1.5-6B-Chat | 2024-05 | 6.061 B | 32 / 4096 / 11008 / 64,000 | 32/4 | no | Apache-2.0 | `llama` | 01.AI |
+| ChatGLM3-6B | 2023-10 | 6.244 B | 28 / 4096 / 13696 / 65,024 | 32/2 | no | academic research; commercial by registration | `chatglm` | Zhipu |
+| Llama-2-7b-chat | 2023-07 | 6.738 B | 32 / 4096 / 11008 / 32,000 | 32/32 | no | Llama 2 (gated) | `llama` | Meta |
+| Granite-7b-instruct | 2024-05 | 6.738 B | 32 / 4096 / 11008 / 32,008 | 32/32 | no | Apache-2.0 | `llama` | IBM (lineage of its base to be confirmed) |
+| DeepSeek-LLM-7B-chat | 2023-11 | 6.91 B (*estimated*) | 30 / 4096 / 11008 / 102,400 | 32/32 | no | DeepSeek licence | `llama` | DeepSeek |
+| OLMo-7B-0724-Instruct | 2024-07 | 6.888 B | 32 / 4096 / 11008 / 50,304 | 32/32 | no | Apache-2.0 | `olmo` | AI2 |
+| calm2-7b-chat | 2023-11 | 7.009 B | 32 / 4096 / 11008 / 65,024 | 32/32 | no | Apache-2.0 | `llama` | CyberAgent |
+| A.X-3.1-Light | 2025-07 | 7.265 B | 32 / 4096 / 10880 / 102,400 | 32/32 | no | Apache-2.0 | `llama` | SKT |
+| Olmo-3-7B-Instruct; OLMo-2-1124-7B-Instruct | 2025-11; 2024-12 | 7.298 B; 7.299 B | 32 / 4096 / 11008 / 100,278; 100,352 | 32/32 | no | Apache-2.0 | `olmo2` | AI2 |
+| Mistral-7B-Instruct-v0.3 | 2024-05 | 7.248 B | 32 / 4096 / 14336 / 32,768 | 32/8 | no | Apache-2.0 | `llama` | Mistral |
+| salamandra-7b-instruct | 2024-09 | 7.768 B | 32 / 4096 / 11008 / 256,000 | 32/8 | no | Apache-2.0 | `llama` | BSC |
+| Falcon3-7B-Instruct | 2024-11 | 7.456 B | 28 / 3072 / 23040 / 131,072 | 12/4 | no | TII Falcon-LLM 2.0 | `llama` | TII |
+| Tri-7B | 2025-07 | 7.527 B | 32 / 4096 / 11008 / 128,256 | 32/32 | no | Apache-2.0 | `llama` | Trillion Labs |
+| Minerva-7B-instruct-v1.0 | 2024-12 | 7.400 B | 32 / 4096 / 14336 / 51,264 | 32/8 | no | Apache-2.0 | `llama` | Sapienza |
+| Qwen2.5-7B-Instruct | 2024-09 | 7.616 B | 28 / 3584 / 18944 / 152,064 | 28/4 | no | Apache-2.0 | `qwen2` | Alibaba Qwen |
+| internlm2_5-7b-chat | 2024-06 | 7.738 B | 32 / 4096 / 14336 / 92,544 | 32/8 | no | academic research; commercial by application | `internlm2` | Shanghai AI Lab |
+| EXAONE-3.5-7.8B-Instruct | 2024-12 | 7.818 B | 32 / 4096 / 14336 / 102,400 | 32/8 | no | research only | `exaone` | LG |
+| openPangu-Embedded-7B | 2025-08 | 8.031 B | 34 / 4096 / 12800 / 153,376 | 32/8 | no | openPangu licence (not read) | `pangu-embedded` | Huawei |
+| Ministral-8B-Instruct-2410 | 2024-10 | 8.020 B | 36 / 4096 / 12288 / 131,072 | 32/8 | no | Mistral Research Licence | `llama` | Mistral |
+| Llama-3.1-8B-Instruct | 2024-07 | 8.030 B | 32 / 4096 / 14336 / 128,256 | 32/8 | no | Llama 3.1 (gated) | `llama` | Meta |
+| kanana-1.5-8b-instruct | 2025-05 | 8.030 B | 32 / 4096 / 14336 / 128,259 | 32/8 | no | Apache-2.0 | `llama` | Kakao (Llama 3.1's shape and vocabulary plus three tokens: lineage to be confirmed) |
+| Apertus-8B-Instruct-2509 | 2025-09 | 8.053 B | 32 / 4096 / 21504 / 131,072 | 32/8 | no | Apache-2.0 | `apertus` | Swiss AI |
+| Qwen3-8B | 2025-04 | 8.191 B | 36 / 4096 / 12288 / 151,936 | 32/8 | no | Apache-2.0 | `qwen3` | Alibaba Qwen |
+| Teuken-7B-instruct-v0.6 | 2025-07 | 7.453 B | 32 / 4096 / 13440 / 250,680 | 32/2 | **yes** | CC-BY-NC-4.0 | `llama` | OpenGPT-X |
+| MiniCPM4-8B | 2025-06 | 8.185 B | 32 / 4096 / 16384 / 73,448 | 32/2 | no | Apache-2.0 | `minicpm` | OpenBMB |
+| Command R7B (12-2024); Aya Expanse 8B | 2024-12 | 8.028 B | 32 / 4096 / 14336 / 256,000 (*host*, header) | 32/8 | **yes** | CC-BY-NC-4.0 (gated) | `cohere2`; `command-r` | Cohere |
+| Granite-3.3-8b-instruct | 2025-04 | 8.171 B | 40 / 4096 / 12800 / 49,159 | 32/8 | **yes** | Apache-2.0 | `granite` | IBM |
+
+Eligible, not priced: Jais-2-8B-Chat (8.090 B, gated, shape not read), Baichuan2-7B-Chat (no published count).
+
+**Excluded:**
+
+| model | reason |
+|---|---|
+| Gemma 7B-it, Gemma 1.1 7B-it | 8.538 B, above 8.5 B |
+| Yi-1.5-9B (8.829 B), InternLM3-8B (8.804 B), GLM-4-9B (9.400 B), Granite 4.1-8B and 4.2-8B (8.792 B), Ministral 3 8B (8.918 B with its vision tower), Qwen3.5-9B (9.653 B, hybrid), Fanar-1-9B (8.784 B), PLaMo 3 8B fin and translate (8.532 B, domain fine-tunes) | above 8.5 B |
+| Gemma 4 E4B, Gemma 3n E4B, Nemotron 3.5 Bolt E4B | owner's E4B ruling (2026-11-19); the last two by the same reasoning, for the lead to confirm |
+| Phi-3-small-8k-instruct (7.392 B) | no converter at the base (`Phi3SmallForCausalLM`; upstream issue #7439) |
+| Hunyuan-7B-Instruct (7.505 B) | licence excludes the EU, the UK and South Korea from its territory (criterion 3); supported at the base |
+| MiMo-7B-RL (7.833 B) | its class is not registered at the base (only MiMo V2); no instruct release |
+| Falcon-H1-7B, Falcon3-Mamba-7B, Zamba2-7B, Olmo-Hybrid-7B, Nemotron-H-8B | hybrid or state-space, not decoder-only transformers |
+| Nemotron-Labs-Sigma-8B, WeDLM-8B, Efficient-DLM-8B | diffusion language models; no converter at the base |
+| Phi-mini-MoE, Trinity-Nano, LFM2.5-8B-A1B | expert routing |
+| DeepSeek-R1-Distill 7B and 8B, Mistral-NeMo-Minitron-8B, Bielik-Minitron-7B | distilled or pruned |
+| A.X-4.0-Light, and every Llama-3.1 or Qwen fine-tune by another publisher | derivatives of another publisher's weights |
+| code and maths models (deepseek-coder-6.7b-instruct and the like) | not proposed: the gate is prose |
+
 ## 3. Pricing at 12 tok/s per candidate and challenge (Bonnie, Ebony)
+
+### 3.1 Bonnie's prices (*estimated*; method of memo-03 section 9, script `memo-06-work/bonnie_price.py`)
+
+- Bytes are Q4_0 for the body and Q6_K for the head, from the published shapes. The shapes reproduce every
+  published parameter count within 0.6 %, and three headers agree within 0.3 % (*host*).
+- tok/s is the printed value. "stock" is the stock path. "levers" is the better of stock and the exact column
+  kernel with input thresholds, from (s 0.30, k 2.2) to (s 0.40, k 1.55); s is **assumed** for all but Mistral
+  (40 %, *host*) and Qwen2.5 (35 %, *host*). The last column is memo-03's k = 1.2 corner; no kernel at 1.2 exists
+  (*host* K1: 1.53 to 1.64).
+- c = 69.9 G weights/s on three threads. Multi-stream GEMV, a fourth thread and the CPU + GPU split are not in
+  the bands.
+
+| # | model | family | total B | W/token G | Q4_0 GB/token | head share | stock r=19 | levers r=19 | stock r=35 | levers r=35 | k=1.2 corner r=35 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | Yi-1.5-6B-Chat | 01.AI | 6.061 | 5.80 | 3.33 | 6 % | 5.1 to 5.3 | 6.7 to 7.8 | 9.0 to 9.5 | 9.0 to 11.5 | 13.9 |
+| 2 | chatglm3-6b | Zhipu | 6.244 | 5.98 | 3.43 | 6 % | 5.0 to 5.1 | 6.5 to 7.6 | 8.8 to 9.2 | 8.8 to 11.2 | 13.5 |
+| 3 | Llama-2-7b-chat | Meta | 6.738 | 6.61 | 3.75 | 3 % | 4.6 to 4.7 | 6.1 to 7.1 | 8.1 to 8.5 | 8.1 to 10.2 | 12.6 |
+| 4 | granite-7b-instruct | IBM | 6.738 | 6.61 | 3.75 | 3 % | 4.6 to 4.7 | 6.1 to 7.1 | 8.1 to 8.5 | 8.1 to 10.2 | 12.6 |
+| 5 | deepseek-llm-7b-chat | DeepSeek | 6.910 | 6.49 | 3.76 | 9 % | 4.6 to 4.7 | 5.9 to 6.8 | 8.1 to 8.5 | 8.1 to 10.4 | 12.2 |
+| 6 | OLMo-7B-0724-Instruct | AI2 | 6.888 | 6.68 | 3.81 | 4 % | 4.5 to 4.6 | 6.0 to 6.9 | 8.0 to 8.3 | 8.0 to 10.1 | 12.4 |
+| 7 | calm2-7b-chat | CyberAgent | 7.009 | 6.74 | 3.86 | 6 % | 4.5 to 4.6 | 5.9 to 6.8 | 7.9 to 8.2 | 7.9 to 10.0 | 12.1 |
+| 8 | A.X-3.1-Light | SKT | 7.265 | 6.85 | 3.96 | 9 % | 4.4 to 4.5 | 5.7 to 6.5 | 7.7 to 8.0 | 7.7 to 9.8 | 11.7 |
+| 9 | Olmo-3-7B-Instruct | AI2 | 7.298 | 6.89 | 3.98 | 8 % | 4.3 to 4.4 | 5.6 to 6.5 | 7.7 to 8.0 | 7.7 to 9.8 | 11.6 |
+| 10 | OLMo-2-1124-7B-Instruct | AI2 | 7.299 | 6.89 | 3.98 | 8 % | 4.3 to 4.4 | 5.6 to 6.5 | 7.7 to 8.0 | 7.7 to 9.8 | 11.6 |
+| 11 | Mistral-7B-Instruct-v0.3 | Mistral | 7.248 | 7.11 | 4.04 | 3 % | 4.3 to 4.4 | 5.7 to 6.6 | 7.6 to 7.9 | 7.6 to 9.5 | 11.8 |
+| 12 | salamandra-7b-instruct | BSC | 7.768 | 6.72 | 4.05 | 21 % | 4.3 to 4.4 | 5.3 to 6.0 | 7.6 to 7.9 | 7.6 to 10.0 | 10.8 |
+| 13 | Falcon3-7B-Instruct | TII | 7.456 | 7.05 | 4.07 | 8 % | 4.2 to 4.3 | 5.5 to 6.4 | 7.5 to 7.8 | 7.5 to 9.6 | 11.4 |
+| 14 | Tri-7B | Trillion Labs | 7.527 | 7.00 | 4.07 | 11 % | 4.2 to 4.3 | 5.5 to 6.3 | 7.5 to 7.8 | 7.5 to 9.6 | 11.3 |
+| 15 | Minerva-7B-instruct-v1.0 | Sapienza | 7.400 | 7.19 | 4.10 | 4 % | 4.2 to 4.3 | 5.6 to 6.5 | 7.5 to 7.8 | 7.5 to 9.4 | 11.6 |
+| 16 | Qwen2.5-7B-Instruct | Alibaba Qwen | 7.616 | 7.07 | 4.12 | 11 % | 4.2 to 4.3 | 5.4 to 6.2 | 7.4 to 7.7 | 7.4 to 9.5 | 11.1 |
+| 17 | internlm2_5-7b-chat | Shanghai AI Lab | 7.738 | 7.36 | 4.24 | 7 % | 4.1 to 4.2 | 5.3 to 6.1 | 7.2 to 7.5 | 7.2 to 9.2 | 11.0 |
+| 18 | EXAONE-3.5-7.8B-Instruct | LG | 7.818 | 7.40 | 4.27 | 8 % | 4.0 to 4.1 | 5.3 to 6.1 | 7.2 to 7.5 | 7.2 to 9.1 | 10.9 |
+| 19 | openPangu-Embedded-7B | Huawei | 8.031 | 7.40 | 4.33 | 12 % | 4.0 to 4.1 | 5.2 to 5.9 | 7.1 to 7.4 | 7.1 to 9.1 | 10.6 |
+| 20 | Ministral-8B-Instruct-2410 | Mistral | 8.020 | 7.48 | 4.35 | 10 % | 4.0 to 4.1 | 5.2 to 5.9 | 7.1 to 7.4 | 7.1 to 9.0 | 10.6 |
+| 21 | Llama-3.1-8B-Instruct | Meta | 8.030 | 7.50 | 4.36 | 10 % | 4.0 to 4.1 | 5.2 to 5.9 | 7.1 to 7.3 | 7.1 to 9.0 | 10.6 |
+| 22 | kanana-1.5-8b-instruct | Kakao | 8.030 | 7.50 | 4.36 | 10 % | 4.0 to 4.1 | 5.2 to 5.9 | 7.1 to 7.3 | 7.1 to 9.0 | 10.6 |
+| 23 | Apertus-8B-Instruct-2509 | Swiss AI | 8.053 | 7.52 | 4.37 | 10 % | 4.0 to 4.0 | 5.1 to 5.9 | 7.1 to 7.3 | 7.1 to 9.0 | 10.6 |
+| 24 | Qwen3-8B | Alibaba Qwen | 8.191 | 7.57 | 4.42 | 12 % | 3.9 to 4.0 | 5.1 to 5.8 | 7.0 to 7.2 | 7.0 to 8.9 | 10.4 |
+| 25 | Teuken-7B-instruct-v0.6 | OpenGPT-X | 7.453 | 7.45 | 4.46 | 19 % | 3.9 to 4.0 | 4.9 to 5.5 | 6.9 to 7.2 | 6.9 to 9.0 | 9.9 |
+| 26 | MiniCPM4-8B | OpenBMB | 8.185 | 7.88 | 4.51 | 5 % | 3.8 to 3.9 | 5.1 to 5.8 | 6.8 to 7.1 | 6.8 to 8.6 | 10.5 |
+| 27 | granite-3.3-8b-instruct | IBM | 8.171 | 8.17 | 4.65 | 4 % | 3.7 to 3.8 | 5.0 to 5.7 | 6.7 to 6.9 | 6.7 to 8.3 | 10.3 |
+| 28 | c4ai-command-r7b-12-2024 | Cohere | 8.028 | 8.03 | 4.79 | 18 % | 3.6 to 3.7 | 4.6 to 5.2 | 6.5 to 6.7 | 6.5 to 8.4 | 9.3 |
+
+**Reading.**
+- **No candidate reaches 12 at r = 19; the best is Yi-1.5-6B at 6.7 to 7.8.** At r = 35 the priced band tops out
+  at 11.5 (Yi-1.5-6B) and 11.2 (ChatGLM3-6B); 12 appears only in the k = 1.2 corner.
+- 12 printed needs at most 74 ms of bytes and 5.17 G weight-equivalents of compute. Yi-1.5-6B gets there with
+  s = 0.40, k ≤ 1.48 and r ≥ 30.0, or s = 0.45, k ≤ 1.61 and r ≥ 28.2. A Llama-2-shaped body needs k ≤ 1.30 at
+  s = 0.40 and r ≥ 33.2; Mistral needs k ≤ 1.20 and r ≥ 35.7.
+- The order is the order of weights read per token. A large head costs twice (not sparsified, Q6_K): the head
+  share runs from 3 % to 21 %.
+- **Q4_0 stays the served type for every candidate.** Q3_K_M reads 14 % fewer bytes at half the kernel rate
+  (*device*, R41) and loses from about r = 20; IQ3 and IQ4_XS have no arm64 kernel at the base; Q4_K_M reads 5.5 %
+  more. IQ4_NL (same bytes, 4x4 kernel) is worth a host PPL row for quality room. Whether each Q4_0 is inside
+  F16 x 1.20 is unmeasured.
+- Criterion 4 holds for all at Q4_0: file plus KV plus app is 3.9 to 5.3 GB. With the anonymous repack copy every
+  candidate is 7 GB or more, so a no-copy path (memo-05 Y1b or Y1c) is a precondition for all of them.
+
+**Ranking by section 1 and proposed top five** (one per family, in rank order): **Yi-1.5-6B-Chat (01.AI),
+ChatGLM3-6B (Zhipu), Llama-2-7b-chat (Meta), Granite-7b-instruct (IBM), DeepSeek-LLM-7B-chat (DeepSeek).** Then
+OLMo-7B-0724-Instruct, calm2-7b-chat, A.X-3.1-Light, Olmo-3-7B-Instruct. The earlier set ranks 1 (Yi-1.5-6B),
+11 (Mistral), 16 (Qwen2.5) and 21 (Llama-3.1).
+
+Flags for the lead:
+- ChatGLM3-6B: academic-research licence, its own graph (`chatglm`), trained mostly on Chinese.
+- Llama-2-7b-chat is gated; Granite-7b-instruct has the same shape, and its base's lineage must be confirmed.
+- Ranks 1 to 7 are 2023 to mid-2024 models. Criterion 4 is last, so the ranking does not see this. The newest
+  models within 1.7 tok/s of rank 1 at r = 35 are A.X-3.1-Light and Olmo-3-7B-Instruct.
+- Research-only or non-commercial licences (ChatGLM3, InternLM2.5, EXAONE, Ministral 8B, Command R7B, Teuken)
+  meet criterion 3 but could not ship in the Play build.
+- The laptop had 1.5 to 2.2 GB of disk free while this was written (*host*); no candidate file fits until space
+  is freed.
+
+**Host screens that would move the ranking most (for Tom):**
+1. The H3 column frontier on ranks 1 to 9 at `-b 512` and `-ub 1`. Five points of s are worth the whole spread
+   of the top five.
+2. Q4_0 against F16 (or the Q8_0 proxy) per candidate, with an IQ4_NL row.
+3. Load and identity at the base for the non-`llama` graphs (ChatGLM3, OLMo 1, Olmo 3 on `olmo2`).
+4. The H1 header inventory on the real files (head type, row counts for the repack).
+
+### 3.2 Ebony's challenge
 
 ## 4. Host screens (Tom)
 
