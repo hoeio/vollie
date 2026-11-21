@@ -285,6 +285,45 @@ draft).
 
 Full record: [memo-06-work/tom-screens.md](memo-06-work/tom-screens.md). All numbers are *host* or *estimated*.
 
+**Update 2026-11-22 (owner freed disk).** The five provisional models are screened (tom-screens §5, §6). Method:
+- Publisher weights at pinned commits, LFS sha256 checked, converted to F16 and quantised to Q4_0 here.
+- 40 chunks; the gate's budget is stock Q4_0 × 1.05, and the pass line is +4.5 %.
+- The bullets after this update are the state of 2026-11-21, kept as written.
+
+| model (§6 slot) | Q4_0 / F16 | uniform column sparsity inside +4.5 % at both `-b 512` and `-ub 1` | ΔPPL (`-b 512` / `-ub 1`) | next level up (`-b 512`) |
+|---|---|---|---|---|
+| Yi-1.5-6B-Chat (subject 1) | ×1.0236 | **40 %** | +1.55 / +2.79 % | 45 %: +5.11 % |
+| ChatGLM3-6B (subject 2) | ×1.0116 | **20 %** | +3.56 / +3.51 % | 30 %: +4.32 % at `-b 512` but +5.05 % at `-ub 1` |
+| DeepSeek-LLM-7B-chat (subject 3) | ×1.0367 | **20 %** | +3.26 / +3.48 % | 30 %: +5.13 % |
+| Llama-2-7b-chat (reserve 1) | ×1.0302 | **20 %** | +4.20 / +4.31 % | 30 %: +5.69 % |
+| Granite-7b-instruct (reserve 2) | ×1.0263 | **15 %** | +4.25 / +4.20 % | 20 %: +5.73 % |
+| memo-02: Mistral-7B-v0.3 / Qwen2.5-7B | ×1.0195 / ×1.0357 (Q8_0 proxy) | 40 % / 35 % | | |
+
+- **Slot 3:**
+  - DeepSeek and Llama-2 share the frontier at 20 % (no 25 % level in the tables).
+  - DeepSeek has about 0.9 points more margin there.
+  - Llama-2 has the smaller Q4_0 loss.
+  - Criterion 2 leans to DeepSeek, narrowly.
+- **Caveats (tom-screens §5.1, §5.3):**
+  - DeepSeek's GGUF has `add_bos = false` (a converter rule), so every DeepSeek PPL is scored without BOS.
+  - ChatGLM3 was converted without executing its custom code; the tokenizer was checked against sentencepiece.
+  - ChatGLM3's stock PPL (33.0) is about 4.5 times the others and is unexplained. The `[gMASK]sop` prefix makes it
+    worse (8 chunks: 48.26 → 53.36). Its level should be checked before it is frozen.
+- **Criterion 2 spreads by a factor of 2.7**: Granite 15 %, DeepSeek, Llama-2 and ChatGLM3 20 %, Yi 40 %. The
+  column lever is worth much less on the 2023-era MHA models than memo-02 measured on Mistral and Qwen2.5.
+- **Ebony T1, finished** (groups of four neurons, exact score), inside +4.5 % at both settings:
+
+  | model | file order (`-ub 1`) | clustered (`-ub 1`) |
+  |---|---|---|
+  | Mistral | 30 % (+3.60 %) | about 33 % (+3.51 %) |
+  | Qwen2.5 | about 37 % (+4.03 %) | about 36 % (+2.92 %) |
+
+  Against Ebony's pre-data band:
+  - File order 20 to 35 %: hit on Mistral; Qwen2.5 missed high by 2 points.
+  - Clustered 30 to 45 %: hit, low half.
+  - ≥ 40 % on two models: did not happen.
+  - By realised share, clustering moves the frontier by 0 to 3 points.
+
 - **Tools.** `tools/c3_colskip.py` and `tools/c3_h3_grid.sh` are now model-generic.
   - Two silent errors are fixed. On post-norm blocks (`olmo2`: OLMo-2, Olmo-3) the old tool zeroed the residual
     stream, and it never calibrated the gate/up input. OLMo-2 1B, uniform 30 %: old PPL 16.31, fixed 13.57

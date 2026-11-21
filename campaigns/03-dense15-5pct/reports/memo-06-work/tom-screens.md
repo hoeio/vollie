@@ -6,6 +6,24 @@ Nothing here was measured on the phone. No runtime patch was changed.
 
 ## 0. Summary
 
+*Update 2026-11-22: the owner freed disk (about 86 GB free). The five provisional models of memo-06 §6 are now
+screened (§5): Q4_0 vs F16, and the H3 column frontier at `-b 512` and `-ub 1`. T1 is finished on both models at
+both settings (§6). The bullets below are the state of 2026-11-21 and are kept as written; "not screened: disk" no
+longer holds for these five.*
+
+| model (§6 slot) | Q4_0 / F16 (40 chunks) | largest uniform level inside +4.5 % at both `-b 512` and `-ub 1` | ΔPPL there (`-b 512` / `-ub 1`) |
+|---|---|---|---|
+| Yi-1.5-6B-Chat (subject 1) | ×1.0236 | **40 %** | +1.55 % / +2.79 % |
+| ChatGLM3-6B (subject 2) | ×1.0116 | **20 %** (35 % at `-b 512` alone); stock PPL 33.0 is unexplained, §5.3 | +3.56 % / +3.51 % |
+| DeepSeek-LLM-7B-chat (subject 3) | ×1.0367 | **20 %** (30 % fails, +5.13 %) | +3.26 % / +3.48 % |
+| Llama-2-7b-chat (reserve 1) | ×1.0302 | **20 %** (30 % fails, +5.69 %) | +4.20 % / +4.31 % |
+| Granite-7b-instruct (reserve 2) | ×1.0263 | **15 %** (20 % fails, +5.73 %) | +4.25 % / +4.20 % |
+| (memo-02) Mistral-7B-v0.3 / Qwen2.5-7B | ×1.0195 / ×1.0357 (Q8_0 proxy) | 40 % / 35 % | +2.44 / +2.92 %, +3.10 / +2.75 % |
+
+Slot 3: DeepSeek and Llama-2 share the frontier, 20 % at both settings (the tables have no 25 % level). DeepSeek
+has 0.9 to 0.8 points more margin there (+3.26 / +3.48 % against +4.20 / +4.31 %). Llama-2 has the smaller Q4_0
+loss (×1.0302 against ×1.0367).
+
 - **Tools are now model-generic** (§1). `tools/c3_colskip.py` had two silent errors on non-pre-norm blocks:
   - it zeroed the residual stream in place on post-norm blocks (OLMo-2 and Olmo-3);
   - it never calibrated the `gate`/`up` input when that input is `ffn_inp`.
@@ -251,3 +269,139 @@ for o in file clustered; do for q in 0.2 0.3 0.4; do C3_GRP4=lab/c3/t1-qwen25-$o
 C3_GRP4=lab/c3/t1-mistral-clustered.npz python3 -I tools/c3_colskip.py eval $B lab/c3/models/mistral-7b-v0.3-q4_0.gguf $T/wiki.test.raw 40 512 - 0.35 grp4 0 8
 # then -ub 1 (argument 512 -> 1) on each model's frontier cell, file and clustered
 ```
+
+## 5. Screens of the five provisional models (2026-11-22, *host*)
+
+### 5.1 Files: publisher weights, converted and quantised here
+
+Every model is the publisher's repository at a pinned commit:
+- every weight file's sha256 was checked against its LFS id (all OK);
+- converted with the lab tree's `convert_hf_to_gguf.py` to F16 (`--outtype f16`; the sources are BF16 or F16);
+- quantised with that tree's `llama-quantize ... Q4_0` (Q4_0 body, Q6_K head by llama-quantize's default).
+
+The conversion venv is `lab/venv-c3`: torch 2.11.0, transformers 4.57.6 and numpy 2.2.6, as pinned by the tree.
+The F16 files were deleted after their PPL runs. The Q4_0 files are kept in `lab/c3/models/`, which is untracked.
+
+| model | repo @ commit | F16 sha256 (deleted) | Q4_0 sha256 (kept) |
+|---|---|---|---|
+| DeepSeek-LLM-7B-chat | deepseek-ai/deepseek-llm-7b-chat @ `afbda8b3` (`.bin` weights, read with `torch.load(weights_only=True)`) | `29b971949796eec79583562e740d861b66680d8f8782aeeaa88c5e04b45bd5b2` | `f403ddc298020af0fe8dfbbfec9a74cd3f8951938d6c21540054d85f09315118` |
+| Llama-2-7b-chat | meta-llama/Llama-2-7b-chat-hf @ `f5db02db` (gated; read with the laptop's existing HF login) | `175c701f53317f0f209479a3ec3706de06714ea1115d01143ace93fe26bfefdb` | `8eb4952f2592fdfc1288695f6b85aaf48d5628ec5d2c75f9387d3144652ad4bf` |
+| Yi-1.5-6B-Chat | 01-ai/Yi-1.5-6B-Chat @ `771924d1` | `7ecff8aaf72278b573d53eb62b7102e28a9f72d3d61960a4d532a3298823b114` | `702cc2ebaa3bd4933598e25b556961b95ac260ed15df74fa09df2b2b7b48a299` |
+| Granite-7b-instruct | ibm-granite/granite-7b-instruct @ `0ffe79e2` | `b9dfad1c41d666979d333326a0d57a6c412d2f65e039f1a9611de2b24f8b8a3a` | `5214d830fe49f94ff0c099ee72b5a2d9ff97b8ca19c78709c2a48e4857a3896b` |
+| ChatGLM3-6B | zai-org/chatglm3-6b @ `e9e0406d` (THUDM's repository, now under zai-org) | `975fc0bf65cef7a252c93493967857211a48296ed07b383d6518b4315b20a27f` | `bc8efc1b89c9361d29b127b37887618bd1d65fbbf34849b2d6a6b8eb2e007a86` |
+
+
+Deviations, stated with each file:
+- **ChatGLM3, no downloaded code executed.** The converter calls `AutoTokenizer(trust_remote_code=True)`, which
+  would run the repository's `tokenization_chatglm.py`. That file was not downloaded; it was read as text only.
+  Instead, a scratch launcher (`glmshim/convert_glm3.py`, outside the repository) gave the converter a local
+  re-implementation of its id mapping.
+  - Check: the GGUF's tokenization of a 3,000-character wikitext sample (`llama-tokenize`) equals sentencepiece
+    `encode` with the publisher's `tokenizer.model`, 786 ids, identical.
+  - The converter's config loader also declined the custom code and fell back to `config.json`.
+- **DeepSeek, no BOS.** The converter wrote `add_bos_token = false`: its tokenizer post-processor has no BOS,
+  although `tokenizer_config` says `add_bos_token: true` (converter warning, "opting for the latter").
+  - So every DeepSeek PPL here is scored without BOS, the same way in every cell.
+  - A served DeepSeek file should decide this explicitly; for example `--override-kv
+    tokenizer.ggml.add_bos_token=bool:true` changes the gate's absolute value, not these ratios.
+- **ChatGLM3, no prefix.** `llama-perplexity` adds no `[gMASK]sop` prefix. See §5.3.
+
+### 5.2 PPL and H3 column frontier (wikitext-2 test, 40 chunks, ctx 512)
+
+Method: memo-02 §3 unchanged.
+- **Calibration:** uniform per-input thresholds from 16 chunks of wikitext-2 train.
+- **Cells:** all four groups. The `-b 512` cells search adaptively: up from 30 % while inside +4.5 %, down while
+  outside. The `-ub 1` cells confirm the `-b 512` frontier and step down if it fails.
+- **Stock:** the same tool with no edit (equal to `llama-perplexity`).
+- **Budget:** stock Q4_0 × 1.05.
+- **Ceiling:** F16 × 1.20. Every Q4_0 file is at most ×1.037 of F16, far inside.
+
+| model | F16 | Q4_0 (`-b 512`) | ratio | stock `-ub 1` | `-b 512` cells (ΔPPL; realised sparsity within 1.5 points of target, o up to +2.8) | `-ub 1` cells |
+|---|---|---|---|---|---|---|
+| DeepSeek-7B | 7.9317 | 8.2231 | 1.0367 | 8.2192 | 20 %: **+3.26 %**; 30 %: +5.13 % | 20 %: **+3.48 %** |
+| Llama-2-7B | 7.1900 | 7.4071 | 1.0302 | 7.4075 | 20 %: **+4.20 %**; 30 %: +5.69 % | 20 %: **+4.31 %** |
+| Yi-1.5-6B | 7.5189 | 7.6966 | 1.0236 | 7.6817 | 30 %: −0.71 %; 35 %: +0.73 %; 40 %: **+1.55 %**; 45 %: +5.11 % | 40 %: **+2.79 %** |
+| Granite-7b | 11.6544 | 11.9605 | 1.0263 | 11.9641 | 15 %: **+4.25 %**; 20 %: +5.73 %; 30 %: +7.35 % | 15 %: **+4.20 %** |
+| ChatGLM3-6B | 32.9984 | 33.3801 | 1.0116 | 33.3516 | 20 %: **+3.56 %**; 30 %: +4.32 %; 35 %: +4.21 %; 40 %: +4.63 % | 20 %: **+3.51 %**; 30 %: +5.05 %; 35 %: +4.74 % |
+
+Logs (untracked, `lab/c3/logs/`): `ppl-<m>-{f16,q4_0}-b512-40.log`, `h3-<m>-{b512,ub1}-40.log` (RESULT and
+PERCHUNK lines), `calib2-<m>.log`, `prep-<m>.log`. The threshold tables are `lab/c3/thr2-<m>-q4_0.npz`.
+
+Reading (*host*):
+- **Yi-1.5-6B is the most tolerant model screened so far**: 40 % inside at both settings, against Mistral's 40 %
+  and Qwen2.5's 35 % (memo-02). But it has a cliff: 45 % costs +5.11 %. At 30 % its PPL is below stock (−0.71 %),
+  with realised sparsity 30 % in every group. This is a host artefact of a small perturbation, not a gain (memo-02
+  §3.4).
+- **DeepSeek, Llama-2 and Granite tolerate about half of what memo-02's models did**: 20 %, 20 % and 15 %. All
+  three are MHA Llama-shaped models with 11,008-wide FFNs and 2023-era training. Their attention is a third of the
+  body (memo-02 §1 found attention inputs the tolerant group). The model-wide cell did not show that as an advantage.
+- **`-ub 1` and `-b 512` agree** within +0.2 points on DeepSeek, Llama-2 and Granite. Yi is +1.24 points apart
+  (at 40 %, near its cliff), and ChatGLM3 up to 0.7.
+- **What did not generalise** across the seven models: the level, from 15 % (Granite) to 40 % (Yi, Mistral).
+  Selection criterion 2 separates the candidates by a factor of 2.7.
+- *Estimated*, with no new pricing: at memo-02's exact column kernel cost (about 2.6× `sdot` per touched weight,
+  *host*), 20 % of inputs saves at most about 18 % of bytes (Ebony's scale-byte correction, memo-02 §7). The
+  column lever is therefore worth much less on DeepSeek, Llama-2 and Granite than on Yi. Bonnie or Ebony should
+  reprice; I did not.
+
+### 5.3 ChatGLM3: suspect stock level
+
+ChatGLM3's stock PPL (F16 33.00, Q4_0 33.38) is about 4.5 times the other 6-to-8 B models on the same text. Its
+cost curve is flat and not monotone: at `-ub 1`, 30 % gives +5.05 % but 35 % gives +4.74 %.
+
+A first guess was that the model expects its `[gMASK]sop` prefix, which `llama-perplexity` does not add.
+
+Check: the scratch copy of the tool puts `[gMASK]` (64790) and `sop` (64792) in place of the first two tokens of
+each chunk, as BOS replacement does; 8 chunks, `-b 512`. Result: the prefix makes it **worse**, 48.2639 without and 53.3555 with (8 chunks). The prefix is not the
+explanation, and I retract that hypothesis.
+
+The cause of the high level is open:
+- The tokenizer is checked (§5.1).
+- The conversion is not checked against the publisher's model code: that would mean executing
+  `modeling_chatglm.py`.
+- It may be the model itself on English wikitext.
+
+The ChatGLM3 frontier above is valid as measured by the gate as written. Before ChatGLM3 is frozen as a subject,
+the level should be checked independently. One way is an HF transformers PPL on a few chunks, which needs the
+owner's or lead's consent to run the publisher's custom code (`trust_remote_code`).
+
+## 6. Ebony T1 finished (2026-11-22, *host*)
+
+Same rule, tables and chunks as §4. The Qwen2.5 tables (2,048 train tokens) were rebuilt after the disk was freed.
+Stock values: `-b 512` Mistral 5.8844 and Qwen2.5 6.9575; `-ub 1` 5.8810 and 6.9607 (memo-02 logs).
+
+| target share of groups | Mistral file | Mistral clustered | Qwen2.5 file | Qwen2.5 clustered |
+|---|---|---|---|---|
+| 0.20 | +1.57 % (0.204) | +1.06 % (0.193) | +0.45 % (0.191) | +0.17 % (0.179) |
+| 0.30 | **+3.65 %** (0.300) | +2.60 % (0.287) | +2.01 % (0.282) | +1.12 % (0.269) |
+| 0.35 | – | **+3.61 %** (0.333) | – | – |
+| 0.40 | +6.95 % (0.393) | +4.78 % (0.379) | **+4.27 %** (0.371) | **+2.74 %** (0.357) |
+| 0.45 | – | – | +5.75 % (0.415) | +4.59 % (0.401) |
+| 0.50 | – | – | +9.16 % (0.459) | +6.52 % (0.445) |
+| `-ub 1` at the frontier | 0.30: **+3.60 %** | 0.35: **+3.51 %** | 0.40: **+4.03 %** | 0.40: **+2.92 %** |
+
+Cells are `-b 512`, ΔPPL (realised share of groups). Logs: `lab/c3/logs/t1-{mistral,qwen25}-{b512,ub1}-40.log`.
+
+**Frontier inside +4.5 % at both settings:**
+
+| | file order | clustered |
+|---|---|---|
+| Mistral | 30 % | about 33 % (target 0.35) |
+| Qwen2.5 | about 37 % (target 0.40) | about 36 % (target 0.40), with clustered 0.45 at +4.59 % just outside |
+
+**Score against Ebony's pre-data prediction** (memo-06-work/ebony-levers.md §2.3):
+
+| prediction | result |
+|---|---|
+| file order 20 to 35 % on both models | Mistral 30 % hit; Qwen2.5 37 %, **missed high** by 2 points |
+| clustered 30 to 45 % | Mistral 33 % and Qwen2.5 36 %: **hit**, low half |
+| P(≥ 40 % on two models) 0.3 | **did not happen**: 33 to 37 % |
+
+**What generalised:**
+- Clustering lowers the cost at equal targets on both models, by 0.3 to 2.2 points. Part of that is a lower
+  realised share (1 to 2 points).
+- Measured by realised share, clustering moves the frontier by **0 to 3 points**, not Ebony's 10.
+- `-ub 1` agrees with `-b 512` within 0.1 point on Mistral.
+
+**What did not generalise:** the ranking of models. Qwen2.5, the less tolerant model under element column sparsity
+(memo-02), is the more tolerant one under whole-neuron groups.
