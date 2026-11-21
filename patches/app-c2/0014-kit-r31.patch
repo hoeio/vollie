@@ -1,0 +1,473 @@
+--- a/android/app/src/main/AndroidManifest.xml	2026-11-21 09:21:51
++++ b/android/app/src/main/AndroidManifest.xml	2026-11-21 09:09:51
+@@ -30,6 +30,8 @@
+             android:exported="false"
+             android:process=":restart"
+             android:excludeFromRecents="true"
++            android:showWhenLocked="true"
++            android:turnScreenOn="true"
+             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+         <activity
+             android:name=".MainActivity"
+--- a/android/app/src/main/kotlin/com/example/vollie/ChainRestart.kt	1970-01-01 09:00:00
++++ b/android/app/src/main/kotlin/com/example/vollie/ChainRestart.kt	2026-11-21 09:09:51
+@@ -0,0 +1,81 @@
++package com.insaneutils.vollie
++
++import android.app.Activity
++import android.app.KeyguardManager
++import android.content.Context
++import android.content.Intent
++import android.os.Build
++import android.os.Handler
++import android.os.Looper
++import android.os.PowerManager
++import android.view.WindowManager
++import java.io.File
++import java.text.SimpleDateFormat
++import java.util.Date
++import java.util.Locale
++
++/**
++ * Kit r31: the chain's process restart, made robust (R71: kit r30's restart was refused by Android 15's
++ * background-activity-launch rule, "BAL_BLOCK", because the screen had gone off and the app had no visible window).
++ * Every step is logged to the chain log (<files>/r30-chain-log.txt, the file the Dart side writes) before it is taken.
++ * Route: the app's window is kept on and shown over the lock screen, and the screen is woken if it is off, so the start
++ * of RestartActivity comes from a visible window (Android 15 allows it then, "BAL_ALLOW_VISIBLE_WINDOW"). Not used: an
++ * alarm-clock PendingIntent (blocked the same way on the API 35 emulator, kit r31 test) and a PendingIntent sent with
++ * MODE_BACKGROUND_ACTIVITY_START_ALLOWED (the sender is this app, so it carries no privilege the app does not have).
++ * The Dart side's watchdog retries the whole call (at most 3 tries) and then stops the chain, resumable.
++ */
++object ChainRestart {
++    private const val LOG = "r30-chain-log.txt" // same file name as kit r30 (owner: continue r30's chain)
++    var resumed = false // MainActivity's onResume / onPause
++
++    fun log(ctx: Context, line: String) {
++        val l = "${SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US).format(Date())} [android pid ${android.os.Process.myPid()}] $line"
++        android.util.Log.i("vollie-chain", l)
++        runCatching { File(ctx.filesDir, LOG).appendText("$l\n") }
++    }
++
++    fun screen(ctx: Context): Map<String, Any?> {
++        val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
++        val km = ctx.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
++        return mapOf("interactive" to pm.isInteractive, "keyguardLocked" to km.isKeyguardLocked,
++            "resumed" to resumed, "pid" to android.os.Process.myPid())
++    }
++
++    /** The chain's window: kept on, shown over the lock screen, turns the screen on when it is (re)shown. */
++    fun window(a: Activity, on: Boolean) {
++        if (Build.VERSION.SDK_INT >= 27) {
++            a.setShowWhenLocked(on)
++            a.setTurnScreenOn(on)
++        }
++        val f = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
++        if (on) a.window.addFlags(f) else a.window.clearFlags(f)
++    }
++
++    /** Restart the app into the stored runtime: wake, show, then start RestartActivity (kills this process). */
++    fun restart(a: Activity) {
++        val pm = a.getSystemService(Context.POWER_SERVICE) as PowerManager
++        log(a, "restart requested; screen ${screen(a)}")
++        // CPU awake for the whole try, so the timers of this try (and the Dart watchdog) run by the clock (R71: a 30 s
++        // timer took 49 min while the phone slept)
++        pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "vollie:restart").acquire(60_000)
++        if (!pm.isInteractive) {
++            log(a, "screen is off: waking it (ACQUIRE_CAUSES_WAKEUP, 10 s)")
++            @Suppress("DEPRECATION")
++            pm.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or
++                PowerManager.ON_AFTER_RELEASE, "vollie:restart-wake").acquire(10_000)
++        }
++        window(a, true)
++        // wait up to 5 s for the window to be shown (the screen was just woken), then start the restart activity
++        val h = Handler(Looper.getMainLooper())
++        val t0 = System.currentTimeMillis()
++        fun go() {
++            if (!resumed && System.currentTimeMillis() - t0 < 5_000) { h.postDelayed(::go, 250); return }
++            log(a, "starting RestartActivity; screen ${screen(a)}")
++            runCatching {
++                a.startActivity(Intent(a, RestartActivity::class.java)
++                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("pid", android.os.Process.myPid()))
++            }.onFailure { log(a, "startActivity(RestartActivity) threw: $it") }
++        }
++        go()
++    }
++}
+--- a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt	2026-11-21 09:21:51
++++ b/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt	2026-11-21 09:09:51
+@@ -56,9 +56,27 @@
+             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+             p.edit().putBoolean("screen_on", false).apply()
+         }
++        // Kit r31: the chain's window (on, over the lock screen) from the first frame; a restart's new process logs itself
++        if (p.getBoolean("chain_window", false)) ChainRestart.window(this, true)
++        val from = p.getInt("restart_pending", 0)
++        if (from != 0 && from != android.os.Process.myPid()) {
++            p.edit().remove("restart_pending").commit()
++            ChainRestart.log(this, "new process up (old pid $from), via ${intent?.getStringExtra("via") ?: "launcher"}; " +
++                "runtime active $rtActive, stored $rtStored, preload $rtPreload; screen ${ChainRestart.screen(this)}")
++        }
+         super.onCreate(savedInstanceState)
+     }
+ 
++    override fun onResume() {
++        super.onResume()
++        ChainRestart.resumed = true
++    }
++
++    override fun onPause() {
++        ChainRestart.resumed = false
++        super.onPause()
++    }
++
+     // Fixed per device, and Android rate-limits the call: read it once.
+     private var moderateAt: Double? = null
+     private var moderateAtRead = false
+@@ -189,18 +207,27 @@
+                             result.error("runtime", "unknown runtime $rt", null)
+                         } else {
+                             val restart = call.method == "restartInto"
+-                            getSharedPreferences(RT_PREFS, Context.MODE_PRIVATE).edit()
++                            val e = getSharedPreferences(RT_PREFS, Context.MODE_PRIVATE).edit()
+                                 .putString("runtime", rt).putBoolean("screen_on", restart && call.argument<Boolean>("screenOn") == true)
+-                                .commit()
++                            if (restart) e.putInt("restart_pending", android.os.Process.myPid())
++                            e.commit()
++                            if (restart) ChainRestart.log(this, "runtime $rt stored for the next process")
+                             result.success(true)
+-                            if (restart) {
+-                                // RestartActivity (its own process, started while this app is in the foreground) kills
+-                                // this process and starts MainActivity again (no permission needed).
+-                                startActivity(Intent(this, RestartActivity::class.java)
+-                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+-                                    .putExtra("pid", android.os.Process.myPid()))
+-                            }
++                            // RestartActivity (its own process) kills this process and starts MainActivity again. r31:
++                            // woken screen and window over the lock screen first (ChainRestart).
++                            if (restart) ChainRestart.restart(this)
+                         }
++                    }
++
++                    // Kit r31: screen state for the chain log; the chain's window on / off (stored for the next process)
++                    "screenState" -> result.success(ChainRestart.screen(this))
++                    "chainWindow" -> {
++                        val on = call.argument<Boolean>("on") == true
++                        val e = getSharedPreferences(RT_PREFS, Context.MODE_PRIVATE).edit().putBoolean("chain_window", on)
++                        if (!on) e.remove("restart_pending") // the chain ended: no restart is pending any more
++                        e.commit()
++                        ChainRestart.window(this, on)
++                        result.success(null)
+                     }
+ 
+                     "keepScreenOn" -> {
+--- a/android/app/src/main/kotlin/com/example/vollie/RestartActivity.kt	2026-11-21 09:21:51
++++ b/android/app/src/main/kotlin/com/example/vollie/RestartActivity.kt	2026-11-21 08:53:49
+@@ -6,15 +6,18 @@
+ import android.view.WindowManager
+ 
+ /** Kit r30: process restart (as ProcessPhoenix): runs in its own process (":restart"), kills the app's main process,
+- *  starts MainActivity in a new one, then ends itself. Started from the foreground app, so Android 15's background
+- *  activity-start limits do not apply; no permission is needed. */
++ *  starts MainActivity in a new one, then ends itself. It must be started from a visible window (Android 15 blocks a
++ *  start from the background: R71); kit r31's ChainRestart makes sure of that. r31: shown over the lock screen, every
++ *  step logged to the chain log. */
+ class RestartActivity : Activity() {
+     override fun onCreate(savedInstanceState: Bundle?) {
+         super.onCreate(savedInstanceState)
+         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
++        ChainRestart.window(this, true)
+         val pid = intent.getIntExtra("pid", -1)
++        ChainRestart.log(this, "RestartActivity up; killing pid $pid, then starting MainActivity; screen ${ChainRestart.screen(this)}")
+         if (pid > 0) android.os.Process.killProcess(pid)
+-        startActivity(Intent(this, MainActivity::class.java)
++        startActivity(Intent(this, MainActivity::class.java).putExtra("via", "restart")
+             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+         finish()
+         Runtime.getRuntime().exit(0)
+--- a/lib/device.dart	2026-11-21 09:21:51
++++ b/lib/device.dart	2026-11-21 08:54:04
+@@ -907,6 +907,25 @@
+   static Future<void> switchRuntime(String runtime, {bool restart = true, bool screenOn = false}) =>
+       _channel.invokeMethod(restart ? 'restartInto' : 'setRuntime', {'runtime': runtime, 'screenOn': screenOn});
+ 
++  /// Kit r31: interactive (screen on), keyguardLocked, resumed (the app's window is in front), pid. Empty off Android.
++  static Future<Map<String, Object?>> screenState() async {
++    try {
++      return Map<String, Object?>.from(await _channel.invokeMethod<Map>('screenState') ?? const {});
++    } on MissingPluginException {
++      return const {};
++    }
++  }
++
++  /// Kit r31: the unattended chain's window: kept on, shown over the lock screen, turns the screen on when shown; stored,
++  /// so a restarted process has it from its first frame.
++  static Future<void> chainWindow(bool on) async {
++    try {
++      await _channel.invokeMethod('chainWindow', {'on': on});
++    } on MissingPluginException {
++      // tests / non-Android
++    }
++  }
++
+   static Future<void> keepScreenOn(bool on) async {
+     try {
+       await _channel.invokeMethod('keepScreenOn', {'on': on});
+--- a/lib/research.dart	2026-11-21 09:21:51
++++ b/lib/research.dart	2026-11-21 08:55:01
+@@ -46,8 +46,8 @@
+ /// power saving and thermal status), T-D's smaps match by inode, the session label (deep-sleeping list) and the power-save
+ /// state read at the start, and T-A's cap probe ([capProbe], no model).
+ extension Research on Assistant {
+-  static const kit = 'r30';
+-  static const app = '1.30.0+30';
++  static const kit = 'r31';
++  static const app = '1.31.0+31';
+ 
+   /// r28: the owner's label for the session, chosen on the start screen before the kit can start (memo-31 §7: session A
+   /// with Samsung's deep-sleeping list, session B without). Recorded in the report and in every cap probe.
+@@ -224,6 +224,9 @@
+   static const chainCool = chainTest ? Duration(seconds: 20) : Duration(minutes: 30);
+   static const chainPowerWait = chainTest ? Duration(seconds: 10) : Duration(minutes: 10);
+   static const chainPowerTries = 3, chainBatteryMin = 15, chainAttempts = 2, chainRestarts = 2;
++  /// r31: restart tries per restart (each: wake, show, restart, 30 s watchdog by the wall clock) before the chain stops.
++  static const chainRestartTries = 3;
++  static const chainRestartWait = Duration(seconds: 30);
+   /// The reason a chain segment must stop (set by researchRun's runtime check, the battery check, a failed write).
+   static String? chainStop;
+   /// The end-of-chain summary the app shows over every screen until the owner closes it.
+@@ -574,7 +577,7 @@
+     } catch (e) {
+       kitNote = 'Kit download failed: $e';
+     } finally {
+-      await DeviceProfile.keepScreenOn(false);
++      if (!_chainRunning) await DeviceProfile.keepScreenOn(false); // r31: the chain keeps the screen on (R71)
+       researching = false;
+       optimizing = null;
+       _kitChanged();
+@@ -906,7 +909,7 @@
+               .writeAsStringSync(js);
+         }
+       } catch (_) {}
+-      await DeviceProfile.keepScreenOn(false);
++      if (!_chainRunning) await DeviceProfile.keepScreenOn(false); // r31: the chain keeps the screen on (R71)
+       researching = false;
+       optimizing = null;
+       kitNote = 'Cap probe done ($label, ${Research.sessionLabel}). Save it to Downloads and send the file.';
+@@ -951,7 +954,7 @@
+       storage = await kitStorageStep(dir);
+     } catch (e) {
+       kitNote = 'Kit ${Research.kit}: the storage step failed ($e).';
+-      await DeviceProfile.keepScreenOn(false);
++      if (!_chainRunning) await DeviceProfile.keepScreenOn(false); // r31: the chain keeps the screen on (R71)
+       researching = false;
+       optimizing = null;
+       _kitChanged();
+@@ -959,7 +962,7 @@
+     }
+     if (storage.paths == null) {
+       kitNote ??= 'Kit ${Research.kit}: the storage step stopped (${storage.rec['stopped']}).';
+-      await DeviceProfile.keepScreenOn(false);
++      if (!_chainRunning) await DeviceProfile.keepScreenOn(false); // r31: the chain keeps the screen on (R71)
+       researching = false;
+       optimizing = null;
+       _kitChanged();
+@@ -1644,7 +1647,7 @@
+         // the clipboard copy and "Save to Downloads" are the channels
+         Research.chainStop ??= name == null ? null : 'report not written: $e';
+       }
+-      await DeviceProfile.keepScreenOn(false);
++      if (!_chainRunning) await DeviceProfile.keepScreenOn(false); // r31: the chain keeps the screen on (R71)
+       researching = false;
+       optimizing = null;
+       status = EngineStatus.idle;
+@@ -1702,6 +1705,9 @@
+       return;
+     }
+     final now = DateTime.now();
++    // r31: an earlier chain's state is kept beside the new one (never overwritten)
++    final old = await _chainFile();
++    if (old.existsSync()) old.renameSync('${await _chainFolder()}/r30-chain-before-${_stamp(now)}.json');
+     await _chainWrite({
+       'kit': Research.kit, 'app': Research.app, 'started': now.toIso8601String(), 'test_plan': Research.chainTest,
+       'session_label': Research.sessionLabel, 'deep_sleeping_list': Research.deepSleep.value, 'owner_note': Research.ownerNote,
+@@ -1735,6 +1741,9 @@
+     _stopTest = false;
+     Research.deepSleep.value = st['deep_sleeping_list'] as bool?;
+     await DeviceProfile.keepScreenOn(true);
++    await DeviceProfile.chainWindow(true);
++    await _chainLog('process ${Research.kit} (${Research.app}) resumes the chain at segment ${st['index']}; '
++        'runtime ${await DeviceProfile.runtimeInfo()}; screen ${await DeviceProfile.screenState()}');
+     try {
+       await _chainLoop(st);
+     } catch (e) {
+@@ -1751,6 +1760,7 @@
+     st['finished'] = DateTime.now().toIso8601String();
+     await _chainWrite(st);
+     await _chainLog(stop == null ? 'chain done' : 'CHAIN STOPPED: $stop');
++    await DeviceProfile.chainWindow(false);
+     await DeviceProfile.keepScreenOn(false);
+     Research.chainSummary.value = _chainSummaryText(st);
+   }
+@@ -1776,10 +1786,27 @@
+         }
+         restarts['$i'] = n;
+         await _chainWrite(st);
+-        await _chainLog('restart into $rt for segment $i (this process: $info)');
+-        await DeviceProfile.switchRuntime(rt, screenOn: true);
+-        await Future<void>.delayed(const Duration(seconds: 30)); // the process is killed meanwhile
+-        return _chainEnd(st, 'restart into $rt did not happen within 30 s');
++        // r31 (R71: the restart was refused while the screen was off and the 30 s timer fired 49 min late): each try
++        // wakes the screen and shows the window (MainActivity / ChainRestart), the watchdog reads the wall clock every
++        // second, and a try that did not happen is logged and tried again, [Research.chainRestartTries] times in all.
++        for (var t = 1; t <= Research.chainRestartTries; t++) {
++          await DeviceProfile.chainWindow(true);
++          await _chainLog('restart into $rt for segment $i, try $t of ${Research.chainRestartTries} (this process: $info; '
++              'screen ${await DeviceProfile.screenState()})');
++          await DeviceProfile.switchRuntime(rt, screenOn: true);
++          final t0 = DateTime.now();
++          while (DateTime.now().difference(t0) < Research.chainRestartWait) {
++            await Future<void>.delayed(const Duration(seconds: 1)); // the process is killed meanwhile
++          }
++          final tries = (st['restart_failures'] ??= <Object?>[]) as List;
++          tries.add({'segment': i, 'runtime': rt, 'try': t, 'at': DateTime.now().toIso8601String(),
++            'waited_s': DateTime.now().difference(t0).inSeconds, 'screen': await DeviceProfile.screenState()});
++          await _chainWrite(st);
++          await _chainLog('restart try $t did not happen: still this process after '
++              '${DateTime.now().difference(t0).inSeconds} s (screen ${await DeviceProfile.screenState()})');
++        }
++        return _chainEnd(st, 'restart into $rt did not happen (${Research.chainRestartTries} tries, '
++            '${Research.chainRestartWait.inSeconds} s each); resumable');
+       }
+       final attempts = st['attempts'] as Map;
+       final a = ((attempts['$i'] as int?) ?? 0) + 1;
+@@ -1796,6 +1823,7 @@
+       }
+       attempts['$i'] = a;
+       await _chainWrite(st);
++      await DeviceProfile.chainWindow(true); // r31: screen kept on through every segment (R71)
+       await _chainLog('segment $i $seg start (attempt $a), process runtime $info');
+       // segment-start checks: battery, power saving (record, wait, re-check up to 3 times)
+       var p = await DeviceProfile.powerState();
+@@ -1981,6 +2009,28 @@
+           'saveToDownloads', {'path': p, 'name': name, 'mime': p.endsWith('.txt') ? 'text/plain' : 'application/json'}))!);
+     }
+     return out;
++  }
++
++  /// r31: a chain stopped because a restart did not happen (kit r30's R71 stop included) can be resumed by the owner.
++  static bool chainResumable(Map<String, Object?>? st) =>
++      st != null && st['done'] != true && ((st['stop'] as String?)?.startsWith('restart into ') ?? false);
++
++  /// r31: "Resume chain": continues a [chainResumable] chain at its first unfinished segment (finished segments are never
++  /// run again); the stop is kept in 'resumes', the segment's restart count starts again.
++  Future<void> chainResumeStopped() async {
++    final st = await chainState();
++    if (_chainRunning || !ResearchChain.chainResumable(st)) return;
++    final i = st!['index'];
++    ((st['resumes'] ??= <Object?>[]) as List).add({'at': DateTime.now().toIso8601String(), 'kit': Research.kit,
++      'app': Research.app, 'stop': st['stop'], 'finished': st['finished'], 'restarts': (st['restarts'] as Map)['$i']});
++    st['stop'] = null;
++    st.remove('finished');
++    st['acknowledged'] = false;
++    (st['restarts'] as Map).remove('$i');
++    await _chainWrite(st);
++    await _chainLog('RESUME by the owner (kit ${Research.kit}): segment $i, earlier stop "${(st['resumes'] as List).last['stop']}"');
++    Research.chainSummary.value = null;
++    await chainResume();
+   }
+ 
+   Future<void> chainAcknowledge() async {
+--- a/lib/settings_screen.dart	2026-11-21 09:21:51
++++ b/lib/settings_screen.dart	2026-11-21 08:54:52
+@@ -429,7 +429,7 @@
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.downloadKitModels,
+                 icon: const Icon(Icons.download_rounded),
+-                label: Text('Download kit r30 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
++                label: Text('Download kit ${Research.kit} models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
+                     '(${(assistant.kitMissingBytes / 1e9).toStringAsFixed(1)} GB, Wi-Fi)'),
+               ),
+       if (assistant.kitModelReady)
+@@ -444,7 +444,7 @@
+                 builder: (_, v, __) => OutlinedButton.icon(
+                   onPressed: busy || optimizing || v == null ? null : assistant.researchRun,
+                   icon: const Icon(Icons.science_rounded),
+-                  label: Text(v == null ? 'Run research kit r30: choose the session label first' : 'Run research kit r30 once, this runtime (~20-110 min)'),
++                  label: Text(v == null ? 'Run research kit ${Research.kit}: choose the session label first' : 'Run research kit ${Research.kit} once, this runtime (~20-110 min)'),
+                 ),
+               ),
+       // r30 (owner, 2026-11-20): all of R68 unattended: c2 plan, 30 min cool-down, restart into c1, restart into stock.
+@@ -458,6 +458,19 @@
+                 '${Research.chainTest ? ' TEST PLAN' : ''}'),
+           ),
+         ),
++      // r31: the same "Resume chain" after the summary was closed
++      if (!assistant.researching && !assistant.chainActive)
++        FutureBuilder<Map<String, Object?>?>(
++          future: assistant.chainState(),
++          builder: (_, s) => ResearchChain.chainResumable(s.data)
++              ? FilledButton.icon(
++                  onPressed: busy || optimizing ? null : assistant.chainResumeStopped,
++                  icon: const Icon(Icons.play_arrow_rounded),
++                  label: Text('Resume chain (segment ${s.data!['index']}: '
++                      '${Research.chainPlan[s.data!['index'] as int].$1} onward)'),
++                )
++              : const SizedBox.shrink(),
++        ),
+       if (assistant.kitModelReady && !assistant.researching)
+         Padding(
+           padding: const EdgeInsets.symmetric(vertical: 4),
+@@ -624,6 +637,18 @@
+               icon: const Icon(Icons.save_alt_rounded),
+               label: const Text('Save chain files to Downloads'),
+             ),
++          ),
++          // r31: a chain stopped by a restart that did not happen continues at its next segment with one tap
++          FutureBuilder<Map<String, Object?>?>(
++            future: assistant.chainState(),
++            builder: (_, s) => ResearchChain.chainResumable(s.data)
++                ? FilledButton.icon(
++                    onPressed: assistant.chainResumeStopped,
++                    icon: const Icon(Icons.play_arrow_rounded),
++                    label: Text('Resume chain (segment ${s.data!['index']}: '
++                        '${Research.chainPlan[s.data!['index'] as int].$1} onward)'),
++                  )
++                : const SizedBox.shrink(),
+           ),
+           TextButton(onPressed: assistant.chainAcknowledge, child: const Text('Close')),
+         ]),
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.30.0+30
++version: 1.31.0+31
+ 
+ environment:
+   sdk: ^3.10.7
+--- a/test/chain_resume_test.dart	1970-01-01 09:00:00
++++ b/test/chain_resume_test.dart	2026-11-21 08:55:18
+@@ -0,0 +1,21 @@
++// Kit r31: which stopped chains "Resume chain" accepts (R71's r30 state included) and where it continues.
++import 'package:flutter_test/flutter_test.dart';
++import 'package:vollie/assistant.dart';
++
++void main() {
++  // kit r30's state on the phone after R71 (r30-chain_2026-11-20.json, reports trimmed)
++  final r71 = <String, Object?>{'kit': 'r30', 'index': 2, 'restarts': {'2': 1}, 'done': false,
++    'stop': 'restart into c1 did not happen within 30 s'};
++  test('R71 state resumes at segment 2 (c1); c2 and cool are behind it', () {
++    expect(ResearchChain.chainResumable(r71), true);
++    expect(Research.chainPlan[r71['index'] as int].$1, 'c1');
++  });
++  test('r31 restart stop resumes; other stops, a done chain, a running chain and no chain do not', () {
++    expect(ResearchChain.chainResumable({...r71, 'stop': 'restart into stock did not happen (3 tries, 30 s each); resumable'}), true);
++    expect(ResearchChain.chainResumable({...r71, 'stop': 'battery 14 % < 15 % at segment 2 start'}), false);
++    expect(ResearchChain.chainResumable({...r71, 'stop': 'segment 2 (c1): mapped-library check failed'}), false);
++    expect(ResearchChain.chainResumable({...r71, 'done': true}), false);
++    expect(ResearchChain.chainResumable({...r71, 'stop': null}), false);
++    expect(ResearchChain.chainResumable(null), false);
++  });
++}

@@ -263,3 +263,28 @@ r28-stock's `libllama.so` and CPU module, byte-identical, packed as `libllama_rt
 - Session label preset "on" (the chain's default). `test/runtime_check_test.dart`.
 - Test builds only: `--dart-define=VOLLIE_CHAIN_TEST=true` shortens the chain (a small model, 20 s cool-down) for the
   emulator; false and compiled out in the kit APK.
+
+## 0014-kit-r31.patch (on top of 0013)
+
+Kit r31 (version 1.31.0+31, 2026-11-21): kit r30 with the chain restart fixed (R71: the restart into c1 did not happen).
+Same package and key; installs over r30 and continues its chain. Native libraries: the 16 of r30, byte-identical.
+
+- **Cause fixed:** `researchRun` cleared `FLAG_KEEP_SCREEN_ON` at its end, also inside the chain, so after segment c2 the
+  screen timed out during the cool-down; the restart then started `RestartActivity` from a process with no visible window
+  and Android 15 refused it (`BAL_BLOCK`, reproduced on the API 35 emulator). Inside the chain the flag is no longer
+  cleared; the chain's window (`chainWindow`: keep screen on, `setShowWhenLocked`, `setTurnScreenOn`) is set at every
+  segment start and stored, so a restarted process has it from its first frame.
+- **Restart** (`ChainRestart.kt`): stores the runtime, holds a 60 s partial wake lock, wakes the screen when it is off
+  (`ACQUIRE_CAUSES_WAKEUP`, 10 s), shows the window over the lock screen, waits up to 5 s for it to be in front, then starts
+  `RestartActivity` (manifest: `showWhenLocked`, `turnScreenOn`). Every step goes into the chain log
+  (`[android pid N]` lines), and the new process logs itself at start (old pid, runtime, screen state).
+- **Watchdog:** 30 s by the wall clock, checked every second (kit r30 used one 30 s timer, which took 49 min while the
+  phone slept); a try that did not happen is logged and recorded (`restart_failures` in the chain state) and the restart is
+  tried again, 3 tries in all; then the chain stops with a resumable reason.
+- **Resume chain:** a chain stopped by "restart into ..." (r30's R71 stop included) shows "Resume chain (segment i: ...
+  onward)" on its summary and in settings; it continues at the first unfinished segment (finished segments never run
+  again), keeps the earlier stop in `resumes`, and writes the same file names (`r30-chain*.json`, `r30-chain-log.txt`).
+  A new Auto start keeps the earlier state as `r30-chain-before-<time>.json`.
+- Not used: an alarm-clock activity PendingIntent (blocked the same way on the emulator) and a self-sent PendingIntent
+  with `MODE_BACKGROUND_ACTIVITY_START_ALLOWED` (carries no privilege the app lacks). No new permission.
+- `test/chain_resume_test.dart`.

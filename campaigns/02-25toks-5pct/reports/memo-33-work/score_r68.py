@@ -281,7 +281,7 @@ class Session:
         fill_blocks(r, self.runs)
         self.scored = [x for x in self.runs if x.get('phase') == 'on']
         self.models = list(dict.fromkeys(x.get('model') for x in self.runs))
-        self.complete = r.get('kit') in ('r28', 'r30') and not r.get('stopped_early') and len(self.scored) == N_SCORED.get(self.rt)
+        self.complete = r.get('kit') in ('r28', 'r30', 'r31') and not r.get('stopped_early') and len(self.scored) == N_SCORED.get(self.rt)
         # D1: power saving on -> not scored; '?' is scored only if the session reads off at start and end. D2 / R63 §4: plugged.
         soff = power(r.get('power_start')) == 'off' and power(r.get('power_end')) == 'off'
         self.dropped = {}
