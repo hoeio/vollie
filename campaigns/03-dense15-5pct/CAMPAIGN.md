@@ -47,7 +47,7 @@ Lead's notes:
 | hard ceiling | PPL ≤ F16 PPL × 1.20, for the served file at stock and for every configuration | as campaign 2; it is what bounds a low-bit served file |
 | quality gate | wikitext-2 test, ctx 512, batch 512, all chunks | as campaigns 1 and 2 |
 | metric | llamadart `decodeTokensPerSec`, official prompt, 32 tokens, greedy, kit protocol (r16 gate) | unchanged. A method that drafts or commits several tokens per step counts committed tokens, keeps greedy output identical, and is scored on a fixed prompt set as well as the official prompt |
-| claim rule | median of 10 plain runs ≥ 15.0 tok/s, positions fixed before the run, never a best run; power saving off, deep-sleeping list state recorded, charger out | campaign 2's go rule (memo-31 §4) applies before a claim round |
+| claim rule | median of 10 plain runs ≥ 15.0 tok/s (*note 2026-11-21: read 12.0, per model, per Amendment 1*), positions fixed before the run, never a best run; power saving off, deep-sleeping list state recorded, charger out | campaign 2's go rule (memo-31 §4) applies before a claim round |
 | start | campaigns 1 and 2's final state: runtime series, kit, protocol, lessons | as campaign 2's "start from Vollie 1" rule |
 
 *Owner decision 2026-11-19 (calibration-derived tables: thresholds and hot-first orders).* Owner: "Treat them as data read at runtime, but manage them as derived artifacts attached to the weights, not as code." Lead's reading:
