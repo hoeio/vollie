@@ -19,6 +19,11 @@
 # C3_BLOCK=32|64 (eval): H3b, block-granular sparsity, thresholds on the L2 norm of each input block (thr3 tables).
 # memo-05 E2 (gate rule): group 'gate' zeroes neuron i of layer L (the ffn_down input, i.e. its up row and down column)
 #   when |SiLU(g_i)| of the full ffn_gate output is under a train threshold ('L:gate' quantiles, from calib).
+# memo-06 T1 (Ebony, groups of four FFN neurons): calib with C3_ACTDUMP=<out.npz> also saves the first 2048 rows of each
+#   ffn_down input (a = act(g) x u) and writes <prefix>-file.npz / <prefix>-clustered.npz (tools/c3_grp4_table.py).
+#   eval with C3_GRP4=<table.npz> and groups 'grp4': per token, the 4 neurons of a group are zeroed together when the
+#   group's largest |a| is under the layer's train threshold at quantile <sparsity> (= skipping their 4 gate/up rows
+#   and 4 down columns).
 # memo-05 T5: C3_KEEPSTAT=<out.npz> (eval, element rule) saves per input and column how often it was kept, and the mean
 #   fraction of columns kept by at least one token of each 32-token window (the 32-token union).
 import sys, os, re, time, json, ctypes as C, numpy as np, collections
@@ -28,7 +33,7 @@ L.llama_get_logits.restype = C.POINTER(C.c_float); L.llama_get_logits.argtypes =
 L.llama_vocab_n_tokens.restype = C.c_int32; L.llama_vocab_n_tokens.argtypes = [C.c_void_p]
 L.llama_vocab_get_add_bos.restype = C.c_bool; L.llama_vocab_get_add_bos.argtypes = [C.c_void_p]
 L.llama_vocab_bos.restype = C.c_int32; L.llama_vocab_bos.argtypes = [C.c_void_p]
-KIND = {'attn_q': 'qkv', 'attn_k': 'qkv', 'attn_v': 'qkv', 'attn_output': 'o', 'ffn_gate': 'gu', 'ffn_up': 'gu', 'ffn_down': 'down',
+KIND = {'attn_q': 'qkv', 'attn_k': 'qkv', 'attn_v': 'qkv', 'attn_qkv': 'qkv', 'attn_output': 'o', 'ffn_gate': 'gu', 'ffn_up': 'gu', 'ffn_down': 'down',
         'channel_mix_key': 'cmix_k', 'channel_mix_value': 'cmix_v'}   # RWKV-7: cmix_v's input is relu(k)^2 (H4 counts its exact zeros)
 CBLK = int(os.environ.get('C3_BLOCK', '0'))   # H3b: 0 = per element; 32 or 64 = whole input blocks (needs a table from this calib)
 QS = (0.02, 0.05, 0.08, 0.1, 0.15, 0.2, 0.3, 0.35, 0.4, 0.45, 0.5, 0.6, 0.7, 0.8)   # tables store their own list as 'qs'
@@ -50,28 +55,38 @@ else:
     FDENSE = int(os.environ.get('C3_DENSE_FIRST', '0'))   # positions < FDENSE never skip (attention-sink tokens)
     print('ffnskip %s: global ratio threshold %.5f for skip fraction %g (train)' % (RULE, RTHR, SKF), flush=True)
 resin = {}; rprev = {}; ffn_in = {}; ratios = collections.defaultdict(list); gaten = {}; gmask = {}
+G4 = os.environ.get('C3_GRP4') if mode == 'eval' else None; ADUMP = os.environ.get('C3_ACTDUMP') if mode == 'calib' else None; adump = collections.defaultdict(list)
+if G4:
+    _g = np.load(G4); _ql = list(_g['qs']); G4THR = {int(k[4:]): float(_g[k][_ql.index(SP)]) for k in _g.files if k.startswith('thr:')}; G4P = {l: _g['perm:%d' % l] for l in G4THR}
 KEEP = os.environ.get('C3_KEEPSTAT'); kc = {}; kn = collections.Counter(); ku = collections.defaultdict(lambda: [0.0, 0])
 def ptr(p): return C.cast(p, C.POINTER(ggml_tensor)).contents
+nodes = []; mmk = {}; XREST = {}; RESTORE = set(); pend = collections.defaultdict(list); unedited = collections.Counter()
 inp = {}; outn = {}; phase = ['discover']; pos0 = [0]; samp = collections.defaultdict(list); rng = np.random.default_rng(0)
 cnt = collections.defaultdict(lambda: [0.0, 0])   # group -> [zeroed elements, elements]
 def cb(t, ask, ud):
     tt = t.contents
-    if phase[0] == 'discover':
-        if ask: return ggml.ggml_op_desc(t) == b'MUL_MAT'
+    if phase[0] == 'discover':   # every node, in compute order: the consumer plan below needs the whole graph
+        if ask: return True
+        op = ggml.ggml_op_desc(t); nodes.append((C.cast(t, C.c_void_p).value, bytes(tt.name), op, [s for s in tt.src if s], tt.view_src))
+        if op != b'MUL_MAT': return True
         s0 = ptr(tt.src[0]); m = re.match(rb'^blk\.(\d+)\.(\w+)\.weight$', s0.name)
         if m and m.group(2).decode() in KIND:
-            k = '%s:%s' % (int(m.group(1)), KIND[m.group(2).decode()]); inp[bytes(ptr(tt.src[1]).name)] = k; outn[bytes(tt.name)] = k
+            k = '%s:%s' % (int(m.group(1)), KIND[m.group(2).decode()]); inp[bytes(ptr(tt.src[1]).name)] = k; outn[bytes(tt.name)] = k; mmk[len(nodes)-1] = (k, bytes(ptr(tt.src[1]).name))
             if k.endswith(':down'): resin[b'ffn_inp-%d' % int(m.group(1))] = int(m.group(1))
             if m.group(2) == b'ffn_gate': gaten[bytes(tt.name)] = int(m.group(1))
         return True
     name = tt.name
+    if mode == 'eval' and name in RESTORE:   # last target mat-mul of an input that other nodes read later: put it back
+        if ask: return True
+        for xv, sv in pend.pop(name, ()): xv[...] = sv
     if mode == 'ablate':
         if ask: return outn.get(name) in ASET   # one layer, or a comma list of layers
         C.memset(tt.data, 0, tt.nb[3] * tt.ne[3]); cnt['ablated'][1] += 1; return True
     if mode == 'ffnskip' or (mode == 'calib' and (name in resin or (outn.get(name) or '').endswith(':down'))):
         if name in resin:   # residual entering the FFN of layer L: remember its per-token norm
             if ask: return True
-            ffn_in[resin[name]] = np.linalg.norm(np.ctypeslib.as_array(C.cast(tt.data, C.POINTER(C.c_float)), shape=(tt.ne[1], tt.ne[0])), axis=1); return True
+            ffn_in[resin[name]] = np.linalg.norm(np.ctypeslib.as_array(C.cast(tt.data, C.POINTER(C.c_float)), shape=(tt.ne[1], tt.ne[0])), axis=1)
+            if mode == 'ffnskip' or name not in inp: return True   # post-norm blocks: ffn_inp is also the gate/up input, sample it below
         k = outn.get(name)
         if k is not None and k.endswith(':down'):
             if ask: return True
@@ -92,10 +107,13 @@ def cb(t, ask, ud):
         else: gmask[gl] = a < THR['%d:gate' % gl]
         return True
     k = inp.get(name)
-    if ask: return k is not None and (mode == 'calib' or k in THR or (k.endswith(':down') and '%s:gate' % k.split(':')[0] in THR))
-    if k is None or tt.type != 0 or tt.nb[1] != tt.ne[0]*4: return True
+    if ask: return k is not None and (mode == 'calib' or k in THR or (G4 is not None and k.endswith(':down')) or (k.endswith(':down') and '%s:gate' % k.split(':')[0] in THR))
+    if k is None: return True
+    if tt.type != 0 or tt.nb[1] != tt.ne[0]*4 or tt.ne[2]*tt.ne[3] != 1: unedited[k.split(':')[1]] += 1; return True   # reported, never silent
     x = np.ctypeslib.as_array(C.cast(tt.data, C.POINTER(C.c_float)), shape=(tt.ne[1], tt.ne[0]))
+    if mode == 'eval' and name in XREST: pend[XREST[name]].append((x, x.copy()))
     if mode == 'calib':
+        if ADUMP and k.endswith(':down') and sum(len(a) for a in adump[k]) < 2048: adump[k].append(x.astype(np.float16))
         ax = np.abs(x).ravel(); samp[k].append(ax[rng.integers(0, ax.size, 32768)].astype(np.float32))
         for bw in (32, 64):   # H3b: L2 norm of each input block of bw columns (the Q4_0 block is 32 inputs)
             if x.shape[1] % bw == 0: bn = np.sqrt((x.reshape(x.shape[0], -1, bw)**2).sum(2)).ravel(); samp['b%d:%s' % (bw, k)].append(bn[rng.integers(0, bn.size, 8192)].astype(np.float32))
@@ -109,6 +127,10 @@ def cb(t, ask, ud):
     if k.endswith(':down') and int(k.split(':')[0]) in gmask:   # E2: the gate rule's neurons
         gm = gmask.pop(int(k.split(':')[0]))[first:]; np.putmask(xs, gm, 0.0); cnt['gate'][0] += gm.sum(); cnt['gate'][1] += gm.size
         if k not in THR: return True
+    if G4 and k.endswith(':down'):   # T1: whole groups of four neurons
+        l = int(k.split(':')[0]); P = G4P[l]; mg = np.abs(xs[:, P]).reshape(xs.shape[0], -1, 4).max(2) < G4THR[l]
+        m = np.zeros(xs.shape, bool); m[:, P] = np.repeat(mg, 4, axis=1); np.putmask(xs, m, 0.0); cnt['grp4'][0] += mg.sum(); cnt['grp4'][1] += mg.size
+        if k not in THR: return True
     if CBLK:   # H3b: zero whole input blocks whose L2 norm is below the threshold
         xb = xs.reshape(xs.shape[0], -1, CBLK); mb = np.sqrt((xb**2).sum(2)) < THR[k]; xb[mb] = 0.0; m = np.repeat(mb, CBLK, axis=1)
     else: m = np.abs(xs) < THR[k]; np.putmask(xs, m, 0.0)
@@ -121,7 +143,8 @@ def cb(t, ask, ud):
 cbf = CB(cb)
 L.llama_backend_init()
 model = L.llama_model_load_from_file(model_path.encode(), L.llama_model_default_params()); assert model
-cp = L.llama_context_default_params(); cp.n_ctx = 512; cp.n_batch = 512; cp.n_ubatch = UB; cp.n_seq_max = 1; cp.n_threads = NT; cp.n_threads_batch = NT; cp.cb_eval = cbf; cp.no_perf = True
+cp = L.llama_context_default_params(); assert cp.n_batch == 2048 and cp.n_ubatch == 512, 'llama.h struct layout differs from dense_acts.py'
+cp.n_ctx = 512; cp.n_batch = 512; cp.n_ubatch = UB; cp.n_seq_max = 1; cp.n_threads = NT; cp.n_threads_batch = NT; cp.cb_eval = cbf; cp.no_perf = True
 ctx = L.llama_init_from_model(model, cp); assert ctx
 vocab = L.llama_model_get_vocab(model); nv = L.llama_vocab_n_tokens(vocab); text = open(text_path, 'rb').read()
 toks = (C.c_int32 * (len(text)+16))(); ntok = L.llama_tokenize(vocab, text, len(text), toks, len(text)+16, True, False); assert ntok > 0
@@ -142,10 +165,33 @@ def run_chunk(c):
 b.n_tokens = UB
 for i in range(UB): b.token[i] = int(tk[i]); b.pos[i] = i; b.n_seq_id[i] = 1; b.seq_id[i][0] = 0; b.logits[i] = 1
 assert L.llama_decode(ctx, b) == 0; phase[0] = 'run'
+# consumer plan (model-generic): zeroing an input in place is exact only if nothing but its target mat-muls reads it
+# (true for pre-norm blocks). Otherwise (post-norm: the input is the residual; parallel blocks) the input is restored
+# after its last target mat-mul, which is exact if every other reader runs later; if not, the tool refuses the model.
+VIEWS = {b'VIEW', b'RESHAPE', b'PERMUTE', b'TRANSPOSE'}; byp = {n[0]: i for i, n in enumerate(nodes)}; cons = collections.defaultdict(list)
+for i, n in enumerate(nodes):
+    for sp in n[3]: cons[sp].append(i)
+plan = collections.Counter(); FORCE = os.environ.get('C3_FORCE_RESTORE') == '1'   # test hook: restore path on every input
+for xn in inp:
+    ti = [i for i, kx in mmk.items() if kx[1] == xn]
+    p = nodes[ti[0]][3][1]
+    while p in byp and nodes[byp[p]][4]: p = nodes[byp[p]][4]   # base tensor of a view chain
+    clo, q = {p}, [p]
+    while q:
+        for i in cons[q.pop()]:
+            if nodes[i][2] in VIEWS and nodes[i][0] not in clo: clo.add(nodes[i][0]); q.append(nodes[i][0])
+    rd = sorted({i for c in clo for i in cons[c] if nodes[i][2] not in VIEWS}); tg = [i for i in rd if i in mmk]; ot = [i for i in rd if i not in mmk]
+    assert len({mmk[i][0] for i in tg}) == 1, 'input %s feeds mat-muls of different groups %s: unsupported block layout' % (xn, {mmk[i][0] for i in tg})
+    if ot or FORCE:
+        assert not ot or max(tg) < min(ot), 'input %s is read by %s before its last target mat-mul: unsupported' % (xn, nodes[ot[0]][1])
+        XREST[xn] = nodes[max(tg)][1]; RESTORE.add(nodes[max(tg)][1]); plan['restore:' + inp[xn].split(':')[1]] += 1
+    else: plan['inplace:' + inp[xn].split(':')[1]] += 1
+print('consumer plan: %s' % dict(sorted(plan.items())), flush=True)
 print('discovered inputs: %d (%s); thresholds in use: %d' % (len(inp), dict(collections.Counter(v.split(':')[1] for v in inp.values())), len(THR) if mode == 'eval' else 0), flush=True)
 t0 = time.time(); nll = []; line = []
 for c in range(n_chunks):
     lg, ids = run_chunk(c)
+    assert not pend, 'inputs not restored: %s' % list(pend)
     if mode == 'calib':
         if (c+1) % 4 == 0: print('calib chunk', c+1, '%.0fs' % (time.time()-t0), flush=True)
         continue
@@ -155,14 +201,18 @@ for c in range(n_chunks):
     if (c+1) % 4 == 0 or c == n_chunks-1: print(','.join(line[-4:]), '%.0fs' % (time.time()-t0), flush=True)
 if mode == 'calib':
     np.savez(out_path, **{k: np.quantile(np.concatenate(v), QS) for k, v in samp.items()}, **{'ratio:%d' % l: np.concatenate(v) for l, v in ratios.items()}, qs=np.array(QS))
-    print('wrote', out_path, len(samp), 'inputs; quantiles', QS)
+    if ADUMP:   # T1 tables built in memory (the dump itself is about 2 GB per 7B model)
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); from c3_grp4_table import table
+        acts = {'act:%s' % k.split(':')[0]: np.concatenate(v)[:2048] for k, v in adump.items()}
+        for o in ('file', 'clustered'): np.savez('%s-%s.npz' % (ADUMP, o), **table(acts, o)); print('wrote %s-%s.npz' % (ADUMP, o))
+    print('wrote', out_path, len(samp), 'inputs; quantiles', QS, '; UNEDITED inputs %s' % dict(unedited) if unedited else '')
     print('stock exact Q8_0 zeros (|x| < d/2 in each 32-block), train: ' + ', '.join('%s %.4f' % (g, z/n) for g, (z, n) in sorted(cnt.items()) if ':' not in g))
     print('exact float zeros per group: ' + ', '.join('%s %.4f' % (g[7:], z/n) for g, (z, n) in sorted(cnt.items()) if g.count(':') == 1))
     print('exact float zeros per input: ' + ', '.join('%s %.4f' % (g[7:], z/n) for g, (z, n) in sorted(cnt.items(), key=lambda a: (a[0].split(':')[-1], int(a[0].split(':')[1]) if a[0].count(':') == 2 else -1)) if g.count(':') == 2))
 else:
     per_chunk = [float(v.mean()) for v in nll]
-    tag = ('sp %g groups %s dense_first %d%s' % (SP, ','.join(sorted(GROUPS)), NDENSE, ' block %d' % CBLK if CBLK else '')) if mode == 'eval' else ('ablate %s layer %s' % (AKIND, ALAYER)) if mode == 'ablate' else ('ffnskip %s %g%s' % (RULE, SKF, ' dense_first %d' % FDENSE if FDENSE else ''))
+    tag = ('sp %g groups %s dense_first %d%s%s' % (SP, ','.join(sorted(GROUPS)), NDENSE, ' block %d' % CBLK if CBLK else '', ' grp4 %s' % os.path.basename(G4) if G4 else '')) if mode == 'eval' else ('ablate %s layer %s' % (AKIND, ALAYER)) if mode == 'ablate' else ('ffnskip %s %g%s' % (RULE, SKF, ' dense_first %d' % FDENSE if FDENSE else ''))
     real = ', '.join('%s %.4f' % (g, z/max(n, 1)) for g, (z, n) in sorted(cnt.items()) if g != 'ablated')
-    print('RESULT ub %d %s: PPL %.4f over %d chunks; realised zeroed fraction: %s' % (UB, tag, np.exp(np.concatenate(nll).mean()), n_chunks, real or '-'))
+    print('RESULT ub %d %s: PPL %.4f over %d chunks; realised zeroed fraction: %s%s' % (UB, tag, np.exp(np.concatenate(nll).mean()), n_chunks, real or '-', '; UNEDITED inputs %s' % dict(unedited) if unedited else ''))
     print('PERCHUNK ' + json.dumps({'ub': UB, 'tag': tag, 'nll': per_chunk}))
     if KEEP: np.savez(KEEP, **{'freq:' + k: v / kn[k] for k, v in kc.items()}, **{'union32:' + k: np.array(u[0] / max(u[1], 1)) for k, u in ku.items()}); print('wrote', KEEP)

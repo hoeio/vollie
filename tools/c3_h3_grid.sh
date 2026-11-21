@@ -10,5 +10,5 @@ for c in $cells; do
   t=$tab; [ "$sp" = 0 ] && t=-
   g2=$g; [ "$g" = all ] && g2=qkv,o,gu,down
   grep -q "RESULT ub $ub sp $sp groups $(echo $g2 | tr , '\n' | sort | paste -sd, -) dense_first $nd:" "$log" 2>/dev/null && continue   # resumable
-  python3 -I "$(dirname "$0")/c3_colskip.py" eval "$lib" "$model" "$text" "$n" "$ub" "$t" "$sp" "$g" "$nd" 8 2>/dev/null | grep -E '^(RESULT|PERCHUNK)' >> "$log"
+  python3 -I "$(dirname "$0")/c3_colskip.py" eval "$lib" "$model" "$text" "$n" "$ub" "$t" "$sp" "$g" "$nd" 8 2>"$log.err" | grep -E '^(RESULT|PERCHUNK)' >> "$log" || { tail -3 "$log.err" >&2; echo "cell $c failed (see $log.err)" >&2; exit 1; }
 done

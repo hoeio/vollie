@@ -283,6 +283,53 @@ draft).
 
 ## 4. Host screens (Tom)
 
+Full record: [memo-06-work/tom-screens.md](memo-06-work/tom-screens.md). All numbers are *host* or *estimated*.
+
+- **Tools.** `tools/c3_colskip.py` and `tools/c3_h3_grid.sh` are now model-generic.
+  - Two silent errors are fixed. On post-norm blocks (`olmo2`: OLMo-2, Olmo-3) the old tool zeroed the residual
+    stream, and it never calibrated the gate/up input. OLMo-2 1B, uniform 30 %: old PPL 16.31, fixed 13.57
+    (stock 13.63).
+  - A consumer plan (in place, restore after the last mat-mul, or refuse) is printed per model.
+  - Identity with `llama-perplexity` holds on llama, gemma3, exaone, stablelm, qwen2 and olmo2 at `-b 512` and
+    `-ub 1`.
+  - memo-02's Mistral per-chunk values are reproduced bit for bit.
+  - Parallel blocks (`cohere2`, Command R7B) are refused, not mis-screened.
+  - No runtime patch was touched.
+- **Header inventory (T7), 24 candidates, no download.** Q4_0 bytes per token (*estimated*):
+
+  | candidate | GB/token |
+  |---|---|
+  | Yi-1.5-6B | **3.33** |
+  | ChatGLM3-6B | **3.43** |
+  | Llama-2-7B, Granite-7b-instruct | 3.75 |
+  | DeepSeek-LLM-7B | 3.76 |
+  | A.X-3.1-Light | 3.96 |
+  | Olmo-3-7B | 3.98 |
+  | Mistral-7B-v0.3 (memo-02) | 4.04 |
+  | Qwen2.5-7B (memo-02) | 4.12 |
+  | Llama-3.1-8B | 4.36 |
+
+  Every architecture is in llama.cpp at `620d2225c`. Teuken, Command R7B and Granite-3.3 have tied heads.
+- **H3 column frontier and the Q4_0 vs Q8_0/F16 ratio: not screened: disk** for every new candidate, including
+  all of Bonnie's top five. No pool file is on the laptop, and free disk was 2.2 to 6.1 GB against the 5 GB floor.
+  One model at a time needs about 16 GB free (Q4_0 + Q8_0 + floor), or about 10 GB for H3 alone.
+- The only screened models are still memo-02's (40 chunks, at `-b 512` and `-ub 1`):
+
+  | model | inside the margin | Q4_0 / Q8_0 |
+  |---|---|---|
+  | Mistral-7B-v0.3 | 40 % | x 1.0195 |
+  | Qwen2.5-7B | 35 % | x 1.0357 |
+
+- **Ebony T1** (whole-neuron skip in groups of four, exact score; *host*, **partial**):
+  - Mistral-7B-v0.3 at `-b 512`, 40 chunks: about **30 %** of groups inside +4.5 % in file order (+3.65 %) and about
+    **33 to 35 %** clustered (30 %: +2.60 %; 38 % realised: +4.78 %).
+  - Both inside Ebony's pre-data bands. ≥ 40 % is not reached on Mistral.
+  - Not run: Qwen2.5 and `-ub 1`. The Qwen2.5 calibration filled swap and the disk (about 0.23 GB free), and
+    was stopped.
+  - So T1 is not yet a two-model result.
+- Selection criterion 2 (sparsity) therefore has no number for any new candidate. If the choice cannot wait for
+  disk, it rests on criteria 1 and 3.
+
 ## 5. Re-plan at 12 tok/s: levers, rounds, kill lines (lead)
 
 Full arithmetic and reasoning: [memo-06-work/clyde-replan.md](memo-06-work/clyde-replan.md). Every number here is
@@ -355,3 +402,25 @@ owner confirms them (owner delegated, 2026-11-21). Reasons are in the work file 
   to be Q4_0.
 
 ## 6. Choice of the three and reserves (lead)
+
+**Provisional, 2026-11-21 (lead).** Applied section 1 to Bonnie's pool (section 2), Ebony's challenge (3.2) and
+Tom's header inventory (4). All tok/s below are *estimated*; no candidate is screened yet.
+
+| slot | model | family | Q4_0 GB/token | levers at r 35 (Bonnie) | why |
+|---|---|---|---|---|---|
+| subject 1 | Yi-1.5-6B-Chat | 01.AI | 3.33 | 9.0 to 11.5 | rank 1 on criterion 1 at both r |
+| subject 2 | ChatGLM3-6B | Zhipu | 3.43 | 8.8 to 11.2 | rank 2; research licence fits criterion 3 (not shippable in the Play build) |
+| subject 3 | DeepSeek-LLM-7B-chat | DeepSeek | 3.76 | 8.1 to 10.4 | fewest multiplied weights after 1 and 2 (6.49 G, Ebony 3.2); ahead of Llama-2 at r 35, behind it at r 19 |
+| reserve 1 | Llama-2-7b-chat | Meta | 3.75 | 8.1 to 10.2 | criterion 1 near-tie with subject 3; lower head share |
+| reserve 2 | Granite-7b-instruct | IBM | 3.75 | 8.1 to 10.2 | same shape as Llama-2; from-scratch lineage still to confirm |
+
+- Slot 3 is a near-tie on criterion 1 (DeepSeek leads at r 35, Llama-2 at r 19). It is settled by criterion 2: the
+  H3 column frontier at `-b 512` and `-ub 1` on both (Tom). Until then the order above stands.
+- The choice becomes final, and each served file is frozen (S3, Clyde section 5), only after the H3 and
+  Q4_0-vs-F16 screens of all five. These are blocked by the laptop disk (Tom section 4: about 0.2 GB free, swap
+  full); about 16 GB free per model is needed.
+- None of the five is priced at 12 tok/s with the levers priced so far (Bonnie 3.1, Ebony 3.2, Clyde 5). The set
+  is chosen to give 12 its best chance, not because 12 is predicted. Every subject stays a full subject.
+- Mistral-7B-Instruct-v0.3 and Qwen2.5-7B-Instruct leave the subject set (ranks 11 and 16). Their memo-02/05
+  host results stay as cross-model evidence for levers.
+
