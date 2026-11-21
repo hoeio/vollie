@@ -1,0 +1,2655 @@
+diff -uN a/pubspec.yaml b/pubspec.yaml
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 2.3.0+45
++version: 3.0.0+46
+ 
+ environment:
+   sdk: ^3.10.7
+diff -uN a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -9,7 +9,7 @@
+     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+     <!-- hasFragileUserData: uninstalling asks "keep app data?", so a
+-         reinstall finds the 2.5 GB model instead of downloading it again. -->
++         reinstall finds the 3 GB model instead of downloading it again. -->
+     <application
+         android:label="Vollie"
+         android:name="${applicationName}"
+@@ -24,7 +24,14 @@
+             android:name=".ModelDownloadService"
+             android:exported="false"
+             android:foregroundServiceType="dataSync" />
++        <!-- 3.0.0: process restart for the engine switch (its own process; no UI). -->
+         <activity
++            android:name=".RestartActivity"
++            android:exported="false"
++            android:process=":restart"
++            android:excludeFromRecents="true"
++            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
++        <activity
+             android:name=".MainActivity"
+             android:exported="true"
+             android:launchMode="singleTop"
+diff -uN a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt b/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt
+--- a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt
++++ b/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt
+@@ -19,7 +19,50 @@
+ import kotlin.concurrent.thread
+ 
+ /** Platform side of Vollie: model download (ModelDownloadService) and device info. */
++/** ggml's pick among the shipped CPU variants (8.0_1, 8.2_2, 8.6_1, 9.2_1) is 8.2_2 exactly when the cores have dotprod
++ *  and fp16 but not i8mm (ggml-cpu/arch/arm/cpu-feats.cpp: 8.6_1 and 9.2_1 need i8mm). Top level, so a JVM test can call
++ *  it without loading FlutterActivity. */
++internal fun classicModuleIsBest(features: Set<String> = cpuinfoFeatures()) =
++    "asimddp" in features && "asimdhp" in features && "i8mm" !in features
++
++private fun cpuinfoFeatures(): Set<String> = runCatching {
++    File("/proc/cpuinfo").useLines { lines ->
++        lines.firstOrNull { it.startsWith("Features") }?.substringAfter(":")?.trim()?.split(Regex("\\s+"))?.toSet()
++    }
++}.getOrNull() ?: emptySet()
++
+ class MainActivity : FlutterActivity() {
++    // 3.0.0: the engine is chosen per process, before Dart starts (kit r30's mechanism). "v2" (default) = the
++    // standard-named libraries (campaign 2's runtime). "classic" = Vollie 1 exactly: libllama_rt_c1.so (2.3.0+45's
++    // libllama.so, renamed) is loaded first, so every later "libllama.so" (libllamadart's DT_NEEDED, Dart's opens by
++    // name) resolves to it by soname; and where 2.3.0+45 picked its own android_armv8.2_2 CPU module, VOLLIE_CPU_MODULE
++    // names 2.3.0+45's copy of it (libggml_cpu_rt_c1.so). Elsewhere the stock variants are used, as in 2.3.0+45.
++    companion object {
++        const val ENGINE_PREFS = "vollie_engine"
++        var engineStored = "v2"
++        var engineActive = "v2"
++        var enginePreload: String? = null // null = nothing to preload (v2), "ok", or the error
++        private var engineDone = false
++
++        fun preloadEngine(ctx: Context) {
++            if (engineDone) return
++            engineDone = true
++            engineStored = ctx.getSharedPreferences(ENGINE_PREFS, Context.MODE_PRIVATE).getString("engine", "v2") ?: "v2"
++            if (engineStored != "classic") return
++            enginePreload = runCatching {
++                System.loadLibrary("llama_rt_c1")
++                if (classicModuleIsBest()) android.system.Os.setenv("VOLLIE_CPU_MODULE", "libggml_cpu_rt_c1.so", true)
++                engineActive = "classic"
++                "ok"
++            }.getOrElse { "$it" }
++        }
++    }
++
++    override fun onCreate(savedInstanceState: android.os.Bundle?) {
++        preloadEngine(this)
++        super.onCreate(savedInstanceState)
++    }
++
+     // Fixed per device, and Android rate-limits the call: read it once.
+     private var moderateAt: Double? = null
+     private var moderateAtRead = false
+@@ -41,9 +84,34 @@
+                 when (call.method) {
+                     "modelPath" -> {
+                         val s = ModelDownloadService
+-                        if (s.isVerified(this)) s.dropLegacy(this)
+-                        val f = if (!s.isVerified(this) && s.hasLegacy(this)) s.legacy(this) else s.model(this)
+-                        result.success(f.absolutePath)
++                        val m = spec(call)
++                        if (m.legacy) {
++                            if (s.isVerified(this, m)) s.dropLegacy(this)
++                            val f = if (!s.isVerified(this, m) && s.hasLegacy(this)) s.legacy(this) else s.model(this, m)
++                            result.success(f.absolutePath)
++                        } else {
++                            result.success(s.model(this, m).absolutePath)
++                        }
++                    }
++
++                    // 3.0.0: the engine of this process, the stored choice, and a switch (store, then restart).
++                    "engine" -> result.success(mapOf(
++                        "active" to engineActive, "stored" to engineStored, "preload" to enginePreload,
++                        "cpuModule" to System.getenv("VOLLIE_CPU_MODULE"),
++                        "restartAt" to getSharedPreferences(ENGINE_PREFS, Context.MODE_PRIVATE).getLong("restart_at", 0L),
++                    ))
++
++                    "setEngine" -> {
++                        val e = call.argument<String>("engine")
++                        if (e != "v2" && e != "classic") {
++                            result.error("engine", "unknown engine $e", null)
++                        } else {
++                            getSharedPreferences(ENGINE_PREFS, Context.MODE_PRIVATE).edit().putString("engine", e)
++                                .putLong("restart_at", System.currentTimeMillis()).commit() // the kill is not a crash
++                            result.success(true)
++                            // RestartActivity (its own process) ends this one and starts MainActivity in a new one.
++                            startActivity(Intent(this, RestartActivity::class.java).putExtra("pid", android.os.Process.myPid()))
++                        }
+                     }
+ 
+                     "deviceInfo" -> {
+@@ -156,21 +224,29 @@
+ 
+                     "status" -> {
+                         val s = ModelDownloadService
+-                        val idle = !s.isRunning()
++                        val m = spec(call)
++                        val mine = s.spec.id == m.id // the service's running / last download is this model's
++                        val idle = !(s.isRunning() && mine)
+                         result.success(mapOf(
+-                            "state" to if (idle && s.state != "error") {
+-                                if (s.isVerified(this)) "done" else "idle"
++                            "state" to if (idle && !(mine && s.state == "error")) {
++                                if (s.isVerified(this, m)) "done" else "idle"
+                             } else s.state,
+-                            "bytes" to if (idle) s.part(this).length() else s.bytes,
+-                            "speed" to s.speed,
+-                            "error" to s.error,
+-                            "verified" to s.isVerified(this),
+-                            "unverifiedModel" to (idle && !s.isVerified(this) && s.model(this).exists()),
+-                            "legacy" to (!s.isVerified(this) && s.hasLegacy(this)),                            "metered" to s.isMetered(this),
++                            "bytes" to if (idle) s.part(this, m).length() else s.bytes,
++                            "speed" to if (idle) 0L else s.speed,
++                            "error" to if (mine) s.error else null,
++                            "verified" to s.isVerified(this, m),
++                            "unverifiedModel" to (idle && !s.isVerified(this, m) && s.model(this, m).exists()),
++                            "legacy" to (m.legacy && !s.isVerified(this, m) && s.hasLegacy(this)),
++                            "metered" to s.isMetered(this),
++                            "otherRunning" to (s.isRunning() && !mine),
+                         ))
+                     }
+ 
+                     "start" -> {
++                        if (ModelDownloadService.isRunning() && ModelDownloadService.spec.id != spec(call).id) {
++                            result.error("busy", "another model is downloading", null)
++                            return@setMethodCallHandler
++                        }
+                         if (Build.VERSION.SDK_INT >= 33 &&
+                             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                         ) {
+@@ -178,42 +254,30 @@
+                             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+                         }
+                         ModelDownloadService.error = null
+-                        ModelDownloadService.start(this, call.argument<Boolean>("allowMetered") ?: false)
++                        ModelDownloadService.start(this, spec(call), call.argument<Boolean>("allowMetered") ?: false)
+                         result.success(null)
+                     }
+ 
+-                    "pause" -> { ModelDownloadService.pause(this); result.success(null) }
+-                    "cancel" -> { ModelDownloadService.cancel(this); result.success(null) }
++                    "pause" -> { ModelDownloadService.pause(this, spec(call)); result.success(null) }
++                    "cancel" -> { ModelDownloadService.cancel(this, spec(call)); result.success(null) }
+ 
+                     // Files from older builds (or anything without a marker) get hashed once.
+                     "verify" -> thread {
+-                        val f = ModelDownloadService.model(this)
+-                        val ok = f.length() == ModelDownloadService.TOTAL && ModelDownloadService.verify(this)
++                        val m = spec(call)
++                        val f = ModelDownloadService.model(this, m)
++                        val ok = f.length() == m.total && ModelDownloadService.verify(this, m)
+                         if (!ok) f.delete()
+                         runOnUiThread { result.success(ok) }
+                     }
+ 
+-                    // Research kit: SHA-256 of any file in the model directory (the draft model).
+-                    "sha256" -> thread {
+-                        val path = call.argument<String>("path")!!
+-                        val hex = runCatching {
+-                            val md = java.security.MessageDigest.getInstance("SHA-256")
+-                            java.io.File(path).inputStream().buffered(1 shl 20).use { input ->
+-                                val buf = ByteArray(1 shl 20)
+-                                while (true) { val n = input.read(buf); if (n < 0) break; md.update(buf, 0, n) }
+-                            }
+-                            md.digest().joinToString("") { "%02x".format(it) }
+-                        }.getOrNull()
+-                        runOnUiThread { result.success(hex) }
+-                    }
+-
+                     "deleteModel" -> {
+-                        ModelDownloadService.cancel(this)
+-                        ModelDownloadService.dir(this).listFiles()
+-                            ?.filter { it.name.startsWith(ModelDownloadService.FILE_NAME) }
++                        val m = spec(call)
++                        ModelDownloadService.cancel(this, m)
++                        ModelDownloadService.dir(this, m).listFiles()
++                            ?.filter { it.name.startsWith(m.fileName) }
+                             ?.forEach { it.delete() }
+-                        ModelDownloadService.dropLegacy(this)
+-                        ModelDownloadService.dir(this).listFiles()
++                        if (m.legacy) ModelDownloadService.dropLegacy(this)
++                        ModelDownloadService.dir(this, m).listFiles()
+                             ?.filter { it.name.startsWith("turn") && it.name.endsWith(".state") }
+                             ?.forEach { it.delete() } // Assistant's saved chat turns
+                         result.success(null)
+@@ -224,7 +288,7 @@
+                     "removeLegacyDownload" -> {
+                         val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                         dm.remove((call.argument<Number>("id"))!!.toLong())
+-                        ModelDownloadService.model(this).delete()
++                        ModelDownloadService.model(this, ModelDownloadService.C1).delete()
+                         result.success(null)
+                     }
+ 
+@@ -232,6 +296,10 @@
+                 }
+             }
+     }
++
++    /** The model a download call is about (Dart's "model" argument; 2.3.0+45's file when absent). */
++    private fun spec(call: io.flutter.plugin.common.MethodCall) =
++        ModelDownloadService.SPECS[call.argument<String>("model")] ?: ModelDownloadService.C1
+ }
+ 
+ // ApplicationExitInfo.REASON_* by value.
+diff -uN a/android/app/src/main/kotlin/com/example/vollie/ModelDownloadService.kt b/android/app/src/main/kotlin/com/example/vollie/ModelDownloadService.kt
+--- a/android/app/src/main/kotlin/com/example/vollie/ModelDownloadService.kt
++++ b/android/app/src/main/kotlin/com/example/vollie/ModelDownloadService.kt
+@@ -31,6 +31,12 @@
+  */
+ class ModelDownloadService : Service() {
+ 
++    /** One model file the app can download (3.0.0: Vollie 1 classic's file and Vollie 2's two). internal = in the
++     *  app's internal files folder (Vollie 2: the runtime maps it executable, which external storage refuses, R67);
++     *  legacy = 2.3.0+45's file, with its older predecessors ([LEGACY]). */
++    data class Spec(val id: String, val url: String, val fileName: String, val total: Long, val sha256: String,
++                    val internal: Boolean, val legacy: Boolean = false)
++
+     companion object {
+         // Huihui-granite-4.0-h-tiny-abliterated (IBM Granite 4.0 H Tiny: 7B
+         // mixture-of-experts, ~1B used per token, Mamba-2 hybrid), requantized from
+@@ -48,6 +54,21 @@
+         // Hugging Face's X-Linked-ETag for this file is its SHA-256.
+         const val SHA256 = "5dc1daa0cd3e5099bdaa79beeb9e744bf7c65e0993ea62e4671ddd63b2b5cb25"
+ 
++        val C1 = Spec("c1", URL_STRING, FILE_NAME, TOTAL, SHA256, internal = false, legacy = true)
++        // Vollie 2 (campaign 2's served files, stock weights): HoeioUser/vollie2 pinned to commit e893e8a6; sha256 as
++        // in the vollie2 repository's model cards (models/olmoe-1b-7b-0125-instruct-mi.md, granite-4.0-h-tiny-stock-mi.md).
++        private const val V2 = "https://huggingface.co/HoeioUser/vollie2/resolve/e893e8a65cff2f09f3de45e4840537c625806e0b/"
++        val SPECS = listOf(
++            C1,
++            Spec("olmoe", V2 + "olmoe-Mi.gguf", "olmoe-Mi.gguf", 3072399552L,
++                "5abf710b775cd64fd89d74a783c8a7056a409ba795cd401b9dd448ef8e444abb", internal = true),
++            Spec("granite", V2 + "granite-Mi.gguf", "granite-Mi.gguf", 3161269344L,
++                "8df94de731a08a377150e4fcc5dcbd16212a6d102bc0b628cdc905cba0bc0f45", internal = true),
++        ).associateBy { it.id }
++
++        /** The model of the running (or last) download; one download at a time. */
++        @Volatile var spec: Spec = C1
++
+         private const val CHANNEL = "model_download"
+         private const val NOTIFY_ID = 1
+         private const val ACTION_START = "start"
+@@ -61,13 +82,14 @@
+         @Volatile var error: String? = null
+         @Volatile private var running = false
+ 
+-        fun dir(ctx: Context): File = ctx.getExternalFilesDir(null) ?: ctx.filesDir
+-        fun model(ctx: Context) = File(dir(ctx), FILE_NAME)
+-        fun part(ctx: Context) = File(dir(ctx), "$FILE_NAME.part")
+-        private fun marker(ctx: Context) = File(dir(ctx), "$FILE_NAME.verified")
++        private fun extDir(ctx: Context): File = ctx.getExternalFilesDir(null) ?: ctx.filesDir
++        fun dir(ctx: Context, s: Spec): File = if (s.internal) ctx.filesDir else extDir(ctx)
++        fun model(ctx: Context, s: Spec) = File(dir(ctx, s), s.fileName)
++        fun part(ctx: Context, s: Spec) = File(dir(ctx, s), "${s.fileName}.part")
++        private fun marker(ctx: Context, s: Spec) = File(dir(ctx, s), "${s.fileName}.verified")
+ 
+-        fun isVerified(ctx: Context) =
+-            marker(ctx).exists() && model(ctx).length() == TOTAL
++        fun isVerified(ctx: Context, s: Spec) =
++            marker(ctx, s).exists() && model(ctx, s).length() == s.total
+ 
+         fun isRunning() = running
+ 
+@@ -80,17 +102,18 @@
+             "vollie-qwen3.5-4b-q4_0-mtp.gguf" to 2300469312L,
+         )
+         private fun legacyOrNull(ctx: Context) = LEGACY.firstOrNull { (name, size) ->
+-            File(dir(ctx), "$name.verified").exists() && File(dir(ctx), name).length() == size
+-        }?.let { File(dir(ctx), it.first) }
++            File(extDir(ctx), "$name.verified").exists() && File(extDir(ctx), name).length() == size
++        }?.let { File(extDir(ctx), it.first) }
+         fun legacy(ctx: Context) = legacyOrNull(ctx)!!
+         fun hasLegacy(ctx: Context) = legacyOrNull(ctx) != null
+         fun dropLegacy(ctx: Context) {
+-            dir(ctx).listFiles()?.filter { f -> LEGACY.any { f.name.startsWith(it.first) } }?.forEach { it.delete() }
++            extDir(ctx).listFiles()?.filter { f -> LEGACY.any { f.name.startsWith(it.first) } }?.forEach { it.delete() }
+         }
+ 
+-        fun start(ctx: Context, allowMetered: Boolean) {
++        fun start(ctx: Context, s: Spec, allowMetered: Boolean) {
+             val i = Intent(ctx, ModelDownloadService::class.java)
+-                .setAction(ACTION_START).putExtra("allowMetered", allowMetered)
++                .setAction(ACTION_START).putExtra("allowMetered", allowMetered).putExtra("model", s.id)
++            if (!running) spec = s
+             // Mark running before Android gets to onStartCommand, so a status
+             // poll in between doesn't report "idle".
+             running = true
+@@ -104,10 +127,11 @@
+             }
+         }
+ 
+-        fun pause(ctx: Context) = send(ctx, ACTION_PAUSE)
+-        fun cancel(ctx: Context) {
+-            if (running) send(ctx, ACTION_CANCEL) else {
+-                part(ctx).delete(); bytes = 0; state = "idle"; error = null
++        fun pause(ctx: Context, s: Spec) { if (s.id == spec.id) send(ctx, ACTION_PAUSE) }
++        fun cancel(ctx: Context, s: Spec) {
++            if (running && s.id == spec.id) send(ctx, ACTION_CANCEL) else {
++                part(ctx, s).delete()
++                if (s.id == spec.id && !running) { bytes = 0; state = "idle"; error = null }
+             }
+         }
+ 
+@@ -116,7 +140,7 @@
+         }
+ 
+         /** Hashes the file and writes the marker on success. Blocking. */
+-        fun verify(ctx: Context, file: File = model(ctx)): Boolean {
++        fun verify(ctx: Context, s: Spec, file: File = model(ctx, s)): Boolean {
+             val md = MessageDigest.getInstance("SHA-256")
+             file.inputStream().buffered(1 shl 20).use { input ->
+                 val buf = ByteArray(1 shl 20)
+@@ -126,8 +150,8 @@
+                     md.update(buf, 0, n)
+                 }
+             }
+-            val ok = md.digest().joinToString("") { "%02x".format(it) } == SHA256
+-            if (ok && file == model(ctx)) marker(ctx).writeText(SHA256)
++            val ok = md.digest().joinToString("") { "%02x".format(it) } == s.sha256
++            if (ok && file == model(ctx, s)) marker(ctx, s).writeText(s.sha256)
+             return ok
+         }
+ 
+@@ -180,6 +204,7 @@
+                     stop = Stop.NONE
+                     starts++ // a running worker sees this and goes again instead of exiting
+                     if (worker == null) {
++                        spec = SPECS[intent?.getStringExtra("model")] ?: spec
+                         running = true
+                         worker = Thread(::run, "model-download").also { it.start() }
+                     }
+@@ -210,20 +235,21 @@
+ 
+     private fun download() {
+         error = null
+-        bytes = part(this).length()
++        val s = spec
++        bytes = part(this, s).length()
+         if (!downloadWithRetries()) return
+         state = "verifying"
+         notifyProgress()
+-        if (!verify(this, part(this))) {
+-            part(this).delete()
++        if (!verify(this, s, part(this, s))) {
++            part(this, s).delete()
+             bytes = 0
+             fail("The download was corrupted. Please try again.")
+             return
+         }
+-        model(this).delete()
+-        if (!part(this).renameTo(model(this))) { fail("Couldn't save the model."); return }
+-        marker(this).writeText(SHA256)
+-        dropLegacy(this) // still mmapped if loaded; Linux frees it on unmap
++        model(this, s).delete()
++        if (!part(this, s).renameTo(model(this, s))) { fail("Couldn't save the model."); return }
++        marker(this, s).writeText(s.sha256)
++        if (s.legacy) dropLegacy(this) // still mmapped if loaded; Linux frees it on unmap
+         state = "done"
+     }
+ 
+@@ -231,7 +257,7 @@
+     private fun finish() {
+         // A pause/cancel that came in while verifying doesn't undo a finished model.
+         if (state != "done") when (stop) {
+-            Stop.CANCEL -> { part(this).delete(); bytes = 0; state = "idle" }
++            Stop.CANCEL -> { part(this, spec).delete(); bytes = 0; state = "idle" }
+             Stop.PAUSE -> state = "idle" // .part stays; resumable
+             Stop.NONE -> {}
+         }
+@@ -255,20 +281,20 @@
+                 Thread.sleep(2000)
+                 continue
+             }
+-            val free = StatFs(dir(this).absolutePath).availableBytes
+-            if (free < TOTAL - part(this).length() + 100_000_000L) {
++            val free = StatFs(dir(this, spec).absolutePath).availableBytes
++            if (free < spec.total - part(this, spec).length() + 100_000_000L) {
+                 fail("Not enough free storage. The model needs about 4.1 GB.")
+                 return false
+             }
+-            val before = part(this).length()
++            val before = part(this, spec).length()
+             try {
+                 if (downloadOnce()) return true
+                 // Stream ended early. Retry at once if it moved, else back off.
+-                if (part(this).length() > before) failures = 0
++                if (part(this, spec).length() > before) failures = 0
+                 else throw IOException("connection closed")
+             } catch (e: IOException) {
+                 if (stop != Stop.NONE) return false
+-                if (part(this).length() > before) failures = 0 // flaky, but moving
++                if (part(this, spec).length() > before) failures = 0 // flaky, but moving
+                 if (++failures > 8) {
+                     fail("Download keeps failing (${e.message}). Check your connection and try again.")
+                     return false
+@@ -296,12 +322,13 @@
+ 
+     /** One HTTP request from the current .part length. True when complete. */
+     private fun downloadOnce(): Boolean {
+-        val part = part(this)
++        val s = spec
++        val part = part(this, s)
+         var have = part.length()
+-        if (have == TOTAL) return true
+-        if (have > TOTAL) { part.delete(); have = 0 }
++        if (have == s.total) return true
++        if (have > s.total) { part.delete(); have = 0 }
+ 
+-        val c = (URL(URL_STRING).openConnection() as HttpURLConnection).apply {
++        val c = (URL(s.url).openConnection() as HttpURLConnection).apply {
+             connectTimeout = 15_000
+             readTimeout = 30_000
+             if (have > 0) setRequestProperty("Range", "bytes=$have-")
+@@ -348,7 +375,7 @@
+                     }
+                 }
+             }
+-            return part.length() == TOTAL
++            return part.length() == s.total
+         } finally {
+             c.disconnect()
+             conn = null
+@@ -379,10 +406,10 @@
+             else -> "Downloading Vollie's model"
+         })
+         .setContentText(
+-            "%.2f / %.2f GB".format(bytes / 1e9, TOTAL / 1e9) +
++            "%.2f / %.2f GB".format(bytes / 1e9, spec.total / 1e9) +
+                 if (speed > 0 && state == "running") " · %.1f MB/s".format(speed / 1e6) else ""
+         )
+-        .setProgress(1000, (bytes * 1000 / TOTAL).toInt(), state == "verifying")
++        .setProgress(1000, (bytes * 1000 / spec.total).toInt(), state == "verifying")
+         .setOngoing(true)
+         .setOnlyAlertOnce(true)
+         .setContentIntent(openApp())
+diff -uN /dev/null b/android/app/src/main/kotlin/com/example/vollie/RestartActivity.kt
+--- /dev/null
++++ b/android/app/src/main/kotlin/com/example/vollie/RestartActivity.kt
+@@ -0,0 +1,20 @@
++package com.insaneutils.vollie
++
++import android.app.Activity
++import android.content.Intent
++import android.os.Bundle
++
++/** 3.0.0 engine switch (kit r30's process restart, as ProcessPhoenix): runs in its own process (":restart"), ends the
++ *  app's main process, starts MainActivity in a new one (which loads the stored engine's libraries), then ends itself.
++ *  Started from the settings screen, so the app is in front (Android 15 blocks starts from the background: R71). */
++class RestartActivity : Activity() {
++    override fun onCreate(savedInstanceState: Bundle?) {
++        super.onCreate(savedInstanceState)
++        val pid = intent.getIntExtra("pid", -1)
++        if (pid > 0) android.os.Process.killProcess(pid)
++        startActivity(Intent(this, MainActivity::class.java)
++            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
++        finish()
++        Runtime.getRuntime().exit(0)
++    }
++}
+diff -uN /dev/null b/android/app/src/test/kotlin/com/example/vollie/EngineTest.kt
+--- /dev/null
++++ b/android/app/src/test/kotlin/com/example/vollie/EngineTest.kt
+@@ -0,0 +1,16 @@
++package com.insaneutils.vollie
++
++import org.junit.Assert.assertEquals
++import org.junit.Test
++
++class EngineTest {
++    // Vollie 1 classic loads 2.3.0+45's own android_armv8.2_2 module exactly where ggml picked that variant.
++    @Test fun classicModuleOnlyWhereGgmlPicked82() {
++        val sd888 = "fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp".split(" ").toSet()
++        assertEquals(true, classicModuleIsBest(sd888))
++        assertEquals(false, classicModuleIsBest(sd888 + "i8mm")) // 8.6_1 / 9.2_1 win
++        assertEquals(false, classicModuleIsBest(sd888 - "asimddp")) // 8.0_1
++        assertEquals(false, classicModuleIsBest(sd888 - "asimdhp"))
++        assertEquals(false, classicModuleIsBest(emptySet()))
++    }
++}
+diff -uN a/lib/assistant.dart b/lib/assistant.dart
+--- a/lib/assistant.dart
++++ b/lib/assistant.dart
+@@ -1,17 +1,18 @@
+ import 'dart:async';
+ import 'dart:convert';
+ import 'dart:io';
++import 'dart:isolate';
+ import 'dart:math' as math;
+ 
+ import 'package:flutter/foundation.dart';
++import 'package:flutter/widgets.dart' show AppLifecycleListener;
+ import 'package:llamadart/llamadart.dart';
+ import 'package:shared_preferences/shared_preferences.dart';
+ 
+ import 'device.dart';
++import 'engine.dart';
+ import 'model_store.dart';
+ 
+-part 'research.dart';
+-
+ enum EngineStatus { idle, loading, ready, generating, error }
+ 
+ /// Where the model's math runs. OpenCL is llama.cpp's Adreno-tuned path.
+@@ -73,42 +74,6 @@
+   }
+ }
+ 
+-/// One reply of [Assistant.phoneTest].
+-class TestRow {
+-  final String phase;
+-  final double t; // seconds since the test started
+-  final Accel accel;
+-  final int threads;
+-  final int status; // THERMAL_STATUS_*
+-  final double? headroom, prefill, decode;
+-  final int tokens; // reply tokens
+-  final double seconds; // whole reply, prompt included
+-  const TestRow(
+-    this.phase,
+-    this.t,
+-    this.accel,
+-    this.threads,
+-    this.status,
+-    this.headroom,
+-    this.prefill,
+-    this.decode,
+-    this.tokens,
+-    this.seconds,
+-  );
+-
+-  static const header = 'phase,t_s,backend,threads,status,headroom,read_tps,write_tps';
+-  String get csv => [
+-    phase,
+-    t.round(),
+-    accel.name,
+-    threads,
+-    status,
+-    headroom?.toStringAsFixed(2) ?? '',
+-    prefill?.toStringAsFixed(0) ?? '',
+-    decode?.toStringAsFixed(1) ?? '',
+-  ].join(',');
+-}
+-
+ class Message {
+   final bool fromUser;
+   String text;
+@@ -159,7 +124,8 @@
+   /// apps opened since launch can leave too little for 8K (low-memory kills
+   /// mid-reply). Heat and benchmark reloads keep it, so they don't drop the
+   /// saved turns, which only fit the same size.
+-  int get contextSize => _contextSize ?? device.contextSize;
++  /// 3.0.0: Vollie 2 uses a fixed [Engines.v2Context].
++  int get contextSize => _contextSize ?? (Engines.classic ? device.contextSize : Engines.v2Context);
+   int? _contextSize;
+ 
+   static const _promptKey = 'system_prompt';
+@@ -211,7 +177,6 @@
+   /// Set when a GPU backend was turned off automatically; shown in settings.
+   String? gpuNote;
+   String? _gpuName;
+-  String? _gpuError; // why the last GPU load failed, for [phoneTest]
+ 
+   /// Non-null while [optimize] runs: what it is testing right now.
+   String? optimizing;
+@@ -249,7 +214,9 @@
+   bool get isBusy => status == EngineStatus.generating;
+   /// CPU by default: llama.cpp's ARM kernels (dotprod/i8mm) are reliable
+   /// everywhere, while mobile GPU drivers vary. [optimize] measures instead.
++  /// 3.0.0: Vollie 2 runs on the CPU only (its settings are CPU-module settings).
+   Accel get accel {
++    if (!Engines.classic) return Accel.cpu;
+     final a = Accel.values.asNameMap()[_prefs.getString(_accelKey)] ?? Accel.cpu;
+     return isBroken(a) ? Accel.cpu : a;
+   }
+@@ -274,11 +241,15 @@
+   /// What "Auto" means: [optimize]'s pick, else the performance cores.
+   /// 2.3.0: before any [optimize], at most 3 (the SD888 measurements: 4 threads are slower, R49's 20.5 tok/s ran 3).
+   int get autoThreads => _prefs.getInt(_benchThreadsKey) ?? math.min(3, device.performanceThreads);
+-  int get threads => threadOverride > 0 ? threadOverride : autoThreads;
++  /// 3.0.0: Vollie 2 always uses [Engines.v2Threads] (at most the fast cores), as its measurements did.
++  int get threads => !Engines.classic
++      ? math.min(Engines.v2Threads, device.performanceThreads)
++      : threadOverride > 0 ? threadOverride : autoThreads;
+ 
+   /// Threads reading prompts: [optimize]'s pick, else [threads]. A count the
+   /// user picked applies to both.
+-  int get readThreads => threadOverride > 0 ? threadOverride : _prefs.getInt(_benchReadKey) ?? threads;
++  int get readThreads =>
++      !Engines.classic ? threads : threadOverride > 0 ? threadOverride : _prefs.getInt(_benchReadKey) ?? threads;
+ 
+   /// Big cores to pin llama.cpp to, or null to let it use every core: when
+   /// all cores are big (one is left free by thread count instead), or when
+@@ -311,6 +282,7 @@
+     final path = _loadedPath;
+     if (path == null) return notifyListeners();
+     newChatKeepingHistory();
++    await _touchOff();
+     await _engine.unloadModel();
+     status = EngineStatus.idle;
+     await load(path);
+@@ -389,6 +361,8 @@
+     const bad = {'SIGNALED', 'LOW_MEMORY', 'CRASH', 'CRASH_NATIVE', 'ANR', 'EXCESSIVE_RESOURCE_USAGE'};
+     if (e == null || !bad.contains(e['reason'])) return null;
+     final time = e['time'] as int;
++    // 3.0.0: an engine switch ends the old process on purpose (RestartActivity).
++    if (e['reason'] == 'SIGNALED' && (time - Engines.restartAt).abs() < 15000) return null;
+     if (_prefs.getInt(_shownExitKey) == time) return null;
+     await _prefs.setInt(_shownExitKey, time);
+     int mb(Object? kb) => (kb as int) ~/ 1024;
+@@ -417,19 +391,33 @@
+     DeviceProfile.stderrTo(_loadLogPath);
+     await LlamaLogging.configure(level: LlamaLogLevel.none, nativeLevel: LlamaLogLevel.info);
+     try {
+-      _contextSize = device.contextSizeFor(await DeviceProfile.availableRam());
+-      Research.applyServed();
++      _contextSize = Engines.classic ? device.contextSizeFor(await DeviceProfile.availableRam()) : Engines.v2Context;
++      _applyEnv(modelPath);
+       await _loadFallingBack(accel, threads, readThreads);
+       // One-token warm-up: the CPU module makes its anonymous copies (GGML_HEAD2's
+       // screen, ~0.3 s on an SD888) on the first graph, so here, not in the first reply.
+       if (_loadedAccel == Accel.cpu) await _complete('Hi', 1);
+       status = EngineStatus.ready;
+       _queueTurnJob(_primeSystem);
++      // Vollie 2's page touch runs only while the app is in front ([_touchOn]).
++      _lifecycle ??= _touch
++          ? AppLifecycleListener(onHide: () {
++              _visible = false;
++              _touchOff();
++            }, onShow: () {
++              _visible = true;
++              _touchOn();
++            })
++          : null;
++      _touchOn();
++      if (ModelStore.smokeModel.isNotEmpty) unawaited(_smoke());
+     } catch (e) {
+       status = EngineStatus.error;
+       error =
+           'Couldn\'t load the model. Close other apps to free memory, '
+           'then retry.\n($e)';
++      // ignore: avoid_print
++      if (ModelStore.smokeModel.isNotEmpty) print('vollie-smoke load failed: $e\n${File(_loadLogPath).readAsLinesSync().where((l) => RegExp(r'err|fail|ctx|context|flash|kv|type_k', caseSensitive: false).hasMatch(l)).join('\n')}');
+     }
+     notifyListeners();
+   }
+@@ -440,7 +428,6 @@
+       await _loadOn(a, threads, read);
+     } catch (e) {
+       if (a == Accel.cpu) rethrow;
+-      _gpuError = '$e';
+       _markBroken(a);
+       gpuNote =
+           '${a.label} didn\'t work correctly on this phone, so '
+@@ -459,8 +446,8 @@
+     // Previous files (still in use until the upgrade verifies) copy about
+     // their whole size.
+     useExtraBuffers: device.canCopyWeights(
+-        File(_loadedPath!).lengthSync() == ModelStore.expectedBytes
+-            ? ModelStore.copyBytes
++        Engines.known(File(_loadedPath!).lengthSync())
++            ? Engines.copyBytes
+             : File(_loadedPath!).lengthSync()),
+     // q8_0 halves the KV cache with no visible quality loss; llamadart
+     // turns on flash attention for it. CPU only: a GPU backend without
+@@ -473,20 +460,50 @@
+     chatTemplate: _template,
+   );
+ 
+-  /// [Research]: rollback slots for loads (0 since kit r3 dropped the
+-  /// speculation phase), and the run's state.
++  /// Rollback slots for loads (0 since kit r3 dropped the speculation phase).
+   final int _rollback = 0;
+-  bool researching = false;
+-  static const _researchKey = 'research_report';
+ 
+-  /// The last research run's JSON report, to copy and send back.
+-  String? get researchReport => _prefs.getString(_researchKey);
+-  void stopResearch() => _stopTest = true;
+-  void _researchStatus(String s) {
+-    optimizing = s;
+-    notifyListeners();
++  /// Vollie 1 classic: 2.3.0+45's served settings (R31: expert skip 117 + two-stage head q4_0/2048, full-set PPL
++  /// 9.7886; r10: the sampler fast path at temp 0), set at every load as Research.applyServed did; tiny-op and expert
++  /// I/O come from the saved settings (constructor, [optimize]).
++  static const served = {
++    'GGML_EXPERT_SKIP': '117',
++    'GGML_HEAD2': '2048',
++    'GGML_HEAD2_Q': 'q4_0',
++    'VOLLIE_SAMPLER_BYPASS': '1',
++  };
++
++  /// The native settings for a load of [path]: classic's [served], or Vollie 2's [Engines.v2Env] for that model with
++  /// every other Vollie 2 knob unset (a model switch keeps nothing of the previous model's).
++  void _applyEnv(String path) {
++    if (Engines.classic) return served.forEach(setNativeEnv);
++    Engines.v2Knobs.forEach(unsetNativeEnv);
++    final env = Engines.v2Env(Engines.byFile(path)?.id ?? '', Engines.mask(_pinnedCores(threads)));
++    env.forEach(setNativeEnv);
++    _touch = env['VOLLIE_TOUCH'] == '1';
+   }
+ 
++  /// Vollie 2 + OLMoE (R70's b5 arm): the runtime's page touch (llama.cpp patch 0012) runs while the chat is idle and
++  /// the app is in front: started when a load or a reply ends, ended (one last pass, ~0.2 s on an SD888 in R71 S1)
++  /// before the next reply, a reload, or when the app leaves the screen. It never runs in the background.
++  bool _touch = false, _touching = false, _visible = true;
++  // ignore: unused_field
++  AppLifecycleListener? _lifecycle;
++  // Begin and end calls in order (each on a helper isolate: the end's last pass blocks for its duration).
++  Future<void> _touchJob = Future.value();
++
++  void _touchOn() {
++    if (!_touch || _touching || !_visible || status != EngineStatus.ready || _pre != null) return;
++    _touching = true;
++    _touchJob = _touchJob.then((_) => Isolate.run(touchBegin)).catchError((_) => -3);
++  }
++
++  Future<void> _touchOff() {
++    if (!_touching) return _touchJob;
++    _touching = false;
++    return _touchJob = _touchJob.then((_) => Isolate.run(touchEnd)).catchError((_) => -3);
++  }
++
+   /// Custom chat template; null keeps the model's own (Granite's template
+   /// renders fine as shipped, Qwen3.5's needed assets/qwen35_chat_template.jinja).
+   String? _template;
+@@ -494,7 +511,10 @@
+   /// Granite's turn markup: where a user turn starts, and the token that
+   /// closes every turn. [_primeSystem] cuts before the first, [prefill]
+   /// before the last of the second, and [_saveTurn] expects it after a reply.
+-  static const _userStart = '<|start_of_role|>user', _turnEnd = '<|end_of_text|>';
++  /// 3.0.0: per chat template ([Engines.markup]); Granite's are 2.3.0+45's constants.
++  String get _userStart => Engines.markup(_loadedPath).userStart;
++  String get _userEnd => Engines.markup(_loadedPath).userEnd;
++  String get _turnEnd => Engines.markup(_loadedPath).turnEnd;
+ 
+   /// Loads on [a]. GPU loads are checked for correct output, since some
+   /// mobile drivers load fine and then compute garbage. The marker pref
+@@ -527,6 +547,25 @@
+     }
+   }
+ 
++  /// Emulator smoke builds only ([ModelStore.smokeModel]): the engine, the mapped runtime libraries and an 8-token
++  /// reply, to logcat.
++  Future<void> _smoke() async {
++    await Future<void>.delayed(const Duration(seconds: 2));
++    await _turnSaving;
++    await _touchOff();
++    final libs = File('/proc/self/maps')
++        .readAsLinesSync()
++        .map((l) => l.split(RegExp(r'\s+')).last)
++        .where((f) => RegExp(r'lib(llama|ggml)').hasMatch(f))
++        .toSet();
++    final u = (await _complete('Once upon a time', 8)).usage;
++    // ignore: avoid_print
++    print('vollie-smoke engine=${Engines.active.name} model=$_loadedPath threads=$_loadedThreads ctx=$contextSize '
++        'touch=$_touch tokens=${u?.completionTokens} cpuModule=${Platform.environment['VOLLIE_CPU_MODULE']} '
++        'libs=${libs.map((f) => f.split('/').last).join(',')}');
++    _touchOn();
++  }
++
+   /// Backend and thread count of the model as loaded (the benchmark and
+   /// [heatPlan] load others than [accel] and [threads]).
+   Accel? _loadedAccel;
+@@ -810,26 +849,11 @@
+   static String _heat(BenchResult r) =>
+       r.headroom == null ? '' : ' @${(r.headroom! * 100).round()}%';
+   static const _tinyKey = 'tiny_op';
+-
+-  static const _testKey = 'phone_test_report';
+-  bool phoneTesting = false;
+-  bool _stopTest = false;
+-
+-  /// The last [phoneTest]'s report, to copy and share.
+-  String? get phoneTestReport {
+-    final r = _prefs.getString(_testKey);
+-    // Crashed mid-GPU: the native log on disk says how far it got.
+-    return r != null && r.contains(_gpuCrashNote)
+-        ? '$r\n\nllama.cpp log, last lines before the crash:\n${_gpuLogTail()}'
+-        : r;
+-  }
+ 
+-  static const _gpuCrashNote = 'GPU phase started but did not finish: the app closed or crashed during it.';
+   // The app's own data dir: /proc/self/cmdline is the package name.
+   static final _gpuLogPath = Platform.isAndroid
+       ? '/data/data/${File('/proc/self/cmdline').readAsStringSync().split('\x00').first}/cache/vollie_gpu.log'
+       : '${Directory.systemTemp.path}/vollie_gpu.log';
+-  static String _gpuLogTail() => _logTail(_gpuLogPath);
+   static String _logTail(String path) {
+     try {
+       final lines = File(path).readAsLinesSync();
+@@ -839,292 +863,6 @@
+     }
+   }
+ 
+-  void stopPhoneTest() => _stopTest = true;
+-
+-  /// One-tap field test of what can't be checked off the phone, as text to
+-  /// paste back to the developer:
+-  /// 1. 2 min on OpenCL where offered (first, so a driver crash shows fast).
+-  /// 2. "auto", 6 min of back-to-back replies with the normal heat handling:
+-  ///    sustained speed, when it switches, and what the forecast said.
+-  /// 3. 2 min on the CPU: speed and joules per token, which says whether the
+-  ///    GPU's heat fallback to the CPU really runs cooler.
+-  /// Plus the CPU's feature flags, which pick llama.cpp's CPU build.
+-  // ponytail: phases run in a fixed order, so later ones start warmer; the
+-  // report shows each phase's battery temperature so that can be read off.
+-  Future<void> phoneTest() async {
+-    if (_loadedPath == null || isBusy || optimizing != null) return;
+-    newChatKeepingHistory();
+-    phoneTesting = true;
+-    _stopTest = false;
+-    await DeviceProfile.keepScreenOn(true);
+-    final started = DateTime.now();
+-    final rows = <TestRow>[];
+-    final watts = <String, List<double>>{};
+-    final temps = <String, List<double>>{};
+-    var phase = 'auto';
+-    var plugged = false;
+-    final poll = Timer.periodic(const Duration(seconds: 2), (_) async {
+-      final b = await DeviceProfile.battery();
+-      plugged |= b.plugged;
+-      if (b.watts != null) (watts[phase] ??= []).add(b.watts!);
+-      if (b.tempC != null) (temps[phase] ??= []).add(b.tempC!);
+-    });
+-    final failures = <String>[];
+-
+-    Future<void> run(
+-      String name,
+-      Duration length,
+-      Future<({int status, double? headroom, double? moderateAt})> Function() step,
+-    ) async {
+-      phase = name;
+-      final end = DateTime.now().add(length);
+-      while (!_stopTest && DateTime.now().isBefore(end)) {
+-        final s = DateTime.now().difference(started).inSeconds;
+-        optimizing = 'Phone test · $name · ${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
+-        notifyListeners();
+-        try {
+-          final t = await step();
+-          final u = (await _complete(_benchPrompt, 128)).usage;
+-          rows.add(
+-            TestRow(
+-              name,
+-              s.toDouble(),
+-              _loadedAccel!,
+-              _loadedThreads,
+-              t.status,
+-              t.headroom,
+-              prefillTokensPerSec(u),
+-              decodeTokensPerSec(u),
+-              u?.completionTokens ?? 0,
+-              (u?.duration?.inMilliseconds ?? 0) / 1000,
+-            ),
+-          );
+-        } catch (e) {
+-          failures.add('$name: $e');
+-          return;
+-        }
+-      }
+-    }
+-
+-    final setting = (accel, threads);
+-    // OpenCL is tried on every Snapdragon, even when an earlier failure
+-    // blocklisted it: the test is how we learn why it fails.
+-    final other = accel == Accel.opencl
+-        ? (Accel.cpu, threads)
+-        : _qualcomm
+-        ? (Accel.opencl, threads)
+-        : null;
+-    final wasBroken = isBroken(Accel.opencl);
+-    final gpu = <String>[]; // the report's GPU section
+-
+-    Future<String> report({String? note}) async => [
+-      ...await _testHeader('phone test', started),
+-      plugged ? 'Battery: CHARGING during the test, so watts are not usable' : 'Battery: unplugged',
+-      for (final f in failures) 'Failed: $f',
+-      ?note,
+-      '',
+-      'Summary',
+-      for (final name in {for (final r in rows) r.phase})
+-        phaseSummary(rows.where((r) => r.phase == name).toList(), watts[name] ?? const [], temps[name] ?? const []),
+-      '',
+-      'GPU',
+-      ...gpu,
+-      if (gpu.isNotEmpty) ...['llama.cpp log:', _gpuLogTail()],
+-      '',
+-      TestRow.header,
+-      for (final r in rows) r.csv,
+-    ].join('\n');
+-
+-    try {
+-      status = EngineStatus.loading;
+-      Future<void> runPhase(Accel a, int n) async {
+-        final isGpu = a != Accel.cpu;
+-        if (isGpu) {
+-          // Before the probe: llama.cpp logs its device checks while enumerating,
+-          // and then each kernel it compiles, to stderr, now a file.
+-          DeviceProfile.stderrTo(_gpuLogPath);
+-          await LlamaLogging.configure(level: LlamaLogLevel.none, nativeLevel: LlamaLogLevel.info);
+-          gpu.addAll(await _gpuFacts(wasBroken));
+-          // A GPU driver can take the app down with it: keep what's measured so far.
+-          await _prefs.setString(_testKey, await report(note: _gpuCrashNote));
+-          gpu.add(DeviceProfile.ggmlOpenclProbe()); // after the checkpoint: it inits the driver
+-          await _prefs.setString(_testKey, await report(note: _gpuCrashNote)); // now with the probe's line
+-          _gpuError = null;
+-        }
+-        try {
+-          await run(BenchResult(a, n, null, null).label, const Duration(minutes: 2), () async {
+-            await _switchTo(a, n, (a, n) == setting ? readThreads : n);
+-            // A GPU that failed its check fell back to the CPU: end the phase
+-            // rather than reload it every reply.
+-            if (_loadedAccel != a) throw StateError('${a.label} failed its check: $_gpuError');
+-            // These phases skip the heat handling on purpose; not past CRITICAL.
+-            final t = await DeviceProfile.thermal();
+-            if (t.status >= 5) throw StateError('stopped at THERMAL_STATUS_EMERGENCY');
+-            return t;
+-          });
+-        } finally {
+-          if (isGpu) await LlamaLogging.configure();
+-        }
+-        if (isGpu) {
+-          final ran = rows.any((r) => r.accel == a);
+-          gpu.add(
+-            '${a.label}: ${ran ? 'ran (see its summary line)' : 'did not run: ${_gpuError ?? failures.lastOrNull ?? '?'}'}',
+-          );
+-          // Worked after all: let Optimize consider it again.
+-          if (ran && wasBroken) {
+-            await _prefs.setStringList(_brokenKey, (_broken..remove(a.name)).toList());
+-          }
+-        }
+-      }
+-
+-      // GPU first: if its driver crashes the app, that shows within a minute.
+-      final phases = {setting, ?other};
+-      for (final (a, n) in phases.where((p) => p.$1 != Accel.cpu)) {
+-        await runPhase(a, n);
+-      }
+-      await run('auto', const Duration(minutes: 6), _followHeat);
+-      await _typedPhase(rows, started, (name) => phase = name);
+-      for (final (a, n) in phases.where((p) => p.$1 == Accel.cpu)) {
+-        await runPhase(a, n);
+-      }
+-    } finally {
+-      poll.cancel();
+-      await DeviceProfile.keepScreenOn(false);
+-    }
+-
+-    await _prefs.setString(_testKey, await report());
+-
+-    phoneTesting = false;
+-    optimizing = null;
+-    await _engine.unloadModel();
+-    status = EngineStatus.idle;
+-    await load(_loadedPath!);
+-  }
+-
+-  /// What a person sees: the question is typed word by word (as [typing]
+-  /// gets it from the input field), left for a moment, then sent; the row's
+-  /// write speed is reply tokens over the time from send to the end of the
+-  /// reply, prefill and pre-reply included. Three replies on the normal
+-  /// chat path, at the heat the 'auto' phase left behind.
+-  Future<void> _typedPhase(List<TestRow> rows, DateTime started, void Function(String) setPhase) async {
+-    setPhase('typed');
+-    final question = '바다는 왜 짠지 한 문단으로 설명해 줘.';
+-    for (var i = 0; i < 3 && !_stopTest; i++) {
+-      final s = DateTime.now().difference(started).inSeconds;
+-      optimizing = 'Phone test · typed · ${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
+-      notifyListeners();
+-      newChatKeepingHistory();
+-      final words = question.split(' ');
+-      for (var w = 1; w <= words.length; w++) {
+-        typing(words.take(w).join(' '));
+-        await Future.delayed(const Duration(milliseconds: 250));
+-      }
+-      await Future.delayed(const Duration(milliseconds: 2500)); // the pause before send
+-      final t = await DeviceProfile.thermal();
+-      final sent = DateTime.now();
+-      final done = Completer<void>();
+-      void onChange() {
+-        if (status == EngineStatus.ready && !done.isCompleted) done.complete();
+-      }
+-      addListener(onChange);
+-      send(question);
+-      onChange(); // a finished pre-reply attaches with status still ready
+-      await done.future;
+-      removeListener(onChange);
+-      final u = _lastUsage;
+-      final seconds = DateTime.now().difference(sent).inMilliseconds / 1000;
+-      rows.add(
+-        TestRow(
+-          'typed',
+-          s.toDouble(),
+-          _loadedAccel!,
+-          _loadedThreads,
+-          t.status,
+-          t.headroom,
+-          null,
+-          u == null || seconds == 0 ? null : u.completionTokens / seconds,
+-          u?.completionTokens ?? 0,
+-          seconds,
+-        ),
+-      );
+-      if (messages.length >= 2) {
+-        messages.removeRange(messages.length - 2, messages.length); // keep the test chat empty
+-      }
+-    }
+-  }
+-
+-  LlamaGenerationUsage? _lastUsage;
+-
+-  /// [phoneTest]'s GPU facts before it runs OpenCL: what the driver reports
+-  /// (and whether llama.cpp's checks pass), what llamadart enumerates, and
+-  /// whether an earlier failure had blocklisted it.
+-  Future<List<String>> _gpuFacts(bool wasBroken) async {
+-    String devices;
+-    try {
+-      final d = await _engine.listGpuDevices(probeBackends: const [GpuBackend.opencl]);
+-      devices = d.isEmpty
+-          ? 'none'
+-          : d
+-                .map(
+-                  (g) =>
+-                      '${g.backend.name}: ${g.description} (${(g.memoryFreeBytes / 1e9).toStringAsFixed(1)} GB free)',
+-                )
+-                .join('; ');
+-    } catch (e) {
+-      devices = 'failed ($e)';
+-    }
+-    return [
+-      'Android SDK ${await DeviceProfile.androidSdk()} · OpenCL ${wasBroken ? 'was blocklisted by an earlier failure (retried anyway)' : 'not blocklisted'}',
+-      'llamadart GPU devices: $devices',
+-      ...DeviceProfile.openclReport(),
+-    ];
+-  }
+-
+-  /// What every test report starts with: the chip, its cores and settings.
+-  Future<List<String>> _testHeader(String name, DateTime started) async {
+-    final t = await DeviceProfile.thermal();
+-    return [
+-      'Vollie $name · ${started.toIso8601String().substring(0, 16)}'
+-          '${_stopTest ? ' · stopped early' : ''}',
+-      'Chip: ${device.soc} (${device.socName}) · ${(device.totalRam / 1e9).toStringAsFixed(1)} GB RAM'
+-          ' · context $contextSize',
+-      'CPU parts: ${device.cpuPart.map((p) => p.toRadixString(16)).join(' ')} · max MHz: '
+-          '${device.cpuMaxKhz.map((k) => k ~/ 1000).join(' ')} · fast cores: ${device.fastCores.join(',')}',
+-      'CPU features: ${await DeviceProfile.cpuFeatures()}',
+-      'GPU: ${await gpuName()} · setting: ${BenchResult(accel, threads, null, null, readThreads: readThreads).label}'
+-          '${threadOverride > 0 ? ' (picked by user)' : ''} · heat thresholds: moderate at ${t.moderateAt}',
+-    ];
+-  }
+-
+-  /// One line per test phase: replies, speed at the start vs the end (the
+-  /// sustained drop), switches, battery watts, energy per reply token and
+-  /// battery temperature.
+-  static String phaseSummary(List<TestRow> rows, List<double> watts, List<double> temps) {
+-    if (rows.isEmpty) return '';
+-    String avg(Iterable<double?> v, [int digits = 1]) {
+-      final x = v.whereType<double>().toList();
+-      return x.isEmpty ? '-' : (x.reduce((a, b) => a + b) / x.length).toStringAsFixed(digits);
+-    }
+-
+-    final w = watts.isEmpty ? null : watts.reduce((a, b) => a + b) / watts.length;
+-    final tokens = rows.fold(0, (n, r) => n + r.tokens);
+-    final seconds = rows.fold(0.0, (n, r) => n + r.seconds);
+-    var switches = 0;
+-    for (var i = 1; i < rows.length; i++) {
+-      if (rows[i].accel != rows[i - 1].accel || rows[i].threads != rows[i - 1].threads) switches++;
+-    }
+-    return [
+-      '${rows.first.phase}: ${rows.length} replies',
+-      'writes ${avg(rows.take(3).map((r) => r.decode))} -> '
+-          '${avg(rows.skip(math.max(0, rows.length - 3)).map((r) => r.decode))} tok/s',
+-      'reads ${avg(rows.map((r) => r.prefill), 0)} tok/s',
+-      if (switches > 0) '$switches switches',
+-      if (w != null) '${w.toStringAsFixed(1)} W',
+-      if (w != null && tokens > 0) '${(w * seconds / tokens).toStringAsFixed(2)} J/token',
+-      if (temps.isNotEmpty) 'battery ${temps.first.toStringAsFixed(1)} -> ${temps.last.toStringAsFixed(1)} C',
+-    ].join(' · ');
+-  }
+-
+   /// ~120 prompt tokens: enough batches to time prompt reading, short
+   /// enough that it doesn't dominate each candidate (14 tok/s on an SD888).
+   static final _benchPrompt =
+@@ -1225,6 +963,7 @@
+     final pre = _pre = _PreReply(text, prompt);
+     _queueTurnJob(() async {
+       if (pre.discarded) return;
++      await _touchOff();
+       await _restoreTurn(prompt); // keeps a prefill the prompt extends
+       _prefillWanted = null;
+       _prefilled = null;
+@@ -1281,7 +1020,7 @@
+           customTemplate: _template,
+           includeTokenCount: false,
+         );
+-        final end = r.prompt.lastIndexOf(_turnEnd);
++        final end = r.prompt.lastIndexOf(_userEnd);
+         if (end <= 0) return;
+         final text = r.prompt.substring(0, end);
+         final tokens = await _engine.tokenize(text);
+@@ -1434,6 +1173,7 @@
+ 
+   Future<void> _coolThenGenerate() async {
+     status = EngineStatus.generating; // blocks a second send meanwhile
++    await _touchOff();
+     try {
+       await _followHeat();
+     } catch (e) {
+@@ -1744,7 +1484,6 @@
+           },
+           onDone: () {
+             final u = usage;
+-            _lastUsage = u;
+             if (!leaked && u != null) {
+               _log(
+                 'prompt ${u.promptTokens} (cached ${u.cachedPromptTokens}), '
+@@ -1781,6 +1520,7 @@
+     status = EngineStatus.ready;
+     _save();
+     notifyListeners();
++    _touchOn();
+   }
+ 
+   void stop() {
+@@ -1822,6 +1562,7 @@
+ 
+   Future<void> unload() async {
+     newChat();
++    await _touchOff();
+     _loadedPath = null;
+     await _engine.unloadModel();
+     status = EngineStatus.idle;
+diff -uN a/lib/device.dart b/lib/device.dart
+--- a/lib/device.dart
++++ b/lib/device.dart
+@@ -526,3 +526,22 @@
+     // A thread exited mid-scan; the next generation re-applies.
+   }
+ }
++
++/// Unsets an environment variable for native code (3.0.0: a Vollie 2 model switch clears the other model's knobs).
++void unsetNativeEnv(String name) {
++  if (_unsetenv == null) return;
++  _unsetenv!(_cString(name));
++}
++
++final _unsetenv = _libc?.lookupFunction<Int32 Function(Pointer<Uint8>), int Function(Pointer<Uint8>)>('unsetenv');
++
++/// Vollie 2's page touch (llama.cpp patch c1-olmoe 0012, in libllama): starts a helper on the little cores that reads
++/// one byte per page of the model mapping that is resident now, every VOLLIE_TOUCH_S seconds, until [touchEnd]. 0 =
++/// started, -1 = VOLLIE_TOUCH unset, -2 = no model mapped. Throws on a runtime without it (Vollie 1 classic).
++int touchBegin() => DynamicLibrary.open('libllama.so')
++    .lookupFunction<Int32 Function(Pointer<Uint8>, IntPtr), int Function(Pointer<Uint8>, int)>('llama_vollie_touch_begin')(
++        nullptr, 0);
++
++/// The touch helper's last pass (blocks until it is done), then the helper ends; pages touched, -1 = none ran.
++int touchEnd() =>
++    DynamicLibrary.open('libllama.so').lookupFunction<Int64 Function(), int Function()>('llama_vollie_touch_end')();
+diff -uN /dev/null b/lib/engine.dart
+--- /dev/null
++++ b/lib/engine.dart
+@@ -0,0 +1,118 @@
++import 'package:flutter/services.dart';
++
++/// 3.0.0: the two engines. [v2] (default) = campaign 2's runtime with a model the user picks; [classic] = Vollie 1
++/// (2.3.0+45) exactly: its libraries, its model file and its settings. The engine is chosen per process before Dart
++/// starts (MainActivity.preloadEngine); switching stores the choice and restarts the app.
++enum Engine { v2, classic }
++
++/// A model the app can download (ModelDownloadService.SPECS has the URL and sha256 of each).
++typedef ModelInfo = ({String id, String name, String about, String file, int bytes});
++
++class Engines {
++  static const _channel = MethodChannel('vollie/downloads');
++
++  /// The engine this process runs, and the stored choice (they differ only if the classic libraries failed to load).
++  static Engine active = Engine.v2, stored = Engine.v2;
++
++  /// When the last engine switch ended the previous process (epoch ms, 0 = never): that SIGKILL is not a crash.
++  static int restartAt = 0;
++  static bool get classic => active == Engine.classic;
++
++  static Future<void> init() async {
++    try {
++      final m = await _channel.invokeMapMethod<String, Object?>('engine') ?? const {};
++      active = m['active'] == 'classic' ? Engine.classic : Engine.v2;
++      stored = m['stored'] == 'classic' ? Engine.classic : Engine.v2;
++      restartAt = (m['restartAt'] as int?) ?? 0;
++    } on MissingPluginException {
++      // tests, desktop: Vollie 2
++    }
++  }
++
++  /// Stores [e] and restarts the app into it (RestartActivity). Does not return on a phone.
++  static Future<void> switchTo(Engine e) => _channel.invokeMethod('setEngine', {'engine': e.name});
++
++  static const c1 = (
++    id: 'c1',
++    name: 'Granite 4.0 H Tiny · Q4_0/Q3_K',
++    about: 'Vollie 1\'s model.',
++    file: 'vollie-granite-4.0-h-tiny-d6-e6.gguf',
++    bytes: 3161269888,
++  );
++
++  /// Vollie 2's models (campaign 2's served files, stock weights), in the order the first run offers them.
++  static const v2Models = <ModelInfo>[
++    (
++      id: 'olmoe',
++      name: 'OLMoE 1B-7B',
++      about: 'Ai2\'s open model. The faster of the two on a Snapdragon 888.',
++      file: 'olmoe-Mi.gguf',
++      bytes: 3072399552,
++    ),
++    (
++      id: 'granite',
++      name: 'Granite 4.0 H Tiny',
++      about: 'IBM\'s model, the original weights.',
++      file: 'granite-Mi.gguf',
++      bytes: 3161269344,
++    ),
++  ];
++
++  static ModelInfo? byId(String? id) => id == c1.id ? c1 : v2Models.where((m) => m.id == id).firstOrNull;
++  static ModelInfo? byFile(String path) {
++    final name = path.split('/').last;
++    return name == c1.file ? c1 : v2Models.where((m) => m.file == name).firstOrNull;
++  }
++
++  /// Vollie 2's native settings per model: kit r31's arms as R70 (OLMoE, b5) and R71 S1 (Granite, b2) measured them,
++  /// without the kit's counters and log lines (GGML_C2_IO, VOLLIE_SKIP_STATS, VOLLIE_SCHED, VOLLIE_LINES, VOLLIE_RUN).
++  /// Both: campaign 1's settings without numerics (tiny-op 262,144, expert read-ahead 1, sampler fast path), the KV
++  /// clear by MADV_DONTNEED, the persistent pool pinned to the fast cores (0xf0 on an SD888), the executable model
++  /// mapping. OLMoE: skip MASS=900 + untied two-stage head 1,024 (the head in CPU_REPACK at load), the page touch every
++  /// 12 s while idle, the pool at nice -10. Granite: campaign 1's skip at 130 + two-stage head 2,048 with a Q4_0 screen.
++  /// Both numerics settings are inside the +5 % budget (R61, host). [fastMask]: the fast cores as a hex mask, null =
++  /// no per-thread mask (the pool still runs).
++  static Map<String, String> v2Env(String modelId, String? fastMask) => {
++        'GGML_TINY_OP': '262144',
++        'GGML_EXPERT_IO': '1',
++        'VOLLIE_SAMPLER_BYPASS': '1',
++        'VOLLIE_KV_DONTNEED': '1',
++        'VOLLIE_POOL': '1',
++        if (fastMask != null) 'VOLLIE_CPUMASK': fastMask,
++        'VOLLIE_EXEC_MAP': '1',
++        if (modelId == 'olmoe') ...{
++          'VOLLIE_HEAD2_REPACK': '1',
++          'VOLLIE_SKIP_MASS': '900',
++          'VOLLIE_HEAD2': '1024',
++          'VOLLIE_TOUCH': '1',
++          'VOLLIE_TOUCH_S': '12',
++          'VOLLIE_NICE': '-10',
++        } else ...{
++          'GGML_EXPERT_SKIP': '130',
++          'GGML_HEAD2': '2048',
++          'GGML_HEAD2_Q': 'q4_0',
++        },
++      };
++
++  /// Every name [v2Env] can set: unset before each Vollie 2 load, so a model switch leaves nothing of the other.
++  static final v2Knobs = {...v2Env('olmoe', '0'), ...v2Env('granite', '0')}.keys.toSet();
++
++  /// Vollie 2's fixed thread count and context (kit r31: 3 threads, n_ctx 4096; OLMoE was trained to 4,096).
++  static const v2Threads = 3, v2Context = 4096;
++
++  /// What llama.cpp copies into its faster CPU layouts for these files (dense Q4_0 and the Q6_K head; Q3_K experts
++  /// have no repack path): about the same 700 MB for all three.
++  static const copyBytes = 700000000;
++  static bool known(int bytes) => bytes == c1.bytes || v2Models.any((m) => m.bytes == bytes);
++
++  /// Turn markup per chat template: where a user turn starts, what closes it, and the token that closes a reply.
++  /// Granite's (both files, and 2.3.0+45's constants) and OLMoE's (Tulu: <|user|>\n...\n<|assistant|>\n...<|endoftext|>).
++  static ({String userStart, String userEnd, String turnEnd}) markup(String? path) =>
++      path != null && byFile(path)?.id == 'olmoe'
++          ? (userStart: '<|user|>', userEnd: '\n', turnEnd: '<|endoftext|>')
++          : (userStart: '<|start_of_role|>user', userEnd: '<|end_of_text|>', turnEnd: '<|end_of_text|>');
++
++  /// [cpus] as a hex affinity mask ("0xf0" for cores 4-7), null when there are none.
++  static String? mask(List<int>? cpus) =>
++      cpus == null || cpus.isEmpty ? null : '0x${cpus.where((c) => c < 64).fold<int>(0, (m, c) => m | (1 << c)).toRadixString(16)}';
++}
+diff -uN a/lib/main.dart b/lib/main.dart
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -6,6 +6,7 @@
+ import 'assistant.dart';
+ import 'chat_screen.dart';
+ import 'device.dart';
++import 'engine.dart';
+ import 'model_store.dart';
+ import 'setup_screen.dart';
+ import 'theme.dart';
+@@ -14,6 +15,7 @@
+   WidgetsFlutterBinding.ensureInitialized();
+   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+   final prefs = await SharedPreferences.getInstance();
++  await Engines.init(); // before the store and the assistant: both follow the engine
+   final device = await DeviceProfile.fetch();
+   final store = ModelStore(prefs);
+   await store.init();
+diff -uN a/lib/model_store.dart b/lib/model_store.dart
+--- a/lib/model_store.dart
++++ b/lib/model_store.dart
+@@ -4,25 +4,26 @@
+ import 'package:flutter/services.dart';
+ import 'package:shared_preferences/shared_preferences.dart';
+ 
++import 'engine.dart';
++
+ enum DownloadState { idle, paused, running, waitingWifi, waitingNetwork, verifying, done, error }
+ 
+ /// Dart side of ModelDownloadService (Android foreground service): resumable,
+ /// pausable, Wi-Fi-only unless allowed, SHA-256 verified.
++/// 3.0.0: for the current [model]: Vollie 1 classic's file, or the Vollie 2 model the user picked ([select]).
+ class ModelStore extends ChangeNotifier {
+-  static const displayName = 'Granite 4.0 H Tiny · Q4_0/Q3_K';
+-  static const expectedBytes = 3161269888;
+-
+-  /// What llama.cpp copies into its faster CPU layouts for this file: only
+-  /// the Q4_0 dense tensors and Q6_K head (Q3_K experts have no repack path).
+-  /// lab/: 659 MB non-reclaimable with the copy on, vs 3.9 GB for the old
+-  /// all-Q4_0 file.
+-  static const copyBytes = 700000000;
+-
+   static const _channel = MethodChannel('vollie/downloads');
++  static const _modelKey = 'v2_model';
+ 
+   final SharedPreferences _prefs;
+   ModelStore(this._prefs);
+ 
++  /// The model this store downloads and serves; null = Vollie 2 and none picked yet (the first run asks).
++  ModelInfo? get model => Engines.classic ? Engines.c1 : Engines.byId(_prefs.getString(_modelKey));
++  String get displayName => model?.name ?? '';
++  int get expectedBytes => model?.bytes ?? 1;
++  Map<String, Object?> get _arg => {'model': model?.id};
++
+   late String modelPath;
+   DownloadState state = DownloadState.idle;
+   int received = 0;
+@@ -38,7 +39,10 @@
+   /// the current file is offered as an upgrade.
+   bool legacy = false;
+ 
+-  bool get isReady => state == DownloadState.done || legacy;
++  bool get isReady => model != null && (state == DownloadState.done || legacy);
++
++  /// Another model's download is running (one at a time): this one waits until it is paused.
++  bool otherRunning = false;
+   bool get active => const {
+         DownloadState.running,
+         DownloadState.waitingWifi,
+@@ -52,20 +56,63 @@
+       : null;
+ 
+   Future<void> init() async {
+-    modelPath = (await _channel.invokeMethod<String>('modelPath'))!;
+     await _migrateFromDownloadManager();
++    await _open();
++  }
++
++  /// Emulator smoke builds only (flutter build ... --dart-define=VOLLIE_SMOKE_MODEL=FILE; empty and compiled out
++  /// otherwise): FILE in the app's external files folder is the model of either engine, ready without a download.
++  static const smokeModel = String.fromEnvironment('VOLLIE_SMOKE_MODEL');
++
++  Future<void> _open() async {
++    state = DownloadState.idle;
++    received = 0;
++    error = _verifyError = null;
++    legacy = false;
++    if (smokeModel.isNotEmpty) {
++      final c1 = (await _channel.invokeMethod<String>('modelPath', {'model': 'c1'}))!;
++      modelPath = '${c1.substring(0, c1.lastIndexOf('/'))}/$smokeModel';
++      state = DownloadState.done;
++      if (!Engines.classic && model == null) await _prefs.setString(_modelKey, 'olmoe');
++      return notifyListeners();
++    }
++    if (model == null) return notifyListeners();
++    modelPath = (await _channel.invokeMethod<String>('modelPath', _arg))!;
+     final s = await _status();
+     if (s['unverifiedModel'] == true) {
+       // A model from an older build: hash it once before trusting it.
+       state = DownloadState.verifying;
+       notifyListeners();
+-      final ok = await _channel.invokeMethod<bool>('verify') ?? false;
++      final ok = await _channel.invokeMethod<bool>('verify', _arg) ?? false;
+       if (!ok) _verifyError = 'The saved model was damaged. Please download it again.';
+     }
+     await _refresh();
+     if (active) _startPolling();
+   }
+ 
++  /// Vollie 2: makes [id] the current model (pausing another model's download first). The app loads it once it is
++  /// downloaded and verified; until then the setup screen downloads it.
++  Future<void> select(String id) async {
++    if (Engines.classic || id == model?.id || Engines.byId(id) == null) return;
++    if (active) await pause();
++    for (var i = 0; i < 50 && active; i++) {
++      await Future<void>.delayed(const Duration(milliseconds: 100));
++      await _refresh();
++    }
++    await _prefs.setString(_modelKey, id);
++    await _open();
++  }
++
++  /// Whether [m]'s file is on the phone and verified (any model, not only the current one).
++  Future<bool> isDownloaded(ModelInfo m) async =>
++      (await _channel.invokeMethod<Map>('status', {'model': m.id}))?['verified'] == true;
++
++  /// Deletes [m]'s file (another model than the current one: [delete] is for that).
++  Future<void> deleteOther(ModelInfo m) async {
++    await _channel.invokeMethod('deleteModel', {'model': m.id});
++    notifyListeners();
++  }
++
+   /// Builds before 2.0.0+11 used DownloadManager, whose half-finished
+   /// downloads look full-size on disk.
+   Future<void> _migrateFromDownloadManager() async {
+@@ -77,13 +124,18 @@
+ 
+   Future<void> start({bool allowMetered = false}) async {
+     error = _verifyError = null;
+-    await _channel.invokeMethod('start', {'allowMetered': allowMetered});
++    try {
++      await _channel.invokeMethod('start', {..._arg, 'allowMetered': allowMetered});
++    } on PlatformException {
++      error = 'Another model is downloading. Pause it first.';
++      return notifyListeners();
++    }
+     state = DownloadState.running; // optimistic until the first poll
+     notifyListeners();
+     _startPolling();
+   }
+ 
+-  Future<void> pause() => _channel.invokeMethod('pause');
++  Future<void> pause() => _channel.invokeMethod('pause', _arg);
+ 
+   /// Fresh check (the cached [metered] goes stale while nothing is polling).
+   Future<bool> checkMetered() async => metered = (await _status())['metered'] == true;
+@@ -91,12 +143,12 @@
+   int get remainingBytes => expectedBytes - received;
+ 
+   Future<void> cancel() async {
+-    await _channel.invokeMethod('cancel');
++    await _channel.invokeMethod('cancel', _arg);
+     await _refresh();
+   }
+ 
+   Future<void> delete() async {
+-    await _channel.invokeMethod('deleteModel');
++    await _channel.invokeMethod('deleteModel', _arg);
+     await _refresh();
+   }
+ 
+@@ -105,10 +157,12 @@
+   }
+ 
+   Future<Map<String, Object?>> _status() async =>
+-      Map<String, Object?>.from(await _channel.invokeMethod<Map>('status') ?? const {});
++      Map<String, Object?>.from(await _channel.invokeMethod<Map>('status', _arg) ?? const {});
+ 
+   Future<void> _refresh() async {
++    if (model == null) return;
+     final s = await _status();
++    otherRunning = s['otherRunning'] == true;
+     received = (s['bytes'] as int?) ?? 0;
+     speedBytesPerSec = ((s['speed'] as int?) ?? 0).toDouble();
+     metered = s['metered'] == true;
+@@ -123,9 +177,10 @@
+       _ => received > 0 ? DownloadState.paused : DownloadState.idle,
+     };
+     final wasLegacy = legacy;
+-    legacy = s['legacy'] == true;    if (wasLegacy && !legacy) {
++    legacy = s['legacy'] == true;
++    if (wasLegacy && !legacy) {
+       // The upgrade finished (or the old file is gone): load the new path.
+-      modelPath = (await _channel.invokeMethod<String>('modelPath'))!;
++      modelPath = (await _channel.invokeMethod<String>('modelPath', _arg))!;
+     }
+     if (!active) {
+       _poll?.cancel();
+diff -uN a/lib/research.dart /dev/null
+--- a/lib/research.dart
++++ /dev/null
+@@ -1,318 +0,0 @@
+-part of 'assistant.dart';
+-
+-/// Research kit, round 16 of the 20 tok/s campaign (R48: the official 32 under the shipping build, decomposed; plain
+-/// and profiled official 32 runs in four groups, two of them after the kit's own idle pause; no A/B, no bench).
+-/// One tap, one JSON report on the clipboard. Every timed
+-/// run records heat, core clocks, page faults, storage reads and memory next
+-/// to the speed, in Vollie's own conditions (warm phone, other apps as they
+-/// are). Nothing here changes the chat: the knobs are reset afterwards and the
+-/// model is reloaded as before. Schema: tools/research_kit.md.
+-extension Research on Assistant {
+-  static int? _mhz(int cpu) {
+-    try {
+-      return int.parse(File('/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_cur_freq').readAsStringSync().trim()) ~/ 1000;
+-    } catch (_) {
+-      return null;
+-    }
+-  }
+-
+-  static const kit = 'r16';
+-  static const app = '2.3.0+45';
+-
+-  // R48: true = every official 32 in the groups and the last two waits for the r15 cool-down gate first (headroom < 0.65,
+-  // at most 90 s; "back-to-back" = no added pause); false = those runs start without the gate (heat only read), so groups
+-  // 1 and 3 are literally back-to-back. Clyde decides before the freeze; every run logs idle_ms and cool_ms either way.
+-  static const coolOfficial = true;
+-  static const _story = 'Write a short story about a lighthouse.';
+-
+-  // R28/r8: the expert skip plus the two-stage lm_head (GGML_HEAD2 = M exact rows,
+-  // GGML_HEAD2_Q = the screen's type; q4_0 = the repacked Q4_0 screen, r8), the
+-  // pair pre-registered in §7.10 (117 + q4_0/2048, est. 9.788; gate in
+-  // lab/logs/r29/head2q4/). One line to change.
+-  static const _head2Combo = (skip: 117, q: 'q4_0', m: 2048);
+-
+-  // r9: the served default of this build (R31: 117 + head2 q4_0/2048, full-set PPL
+-  // 9.7886). Compiled in, not a saved setting: every load and every kit run starts
+-  // from it (a run's own env overrides it; GGML_HEAD2=0 is the r8 off path). The
+-  // store build decides separately. r10: + the sampler fast path at temp 0
+-  // (VOLLIE_SAMPLER_BYPASS, exact, measured in r9).
+-  static final served = {
+-    'GGML_EXPERT_SKIP': '${_head2Combo.skip}',
+-    'GGML_HEAD2': '${_head2Combo.m}',
+-    'GGML_HEAD2_Q': _head2Combo.q,
+-    'VOLLIE_SAMPLER_BYPASS': '1',
+-  };
+-  static void applyServed() => served.forEach(setNativeEnv);
+-
+-  // Every native knob the kit touches; all reset to the served default ('' = off
+-  // for the rest) between runs.
+-  static const _knobs = [
+-    'GGML_CPU_PROF',
+-    'GGML_CPU_AB',
+-    'GGML_MMID',
+-    'GGML_Q3K_X4',
+-    'GGML_Q3K_VEC',
+-    'GGML_Q3K_ILP',
+-    'GGML_Q3K_PF',
+-    'GGML_EXPERT_ANON',
+-    'GGML_EXPERT_SKIP',
+-    'GGML_EXPERT_SKIP_RENORM',
+-    'GGML_SSM_INPLACE',
+-    'GGML_CONV_RING',
+-    'GGML_CPU_AB_WARM',
+-    'GGML_CPU_AB_BLOCK',
+-    'GGML_HEAD2',
+-    'GGML_HEAD2_Q',
+-    'GGML_HELPER_CPUS',
+-    'GGML_BARRIER_BENCH',
+-    'GGML_MM_CHUNK',
+-    'GGML_EXPERT_Q4_LAYERS',
+-    'GGML_DENSE_WILLNEED',
+-    'VOLLIE_SAMPLER_BYPASS',
+-    'GGML_Q3K_KERN',
+-    'GGML_CPU_BENCH',
+-    'GGML_MMID_TOUCH',
+-    'GGML_CPU_AB_BAAB',
+-    'GGML_MMID_FUSE',
+-    'GGML_MMID_CHUNK2',
+-    'GGML_CPU_AB_TOKEN',
+-    'GGML_ROUTER_CAST',
+-  ];
+-
+-  // The CPU module's anonymous copies an env makes (GGML_HEAD2's screen, the
+-  // GGML_EXPERT_Q4_LAYERS experts); '' = none. A run whose copies differ from the
+-  // last run's gets a one-token warm-up first, as a load does (r9: never in TTFT).
+-  static String _copies(Map<String, String> env) {
+-    final ab = env['GGML_CPU_AB'] ?? '';
+-    final h2 = (int.tryParse(env['GGML_HEAD2'] ?? '') ?? 0) > 0 || ab.contains('HEAD2:');
+-    final q4 = RegExp(r'EXPERT_Q4_LAYERS:(\d+):(\d+)').firstMatch(ab);
+-    final n = q4 != null
+-        ? math.max(int.parse(q4[1]!), int.parse(q4[2]!))
+-        : int.tryParse(env['GGML_EXPERT_Q4_LAYERS'] ?? '') ?? 0;
+-    return [if (h2) 'head2 ${env['GGML_HEAD2_Q']}', if (n > 0) 'expq4 $n'].join(' ');
+-  }
+-
+-  Future<void> researchRun() async {
+-    if (_loadedPath == null || isBusy || optimizing != null || researching) return;
+-    newChatKeepingHistory();
+-    researching = true;
+-    _stopTest = false;
+-    await DeviceProfile.keepScreenOn(true);
+-    final started = DateTime.now();
+-    final savedTiny = savedTinyOps;
+-    final savedIo = savedExpertIo;
+-    final w = autoThreads;
+-    final r = _prefs.getInt(Assistant._benchReadKey) ?? w;
+-    final runs = <Map<String, Object?>>[];
+-    final notes = <String>[];
+-    var liveCopies = Research._copies(Research.served); // made by the load's warm-up
+-    DateTime? lastEnd;
+-    final report = <String, Object?>{
+-      'kit': Research.kit,
+-      'app': Research.app,
+-      'started': started.toIso8601String(),
+-      'header': await _testHeader('research ${Research.kit}', started),
+-      'saved': {'tiny': savedTiny, 'expert_io': savedIo, 'write_threads': w, 'read_threads': r, 'context': contextSize},
+-      'kernel': DeviceProfile.sysRead('/proc/version'),
+-      'thp': DeviceProfile.sysRead('/sys/kernel/mm/transparent_hugepage/enabled'),
+-      'mem_start': DeviceProfile.memInfo(),
+-      'runs': runs,
+-      'notes': notes,
+-    };
+-    Future<void> save() => _prefs.setString(Assistant._researchKey, jsonEncode(report));
+-    void show(String s) {
+-      final t = DateTime.now().difference(started).inSeconds;
+-      _researchStatus('Research · ${t ~/ 60}:${(t % 60).toString().padLeft(2, '0')} · $s');
+-    }
+-
+-    // Every run starts from the served default (r9), then its own env.
+-    void setEnv(Map<String, String> env) {
+-      for (final k in Research._knobs) {
+-        setNativeEnv(k, env[k] ?? Research.served[k] ?? '');
+-      }
+-      setTinyOps(int.tryParse(env['GGML_TINY_OP'] ?? '') ?? savedTiny);
+-      setExpertIo(int.tryParse(env['GGML_EXPERT_IO'] ?? '') ?? savedIo);
+-    }
+-
+-    List<String> logLines() {
+-      try {
+-        return File(Assistant._loadLogPath).readAsLinesSync();
+-      } catch (_) {
+-        return const [];
+-      }
+-    }
+-
+-    // One timed run: settings, cool-down, counters before and after, the
+-    // module's profile/bench lines it produced, and the reply's first words
+-    // (a cheap check that every knob gives the same output).
+-    Future<Map<String, Object?>> measure(
+-      String phase,
+-      String name,
+-      Map<String, String> env,
+-      int threads,
+-      Future<LlamaCompletion> Function() go, {
+-      bool cool = true,
+-      bool hotOnly = false,
+-      int pause = 0,
+-      bool fullText = false,
+-    }) async {
+-      final row = <String, Object?>{'phase': phase, 'name': name, 'env': env, 'threads': threads};
+-      show('$phase · $name');
+-      try {
+-        await _benchOn(Accel.cpu, threads, threads);
+-        setEnv(env);
+-        final copies = Research._copies({...Research.served, ...env});
+-        if (copies.isNotEmpty && copies != liveCopies) {
+-          final before = logLines().length, w0 = DateTime.now();
+-          await _complete('Hi', 1);
+-          row['warmup_ms'] = DateTime.now().difference(w0).inMilliseconds;
+-          row['warmup'] = logLines().skip(before).where((l) => l.startsWith('cpu-prof') && l.contains('requant')).toList();
+-        }
+-        liveCopies = copies;
+-        // r15: a run right after another A/B story waits only while the phone is near throttling (both sides of an
+-        // A/B share the heat, and the clock gate drops throttled tokens/blocks); every other run cools to 0.65 as before.
+-        final c0 = DateTime.now();
+-        final heat = !cool
+-            ? (await DeviceProfile.thermal()).headroom
+-            : hotOnly
+-                ? await _coolDown(Assistant.hotHeadroom)
+-                : await _coolDown();
+-        row['cool_ms'] = DateTime.now().difference(c0).inMilliseconds;
+-        // r16 (R48): the kit's own idle pause, after the cool-down gate, right before the run (no phone-state change).
+-        if (pause > 0) {
+-          show('$phase · $name · idle ${pause}s');
+-          await Future<void>.delayed(Duration(seconds: pause));
+-        }
+-        row['pause_s'] = pause;
+-        show('$phase · $name');
+-        row['heat'] = heat;
+-        row['mhz_before'] = DeviceProfile.cpuMhz();
+-        row['mem_before'] = DeviceProfile.memInfo();
+-        final f0 = DeviceProfile.pageFaults();
+-        final io0 = DeviceProfile.ioReadBytes();
+-        final logBefore = logLines().length;
+-        final t0 = DateTime.now();
+-        if (lastEnd != null) row['idle_ms'] = t0.difference(lastEnd!).inMilliseconds; // r16: since the last run's reply ended
+-        final c = await go();
+-        lastEnd = DateTime.now();
+-        row['wall_ms'] = lastEnd!.difference(t0).inMilliseconds;
+-        final f1 = DeviceProfile.pageFaults();
+-        final io1 = DeviceProfile.ioReadBytes();
+-        row['mhz_after'] = DeviceProfile.cpuMhz();
+-        row['mem_after'] = DeviceProfile.memInfo();
+-        final u = c.usage;
+-        row['tokens'] = u?.completionTokens;
+-        row['prompt_tokens'] = u?.promptTokens;
+-        row['cached_prompt_tokens'] = u?.cachedPromptTokens;
+-        row['ttft_ms'] = u?.timeToFirstToken?.inMicroseconds == null ? null : u!.timeToFirstToken!.inMicroseconds / 1000;
+-        row['duration_ms'] = u?.duration?.inMicroseconds == null ? null : u!.duration!.inMicroseconds / 1000;
+-        row['decode_tps'] = Assistant.decodeTokensPerSec(u);
+-        row['prefill_tps'] = Assistant.prefillTokensPerSec(u);
+-        if (f0 != null && f1 != null) {
+-          row['majflt'] = f1.major - f0.major;
+-          row['minflt'] = f1.minor - f0.minor;
+-        }
+-        if (io0 != null && io1 != null) row['io_read_bytes'] = io1 - io0;
+-        row['prof'] = logLines()
+-            .skip(logBefore)
+-            .where((l) => l.startsWith('cpu-prof') || l.startsWith('cpu-bench') || l.startsWith('repack-release'))
+-            .toList();
+-        row['text'] = fullText || c.text.length <= 80 ? c.text : c.text.substring(0, 80); // r16: official runs keep it all
+-        final pc = await _engine.getPerformanceContext();
+-        // r9: llamadart's own clocks for the reply (sampling + token-to-piece; llama_decode
+-        // during generation), so the sampler bypass is scored on its own line.
+-        row['sample_ms'] = pc?.sampleMs;
+-        row['decode_ms'] = pc?.decodeMs;
+-        if (pc != null && (pc.speculativeDraftTokens ?? 0) > 0) {
+-          row['spec'] = {
+-            'draft_tokens': pc.speculativeDraftTokens,
+-            'accepted': pc.speculativeAcceptedDraftTokens,
+-            'attempts': pc.speculativeDraftAttempts,
+-            'verify_tokens': pc.speculativeVerifyTokens,
+-            'replay_tokens': pc.speculativeReplayTokens,
+-            'draft_ms': pc.speculativeDraftMs,
+-            'verify_ms': pc.speculativeVerifyMs,
+-            'eval_tokens': pc.evalTokens,
+-            'eval_ms': pc.evalMs,
+-          };
+-        }
+-      } catch (e) {
+-        row['error'] = '$e';
+-      }
+-      runs.add(row);
+-      await save();
+-      return row;
+-    }
+-
+-    Future<LlamaCompletion> official() => _complete(Assistant._benchPrompt, Assistant._benchTokens);
+-
+-    // A 200-token story; cpu4 and cpu7 clocks every 8 received chunks (about one
+-    // token each) go into the run's mhz_blocks as [cpu4, cpu7] MHz.
+-    // ponytail: counts text chunks, not tokens; a chunk holding a partial UTF-8 character shifts a sample by one token
+-    Future<Map<String, Object?>> story(String phase, String name, Map<String, String> env, {bool hotOnly = false}) async {
+-      final mhz = <List<int?>>[];
+-      var n = 0;
+-      final row = await measure(phase, name, env, w, hotOnly: hotOnly, () => _complete(Research._story, 200, (c) {
+-        if (c.text.isNotEmpty && ++n % 8 == 0) mhz.add([Research._mhz(4), Research._mhz(7)]);
+-      }));
+-      row['mhz_blocks'] = mhz;
+-      await save();
+-      return row;
+-    }
+-
+-    try {
+-      // 0. Baseline at the saved settings and the served default (module defaults:
+-      //    MMID=3, Q3K_X4, tiny-op 262,144, Q3K_ILP, SSM_INPLACE, CONV_RING, Q3K_KERN, MMID_FUSE+CHUNK2 (R47); served:
+-      //    skip 117 + head2 q4_0/2048 + sampler bypass, the head copy made at load). Cold, as always.
+-      if (!_stopTest) await measure('baseline', 'official 32 · ${w}t', {}, w, official, fullText: true);
+-
+-      // r16 (R48): "profiled" = GGML_CPU_AB_TOKEN=1 under an A/A label (the compiled default, fuse+chunk2 on, under both
+-      // labels): one cpu-prof line per decode token (side, tok, us/token, head, router, majflt, minflt, mhz, the
+-      // MUL_MAT_ID / MUL_MAT / GLU / SSM_SCAN table), no change to the arithmetic.
+-      const prof = {'GGML_CPU_PROF': '1', 'GGML_CPU_AB_TOKEN': '1', 'GGML_CPU_AB': 'knob:MMID_FUSE+CHUNK2:1:1'};
+-
+-      // 1. Warm-up story 200, profiled, dropped; 2. the steady reference story 200, profiled (S(f) per logged clock).
+-      if (!_stopTest) await story('warmup', 'story 200 · profiled', prof);
+-      if (!_stopTest) await story('ref', 'story 200 · profiled', prof);
+-
+-      // 3. Four groups of official 32: plain -> profiled -> profiled -> plain; groups 2 and 4 start after the kit's own
+-      //    20 s idle pause. Plain = the r15 'official 32 · default' path.
+-      for (var g = 1; g <= 4 && !_stopTest; g++) {
+-        for (var i = 0; i < 4 && !_stopTest; i++) {
+-          final p = i == 1 || i == 2;
+-          final row = await measure(p ? 'prof' : 'on', p ? 'official 32 · profiled' : 'official 32 · default', p ? prof : {}, w,
+-              official, cool: Research.coolOfficial, pause: i == 0 && g.isEven ? 20 : 0, fullText: true);
+-          row['group'] = g;
+-        }
+-      }
+-
+-      // 4. Official 32 plain x2 last.
+-      for (var i = 0; i < 2 && !_stopTest; i++) {
+-        await measure('on', 'official 32 · default', {}, w, official, cool: Research.coolOfficial, fullText: true);
+-      }
+-      await save();
+-    } catch (e) {
+-      notes.add('aborted: $e');
+-    } finally {
+-      setEnv({});
+-      setNativeEnv('GGML_REPACK_RELEASE', '');
+-      report['finished'] = DateTime.now().toIso8601String();
+-      report['stopped_early'] = _stopTest;
+-      report['mem_end'] = DeviceProfile.memInfo();
+-      await save();
+-      try {
+-        final dir = File(_loadedPath!).parent.path;
+-        File('$dir/research-${Research.kit}-${started.toIso8601String().replaceAll(':', '').substring(0, 15)}.json')
+-            .writeAsStringSync(jsonEncode(report));
+-      } catch (_) {
+-        // the clipboard copy is the primary channel
+-      }
+-      await DeviceProfile.keepScreenOn(false);
+-      researching = false;
+-      optimizing = null;
+-      await _engine.unloadModel();
+-      status = EngineStatus.idle;
+-      await load(_loadedPath!);
+-    }
+-  }
+-}
+diff -uN a/lib/settings_screen.dart b/lib/settings_screen.dart
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -4,6 +4,7 @@
+ 
+ import 'assistant.dart';
+ import 'device.dart';
++import 'engine.dart';
+ import 'model_store.dart';
+ import 'setup_screen.dart';
+ import 'theme.dart';
+@@ -50,8 +51,9 @@
+       context: context,
+       builder: (d) => AlertDialog(
+         title: const Text('Delete model?'),
+-        content: const Text(
+-            'This frees about 3.2 GB. You\'ll need to download it again to keep chatting.'),
++        content: Text(
++            'This frees about ${(context.read<ModelStore>().expectedBytes / 1e9).toStringAsFixed(1)} GB. '
++            'You\'ll need to download it again to keep chatting.'),
+         actions: [
+           TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Cancel')),
+           FilledButton(onPressed: () => Navigator.pop(d, true), child: const Text('Delete')),
+@@ -65,6 +67,58 @@
+     await store.delete();
+   }
+ 
++  /// Stores the other engine and restarts the app into it (a running download is paused first; it resumes from
++  /// where it stopped).
++  Future<void> _switchEngine(Engine e) async {
++    if (e == Engines.active) return;
++    final ok = await showDialog<bool>(
++      context: context,
++      builder: (d) => AlertDialog(
++        title: Text(e == Engine.classic ? 'Switch to Vollie 1 classic?' : 'Switch to Vollie 2?'),
++        content: Text(
++          '${e == Engine.classic ? 'Vollie 1 classic is the previous version\'s engine and model, unchanged. '
++              : 'Vollie 2 is the new engine, with a model you choose. '}'
++          'Vollie restarts to switch. Your chat is kept.',
++        ),
++        actions: [
++          TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Cancel')),
++          FilledButton(onPressed: () => Navigator.pop(d, true), child: const Text('Restart')),
++        ],
++      ),
++    );
++    if (ok != true || !mounted) return;
++    final store = context.read<ModelStore>();
++    if (store.active) await store.pause();
++    await Engines.switchTo(e);
++  }
++
++  /// Vollie 2: makes [m] the model. Downloaded: loaded now; else the download screen takes over.
++  Future<void> _switchModel(ModelInfo m) async {
++    final store = context.read<ModelStore>();
++    final assistant = context.read<Assistant>();
++    if (m.id == store.model?.id || assistant.isBusy) return;
++    final have = await store.isDownloaded(m);
++    if (!mounted) return;
++    if (!have) {
++      final ok = await showDialog<bool>(
++        context: context,
++        builder: (d) => AlertDialog(
++          title: Text('Download ${m.name}?'),
++          content: Text('It needs a one-time download of ${(m.bytes / 1e9).toStringAsFixed(1)} GB. '
++              'The model you have now stays on the phone; you can switch back anytime.'),
++          actions: [
++            TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Cancel')),
++            FilledButton(onPressed: () => Navigator.pop(d, true), child: const Text('Download')),
++          ],
++        ),
++      );
++      if (ok != true || !mounted) return;
++      await assistant.unload();
++      if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
++    }
++    await store.select(m.id);
++  }
++
+   @override
+   Widget build(BuildContext context) {
+     final assistant = context.watch<Assistant>();
+@@ -153,17 +207,45 @@
+               ),
+             ),
+           ]),
++          const _Section('Engine'),
++          _Card(children: [
++            SizedBox(
++              width: double.infinity,
++              child: SegmentedButton<Engine>(
++                segments: const [
++                  ButtonSegment(value: Engine.v2, label: Text('Vollie 2')),
++                  ButtonSegment(value: Engine.classic, label: Text('Vollie 1 classic')),
++                ],
++                selected: {Engines.active},
++                onSelectionChanged: assistant.isBusy ? null : (e) => _switchEngine(e.first),
++              ),
++            ),
++            const SizedBox(height: 8),
++            Text(
++              Engines.classic
++                  ? 'The previous version\'s engine and model, unchanged.'
++                  : 'The new engine, tuned on a Snapdragon 888 phone, with a model you choose.',
++              style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13, height: 1.35),
++            ),
++          ]),
+           const _Section('Model'),
+           _Card(children: [
+             ListTile(
+               contentPadding: EdgeInsets.zero,
+               leading: const VollieMark(size: 40),
+-              title: const Text('Vollie 2.0',
+-                  style: TextStyle(fontWeight: FontWeight.w600)),
++              title: Text(store.displayName,
++                  style: const TextStyle(fontWeight: FontWeight.w600)),
+               subtitle: Text(store.legacy
+                   ? 'Runs on this device · previous model'
+-                  : 'Runs on this device · 3.2 GB'),
++                  : 'Runs on this device · ${(store.expectedBytes / 1e9).toStringAsFixed(1)} GB'),
+             ),
++            if (!Engines.classic)
++              for (final m in Engines.v2Models)
++                if (m.id != store.model?.id)
++                  OutlinedButton(
++                    onPressed: assistant.isBusy ? null : () => _switchModel(m),
++                    child: Text('Switch to ${m.name}'),
++                  ),
+             if (store.legacy) ...[
+               Text(
+                 'A better and faster model is available (Granite 4.0 H Tiny, updated). Keep '
+@@ -203,6 +285,7 @@
+               label: const Text('Delete model from device'),
+             ),
+           ]),
++          _OtherModels(current: store.model),
+         ],
+       ),
+     );
+@@ -286,152 +369,112 @@
+         ),
+       ),
+       const Divider(height: 28),
+-
+-      // One tap: measure every option on this phone and keep the fastest.
+-      FilledButton.tonalIcon(
+-        onPressed: busy || optimizing ? null : assistant.optimize,
+-        icon: optimizing
+-            ? const SizedBox.square(
+-                dimension: 18, child: CircularProgressIndicator(strokeWidth: 2))
+-            : const Icon(Icons.speed_rounded),
+-        label: Text(optimizing ? assistant.optimizing! : 'Optimize for this phone'),
+-      ),
+-      const SizedBox(height: 8),
+-      Text(
+-        assistant.phoneTesting
+-            ? 'Testing. Keep Vollie open and the phone unplugged.'
+-            : optimizing
+-            ? 'Takes about a minute. Your chat is kept.'
+-            : assistant.benchSummary != null
+-                ? 'Fastest on this phone: ${assistant.benchSummary}'
+-                : 'Times CPU and GPU options on your exact chip and keeps the fastest.',
+-        style: assistant.benchSummary != null && !optimizing
+-            ? subtle.copyWith(color: accent, fontWeight: FontWeight.w600)
+-            : subtle,
+-      ),
+-      for (final r in assistant.benchResults)
+-        Padding(
+-          padding: const EdgeInsets.only(top: 6),
+-          child: Row(children: [
+-            Expanded(child: Text(r.label, style: subtle)),
+-            Text(
+-              !r.ok
+-                  ? 'not supported'
+-                  : '${r.decode!.toStringAsFixed(1)} tok/s · reads ${r.prefill!.toStringAsFixed(0)}'
+-                      '${r.headroom == null ? '' : ' · heat ${(r.headroom! * 100).round()}%'}',
+-              style: subtle.copyWith(
+-                fontFeatures: const [FontFeature.tabularFigures()],
+-                color: !r.ok ? scheme.error : null,
+-              ),
+-            ),
+-          ]),
++      if (!Engines.classic)
++        Text(
++          'Vollie 2 uses its tuned settings on every phone: CPU, ${assistant.threads} threads.',
++          style: subtle,
++        )
++      else ...[
++        // One tap: measure every option on this phone and keep the fastest.
++        FilledButton.tonalIcon(
++          onPressed: busy || optimizing ? null : assistant.optimize,
++          icon: optimizing
++              ? const SizedBox.square(
++                  dimension: 18, child: CircularProgressIndicator(strokeWidth: 2))
++              : const Icon(Icons.speed_rounded),
++          label: Text(optimizing ? assistant.optimizing! : 'Optimize for this phone'),
+         ),
+-      const SizedBox(height: 8),
+-
+-      if (assistant.benchReport != null && !optimizing)
+-        TextButton.icon(
+-          onPressed: () {
+-            Clipboard.setData(ClipboardData(text: assistant.benchReport!));
+-            ScaffoldMessenger.of(context).showSnackBar(
+-                const SnackBar(content: Text('Speed test details copied. Paste them to share.')));
+-          },
+-          icon: const Icon(Icons.copy_rounded),
+-          label: const Text('Copy speed test details'),
++        const SizedBox(height: 8),
++        Text(
++          optimizing
++              ? 'Takes about a minute. Your chat is kept.'
++              : assistant.benchSummary != null
++                  ? 'Fastest on this phone: ${assistant.benchSummary}'
++                  : 'Times CPU and GPU options on your exact chip and keeps the fastest.',
++          style: assistant.benchSummary != null && !optimizing
++              ? subtle.copyWith(color: accent, fontWeight: FontWeight.w600)
++              : subtle,
+         ),
+-
+-      // Field test: sustained speed, heat switching and power, to share.
+-      assistant.phoneTesting
+-          ? OutlinedButton.icon(
+-              onPressed: assistant.stopPhoneTest,
+-              icon: const Icon(Icons.stop_rounded),
+-              label: const Text('Stop phone test'),
+-            )
+-          : OutlinedButton.icon(
+-              onPressed: busy || optimizing ? null : assistant.phoneTest,
+-              icon: const Icon(Icons.thermostat_rounded),
+-              label: const Text('Run phone test (10 min)'),
+-            ),
+-      // Research kit (round 1): knobs of the CPU module, A/B per token, speculation.
+-      assistant.researching
+-          ? OutlinedButton.icon(
+-              onPressed: assistant.stopResearch,
+-              icon: const Icon(Icons.stop_rounded),
+-              label: const Text('Stop research run'),
+-            )
+-          : OutlinedButton.icon(
+-              onPressed: busy || optimizing ? null : assistant.researchRun,
+-              icon: const Icon(Icons.science_rounded),
+-              label: const Text('Run research kit (~15 min)'),
+-            ),
+-      if (assistant.researchReport != null && !assistant.researching)
+-        TextButton.icon(
+-          onPressed: () {
+-            Clipboard.setData(ClipboardData(text: assistant.researchReport!));
+-            ScaffoldMessenger.of(context).showSnackBar(
+-                const SnackBar(content: Text('Research results copied. Paste them to share.')));
+-          },
+-          icon: const Icon(Icons.copy_rounded),
+-          label: const Text('Copy research results'),
+-        ),
+-      if (assistant.phoneTestReport != null && !assistant.phoneTesting)
+-        TextButton.icon(
+-          onPressed: () {
+-            Clipboard.setData(ClipboardData(text: assistant.phoneTestReport!));
+-            ScaffoldMessenger.of(context).showSnackBar(
+-                const SnackBar(content: Text('Test results copied. Paste them to share.')));
++        for (final r in assistant.benchResults)
++          Padding(
++            padding: const EdgeInsets.only(top: 6),
++            child: Row(children: [
++              Expanded(child: Text(r.label, style: subtle)),
++              Text(
++                !r.ok
++                    ? 'not supported'
++                    : '${r.decode!.toStringAsFixed(1)} tok/s · reads ${r.prefill!.toStringAsFixed(0)}'
++                        '${r.headroom == null ? '' : ' · heat ${(r.headroom! * 100).round()}%'}',
++                style: subtle.copyWith(
++                  fontFeatures: const [FontFeature.tabularFigures()],
++                  color: !r.ok ? scheme.error : null,
++                ),
++              ),
++            ]),
++          ),
++        const SizedBox(height: 8),
++
++        if (assistant.benchReport != null && !optimizing)
++          TextButton.icon(
++            onPressed: () {
++              Clipboard.setData(ClipboardData(text: assistant.benchReport!));
++              ScaffoldMessenger.of(context).showSnackBar(
++                  const SnackBar(content: Text('Speed test details copied. Paste them to share.')));
++            },
++            icon: const Icon(Icons.copy_rounded),
++            label: const Text('Copy speed test details'),
++          ),
++
++        const Divider(height: 28),
++
++        // Manual overrides.
++        FutureBuilder<List<Accel>>(
++          future: assistant.availableAccels(),
++          builder: (_, snap) {
++            final options = snap.data ?? const [Accel.cpu];
++            return Row(children: [
++              const Expanded(child: Text('Compute', style: TextStyle(fontSize: 16))),
++              DropdownButton<Accel>(
++                value: options.contains(assistant.accel) ? assistant.accel : Accel.cpu,
++                onChanged: busy || optimizing ? null : (a) => assistant.setAccel(a ?? Accel.cpu),
++                items: [
++                  for (final a in options) DropdownMenuItem(value: a, child: Text(a.label)),
++                ],
++              ),
++            ]);
+           },
+-          icon: const Icon(Icons.copy_rounded),
+-          label: const Text('Copy test results'),
+         ),
+-      const Divider(height: 28),
+-
+-      // Manual overrides.
+-      FutureBuilder<List<Accel>>(
+-        future: assistant.availableAccels(),
+-        builder: (_, snap) {
+-          final options = snap.data ?? const [Accel.cpu];
+-          return Row(children: [
+-            const Expanded(child: Text('Compute', style: TextStyle(fontSize: 16))),
+-            DropdownButton<Accel>(
+-              value: options.contains(assistant.accel) ? assistant.accel : Accel.cpu,
+-              onChanged: busy || optimizing ? null : (a) => assistant.setAccel(a ?? Accel.cpu),
+-              items: [
+-                for (final a in options) DropdownMenuItem(value: a, child: Text(a.label)),
+-              ],
+-            ),
+-          ]);
+-        },
+-      ),
+-      if (assistant.gpuNote != null)
+-        Padding(
+-          padding: const EdgeInsets.only(bottom: 4),
+-          child: Text(assistant.gpuNote!, style: subtle.copyWith(color: accent)),
++        if (assistant.gpuNote != null)
++          Padding(
++            padding: const EdgeInsets.only(bottom: 4),
++            child: Text(assistant.gpuNote!, style: subtle.copyWith(color: accent)),
++          ),
++        if (assistant.heatNote != null)
++          Padding(
++            padding: const EdgeInsets.only(bottom: 4),
++            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
++              Icon(Icons.device_thermostat_rounded, size: 16, color: accent),
++              const SizedBox(width: 6),
++              Expanded(child: Text(assistant.heatNote!, style: subtle.copyWith(color: accent))),
++            ]),
++          ),
++        Row(children: [
++          const Expanded(child: Text('CPU threads', style: TextStyle(fontSize: 16))),
++          DropdownButton<int>(
++            value: assistant.threadOverride.clamp(0, cores),
++            onChanged: busy || optimizing ? null : (n) => assistant.setThreads(n ?? 0),
++            items: [
++              DropdownMenuItem(value: 0, child: Text('Auto (${assistant.autoThreads})')),
++              for (var i = 1; i <= cores; i++) DropdownMenuItem(value: i, child: Text('$i')),
++            ],
++          ),
++        ]),
++        Text(
++          'Auto uses only the performance cores. GPU options are checked for '
++          'correct output; one that fails or crashes is switched off for good.',
++          style: subtle,
+         ),
+-      if (assistant.heatNote != null)
+-        Padding(
+-          padding: const EdgeInsets.only(bottom: 4),
+-          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+-            Icon(Icons.device_thermostat_rounded, size: 16, color: accent),
+-            const SizedBox(width: 6),
+-            Expanded(child: Text(assistant.heatNote!, style: subtle.copyWith(color: accent))),
+-          ]),
+-        ),
+-      Row(children: [
+-        const Expanded(child: Text('CPU threads', style: TextStyle(fontSize: 16))),
+-        DropdownButton<int>(
+-          value: assistant.threadOverride.clamp(0, cores),
+-          onChanged: busy || optimizing ? null : (n) => assistant.setThreads(n ?? 0),
+-          items: [
+-            DropdownMenuItem(value: 0, child: Text('Auto (${assistant.autoThreads})')),
+-            for (var i = 1; i <= cores; i++) DropdownMenuItem(value: i, child: Text('$i')),
+-          ],
+-        ),
+-      ]),
+-      Text(
+-        'Auto uses only the performance cores. GPU options are checked for '
+-        'correct output; one that fails or crashes is switched off for good.',
+-        style: subtle,
+-      ),
++      ],
+       if (assistant.status == EngineStatus.loading && !optimizing)
+         const Padding(
+           padding: EdgeInsets.only(top: 12),
+@@ -440,3 +483,77 @@
+     ]);
+   }
+ }
++
++/// Other models' files on this phone (3.0.0: Vollie 1 classic's and Vollie 2's), each with a delete button.
++class _OtherModels extends StatefulWidget {
++  final ModelInfo? current;
++  const _OtherModels({required this.current});
++
++  @override
++  State<_OtherModels> createState() => _OtherModelsState();
++}
++
++class _OtherModelsState extends State<_OtherModels> {
++  List<ModelInfo> _have = const [];
++
++  @override
++  void initState() {
++    super.initState();
++    _scan();
++  }
++
++  @override
++  void didUpdateWidget(_OtherModels old) {
++    super.didUpdateWidget(old);
++    if (old.current?.id != widget.current?.id) _scan();
++  }
++
++  Future<void> _scan() async {
++    final store = context.read<ModelStore>();
++    final have = <ModelInfo>[];
++    for (final m in [Engines.c1, ...Engines.v2Models]) {
++      if (m.id != widget.current?.id && await store.isDownloaded(m)) have.add(m);
++    }
++    if (mounted) setState(() => _have = have);
++  }
++
++  Future<void> _delete(ModelInfo m) async {
++    final ok = await showDialog<bool>(
++      context: context,
++      builder: (d) => AlertDialog(
++        title: Text('Delete ${m.name}?'),
++        content: Text('This frees about ${(m.bytes / 1e9).toStringAsFixed(1)} GB. '
++            '${m.id == Engines.c1.id ? 'Vollie 1 classic needs it' : 'Vollie 2 needs it'} to run this model again.'),
++        actions: [
++          TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Cancel')),
++          FilledButton(onPressed: () => Navigator.pop(d, true), child: const Text('Delete')),
++        ],
++      ),
++    );
++    if (ok != true || !mounted) return;
++    await context.read<ModelStore>().deleteOther(m);
++    await _scan();
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    if (_have.isEmpty) return const SizedBox.shrink();
++    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
++      const _Section('Other models on this phone'),
++      _Card(children: [
++        for (final m in _have)
++          ListTile(
++            contentPadding: EdgeInsets.zero,
++            title: Text(m.name),
++            subtitle: Text('${m.id == Engines.c1.id ? 'Vollie 1 classic' : 'Vollie 2'} · '
++                '${(m.bytes / 1e9).toStringAsFixed(1)} GB'),
++            trailing: IconButton(
++              tooltip: 'Delete',
++              icon: const Icon(Icons.delete_outline_rounded),
++              onPressed: () => _delete(m),
++            ),
++          ),
++      ]),
++    ]);
++  }
++}
+diff -uN a/lib/setup_screen.dart b/lib/setup_screen.dart
+--- a/lib/setup_screen.dart
++++ b/lib/setup_screen.dart
+@@ -2,6 +2,7 @@
+ import 'package:provider/provider.dart';
+ 
+ import 'device.dart';
++import 'engine.dart';
+ import 'model_store.dart';
+ import 'theme.dart';
+ import 'widgets.dart';
+@@ -17,7 +18,7 @@
+     final scheme = Theme.of(context).colorScheme;
+     final text = Theme.of(context).textTheme;
+     final enoughSpace = device.freeStorage == 0 ||
+-        device.freeStorage > ModelStore.expectedBytes + 300000000;
++        device.freeStorage > store.expectedBytes + 300000000;
+     final gbFree = (device.freeStorage / 1e9).toStringAsFixed(1);
+ 
+     return Scaffold(
+@@ -30,7 +31,7 @@
+               children: [
+                 const Center(child: VollieMark(size: 88)),
+                 const SizedBox(height: 28),
+-                Text('Meet Vollie 2.0',
++                Text('Meet Vollie',
+                     textAlign: TextAlign.center,
+                     style: text.headlineMedium?.copyWith(fontWeight: FontWeight.w700)),
+                 const SizedBox(height: 10),
+@@ -48,31 +49,51 @@
+                 const _Feature(Icons.tune_rounded, 'Make it yours',
+                     'Change how Vollie behaves with your own system prompt.'),
+                 const SizedBox(height: 28),
+-                DownloadCard(store: store),
+-                const SizedBox(height: 16),
+-                if (device.lowRam)
+-                  _Warning(
+-                    'This phone has ${(device.totalRam / 1e9).toStringAsFixed(1)} GB of RAM. '
+-                    'Vollie works best with 6 GB or more and may be slow or close unexpectedly.',
++                if (store.model == null) ...[
++                  // Vollie 2's first run: the user picks the model.
++                  Text('Choose a model', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
++                  const SizedBox(height: 4),
++                  Text('You can switch later in Settings.',
++                      style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant)),
++                  const SizedBox(height: 12),
++                  for (final m in Engines.v2Models) _ModelChoice(m, onTap: () => store.select(m.id)),
++                  const _EngineLink(),
++                ] else ...[
++                  DownloadCard(store: store),
++                  const SizedBox(height: 16),
++                  if (device.lowRam)
++                    _Warning(
++                      'This phone has ${(device.totalRam / 1e9).toStringAsFixed(1)} GB of RAM. '
++                      'Vollie works best with 6 GB or more and may be slow or close unexpectedly.',
++                    ),
++                  if (!enoughSpace && store.state == DownloadState.idle)
++                    _Warning('Only $gbFree GB free. Free up about 4.5 GB of storage to download the model.'),
++                  if (store.error != null && !store.active)
++                    Padding(
++                      padding: const EdgeInsets.only(bottom: 12),
++                      child: Text(store.error!,
++                          textAlign: TextAlign.center,
++                          style: TextStyle(color: scheme.error)),
++                    ),
++                  ..._actions(context, store, enoughSpace),
++                  const SizedBox(height: 12),
++                  Text(
++                    store.active
++                        ? 'You can leave the app. The download keeps going and shows in your notifications.'
++                        : 'Uses Wi-Fi by default. You can pause and resume anytime.',
++                    textAlign: TextAlign.center,
++                    style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                   ),
+-                if (!enoughSpace && store.state == DownloadState.idle)
+-                  _Warning('Only $gbFree GB free. Free up about 4.5 GB of storage to download the model.'),
+-                if (store.error != null && !store.active)
+-                  Padding(
+-                    padding: const EdgeInsets.only(bottom: 12),
+-                    child: Text(store.error!,
+-                        textAlign: TextAlign.center,
+-                        style: TextStyle(color: scheme.error)),
+-                  ),
+-                ..._actions(context, store, enoughSpace),
+-                const SizedBox(height: 12),
+-                Text(
+-                  store.active
+-                      ? 'You can leave the app. The download keeps going and shows in your notifications.'
+-                      : 'Uses Wi-Fi by default. You can pause and resume anytime.',
+-                  textAlign: TextAlign.center,
+-                  style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+-                ),
++                  if (!store.active) ...[
++                    const SizedBox(height: 12),
++                    if (!Engines.classic)
++                      TextButton(
++                        onPressed: () => _chooseAgain(context, store),
++                        child: const Text('Choose a different model'),
++                      ),
++                    const _EngineLink(),
++                  ],
++                ],
+               ],
+             ),
+           ),
+@@ -135,10 +156,31 @@
+           onPressed: enoughSpace ? () => startModelDownload(context, store) : null,
+           style: wide,
+           icon: const Icon(Icons.download_rounded),
+-          label: Text(store.error != null ? 'Try again' : 'Download model · 3.2 GB'),
++          label: Text(store.error != null
++              ? 'Try again'
++              : 'Download model · ${(store.expectedBytes / 1e9).toStringAsFixed(1)} GB'),
+         ),
+       ];
+   }
++}
++
++/// Vollie 2, before its download: back to the model choice (the .part of this one stays and resumes later).
++Future<void> _chooseAgain(BuildContext context, ModelStore store) async {
++  final other = Engines.v2Models.where((m) => m.id != store.model?.id);
++  final pick = await showDialog<ModelInfo>(
++    context: context,
++    builder: (d) => SimpleDialog(
++      title: const Text('Choose a model'),
++      children: [
++        for (final m in other)
++          SimpleDialogOption(
++            onPressed: () => Navigator.pop(d, m),
++            child: Text('${m.name} · ${(m.bytes / 1e9).toStringAsFixed(1)} GB'),
++          ),
++      ],
++    ),
++  );
++  if (pick != null) await store.select(pick.id);
+ }
+ 
+ /// Wi-Fi by default; on mobile data, ask before spending 3.2 GB of it.
+@@ -241,14 +283,14 @@
+     final status = switch (store.state) {
+       DownloadState.running => store.received == 0
+           ? 'Starting…'
+-          : '${gb(store.received)} / ${gb(ModelStore.expectedBytes)} GB · '
++          : '${gb(store.received)} / ${gb(store.expectedBytes)} GB · '
+               '${(store.speedBytesPerSec / 1e6).toStringAsFixed(1)} MB/s'
+               '${eta == null ? '' : ' · ${_eta(eta)}'}',
+       DownloadState.waitingWifi => 'Waiting for Wi-Fi. Resumes automatically.',
+       DownloadState.waitingNetwork => 'No connection. Retrying automatically…',
+       DownloadState.verifying => 'Verifying the download…',
+       DownloadState.paused => 'Paused at ${(store.progress * 100).toStringAsFixed(0)}%',
+-      _ => '3.2 GB · one-time download',
++      _ => '${(store.expectedBytes / 1e9).toStringAsFixed(1)} GB · one-time download',
+     };
+ 
+     return Container(
+@@ -264,9 +306,9 @@
+           Row(children: [
+             Icon(Icons.memory_rounded, color: accent),
+             const SizedBox(width: 10),
+-            const Expanded(
+-              child: Text(ModelStore.displayName,
+-                  style: TextStyle(fontWeight: FontWeight.w600)),
++            Expanded(
++              child: Text(store.displayName,
++                  style: const TextStyle(fontWeight: FontWeight.w600)),
+             ),
+             if (store.received > 0)
+               Text('${(store.progress * 100).toStringAsFixed(0)}%',
+@@ -317,3 +359,71 @@
+     );
+   }
+ }
++
++/// One of Vollie 2's models on the first-run choice.
++class _ModelChoice extends StatelessWidget {
++  final ModelInfo model;
++  final VoidCallback onTap;
++  const _ModelChoice(this.model, {required this.onTap});
++
++  @override
++  Widget build(BuildContext context) {
++    final scheme = Theme.of(context).colorScheme;
++    return Padding(
++      padding: const EdgeInsets.only(bottom: 12),
++      child: Material(
++        color: scheme.surfaceContainer,
++        shape: RoundedRectangleBorder(
++          borderRadius: BorderRadius.circular(20),
++          side: BorderSide(color: scheme.outlineVariant),
++        ),
++        clipBehavior: Clip.antiAlias,
++        child: ListTile(
++          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
++          leading: Icon(Icons.memory_rounded, color: VollieColors.of(context).accent),
++          title: Text(model.name, style: const TextStyle(fontWeight: FontWeight.w600)),
++          subtitle: Text('${model.about} ${(model.bytes / 1e9).toStringAsFixed(1)} GB download.'),
++          trailing: const Icon(Icons.chevron_right_rounded),
++          onTap: onTap,
++        ),
++      ),
++    );
++  }
++}
++
++/// The other engine, for people who want it before (or instead of) a download: Vollie 1 classic from Vollie 2's
++/// setup (shown when its model is already on the phone), Vollie 2 from classic's.
++class _EngineLink extends StatefulWidget {
++  const _EngineLink();
++
++  @override
++  State<_EngineLink> createState() => _EngineLinkState();
++}
++
++class _EngineLinkState extends State<_EngineLink> {
++  bool _show = Engines.classic;
++
++  @override
++  void initState() {
++    super.initState();
++    if (!Engines.classic) {
++      context.read<ModelStore>().isDownloaded(Engines.c1).then((have) {
++        if (mounted && have) setState(() => _show = true);
++      });
++    }
++  }
++
++  @override
++  Widget build(BuildContext context) => !_show
++      ? const SizedBox.shrink()
++      : TextButton(
++          onPressed: () async {
++            final store = context.read<ModelStore>();
++            if (store.active) await store.pause();
++            await Engines.switchTo(Engines.classic ? Engine.v2 : Engine.classic);
++          },
++          child: Text(Engines.classic
++              ? 'Use Vollie 2 instead'
++              : 'Keep using Vollie 1 classic (its model is already on this phone)'),
++        );
++}
+diff -uN /dev/null b/test/engine_test.dart
+--- /dev/null
++++ b/test/engine_test.dart
+@@ -0,0 +1,38 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:vollie/engine.dart';
++
++void main() {
++  test('Vollie 2 env: R70 b5 arm for OLMoE, R71 S1 b2 arm for Granite, without the kit counters', () {
++    final o = Engines.v2Env('olmoe', '0xf0');
++    expect(o, {
++      'GGML_TINY_OP': '262144', 'GGML_EXPERT_IO': '1', 'VOLLIE_SAMPLER_BYPASS': '1', 'VOLLIE_KV_DONTNEED': '1',
++      'VOLLIE_POOL': '1', 'VOLLIE_CPUMASK': '0xf0', 'VOLLIE_EXEC_MAP': '1',
++      'VOLLIE_HEAD2_REPACK': '1', 'VOLLIE_SKIP_MASS': '900', 'VOLLIE_HEAD2': '1024',
++      'VOLLIE_TOUCH': '1', 'VOLLIE_TOUCH_S': '12', 'VOLLIE_NICE': '-10',
++    });
++    final g = Engines.v2Env('granite', null);
++    expect(g, {
++      'GGML_TINY_OP': '262144', 'GGML_EXPERT_IO': '1', 'VOLLIE_SAMPLER_BYPASS': '1', 'VOLLIE_KV_DONTNEED': '1',
++      'VOLLIE_POOL': '1', 'VOLLIE_EXEC_MAP': '1',
++      'GGML_EXPERT_SKIP': '130', 'GGML_HEAD2': '2048', 'GGML_HEAD2_Q': 'q4_0',
++    });
++    // A switch unsets every knob of both models first.
++    expect(Engines.v2Knobs, containsAll({...o.keys, ...g.keys}));
++    for (final k in ['GGML_C2_IO', 'VOLLIE_SKIP_STATS', 'VOLLIE_SCHED', 'VOLLIE_LINES', 'VOLLIE_RUN']) {
++      expect(Engines.v2Knobs, isNot(contains(k)));
++    }
++  });
++
++  test('fast-core mask, known files, markup', () {
++    expect(Engines.mask([4, 5, 6, 7]), '0xf0');
++    expect(Engines.mask([6, 7]), '0xc0');
++    expect(Engines.mask(null), isNull);
++    expect(Engines.known(3161269888) && Engines.known(3072399552) && Engines.known(3161269344), isTrue);
++    expect(Engines.known(3774686848), isFalse); // a legacy file copies its whole size, as in 2.3.0+45
++    final granite = Engines.markup('/x/vollie-granite-4.0-h-tiny-d6-e6.gguf');
++    expect(granite, (userStart: '<|start_of_role|>user', userEnd: '<|end_of_text|>', turnEnd: '<|end_of_text|>'));
++    expect(Engines.markup('/x/granite-Mi.gguf'), granite);
++    expect(Engines.markup('/x/olmoe-Mi.gguf'), (userStart: '<|user|>', userEnd: '\n', turnEnd: '<|endoftext|>'));
++    expect(Engines.byFile('/data/user/0/com.insaneutils.vollie/files/olmoe-Mi.gguf')?.id, 'olmoe');
++  });
++}
+diff -uN a/test/widget_test.dart b/test/widget_test.dart
+--- a/test/widget_test.dart
++++ b/test/widget_test.dart
+@@ -127,25 +127,6 @@
+     expect(crit(true, 2), isFalse);
+   });
+ 
+-  test('phaseSummary reports the sustained drop, switches, watts and J/token', () {
+-    TestRow r(double t, Accel a, int n, double tg) =>
+-        TestRow('auto', t, a, n, 0, 0.5, 100, tg, 128, 16);
+-    final rows = [
+-      r(0, Accel.cpu, 6, 10), r(16, Accel.cpu, 6, 10), r(32, Accel.cpu, 6, 10),
+-      r(48, Accel.cpu, 3, 7), r(64, Accel.cpu, 3, 7), r(80, Accel.cpu, 3, 7),
+-    ];
+-    final s = Assistant.phaseSummary(rows, [4.0, 4.0], [30.0, 36.5]);
+-    expect(s, startsWith('auto: 6 replies'));
+-    expect(s, contains('writes 10.0 -> 7.0 tok/s'));
+-    expect(s, contains('1 switches'));
+-    expect(s, contains('4.0 W'));
+-    expect(s, contains('0.50 J/token')); // 4 W * 96 s / 768 tokens
+-    expect(s, contains('battery 30.0 -> 36.5 C'));
+-    expect(Assistant.phaseSummary([r(0, Accel.cpu, 6, 10)], const [], const []),
+-        isNot(contains('W'))); // no fuel gauge: no power numbers
+-    expect(rows.first.csv, 'auto,0,cpu,6,0,0.50,100,10.0');
+-  });
+-
+   test('contextSize: 8K on 8 GB phones unless memory is already taken', () {
+     DeviceProfile p(int total, int avail) => DeviceProfile(
+         totalRam: total, availRam: avail, freeStorage: 0, cpuMaxKhz: const [], soc: '');
+diff -uN a/third_party/llamadart/lib/src/backends/llama_cpp/llama_cpp_service.dart b/third_party/llamadart/lib/src/backends/llama_cpp/llama_cpp_service.dart
+--- a/third_party/llamadart/lib/src/backends/llama_cpp/llama_cpp_service.dart
++++ b/third_party/llamadart/lib/src/backends/llama_cpp/llama_cpp_service.dart
+@@ -2601,7 +2601,10 @@
+ 
+     switch (preferredBackend) {
+       case GpuBackend.auto:
+-        final loadedAll = backendModuleDirectory == null
++        // Vollie (kit r30, app 3.0.0): with VOLLIE_CPU_MODULE set, load-all would also register the standard-named CPU module.
++        final loadedAll = _vollieCpuModule != null
++            ? false
++            : backendModuleDirectory == null
+             ? _tryLoadAllBackendsBestEffort()
+             : _tryLoadAllBackendsFromPathBestEffort(backendModuleDirectory);
+ 
+@@ -3706,8 +3709,15 @@
+     }
+     return 'libllamadart.so';
+   }
++
++  /// Vollie (kit r30, app 3.0.0): `VOLLIE_CPU_MODULE` (set by the app's Android side before Dart starts, for its classic
++  /// runtimes) names the one CPU module file to load from the module directory. Unset (null): unchanged behaviour.
++  static final String? _vollieCpuModule =
++      Platform.isAndroid ? Platform.environment['VOLLIE_CPU_MODULE'] : null;
+ 
+   List<String> _backendLibraryCandidateFileNames(String backend) {
++    final vollie = _vollieCpuModule;
++    if (vollie != null && backend == 'cpu') return <String>[vollie];
+     final baseName = _backendLibraryFileName(backend);
+     final backendModuleDirectory = _backendModuleDirectory;
+     if (backendModuleDirectory == null) {
