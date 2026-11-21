@@ -1,5 +1,5 @@
 #!/bin/sh
-# Vollie 3.0.0+46 for the Play Store: builds the signed Android App Bundle from an app copy that is 2.3.0+45 with
+# Vollie 3.0.0+47 for the Play Store: builds the signed Android App Bundle from an app copy that is 2.3.0+45 with
 # patches/app-prod/0001-vollie-3.0.0.patch applied (see patches/app-prod/README.md).
 # Native libraries are placed byte-identical, never rebuilt:
 #   Vollie 2 (standard names): libllama.so and libggml-cpu-android_armv8.2_2.so from kit r31's APK (= r30 = r28 c2,
@@ -13,12 +13,12 @@
 #        lab/dist-c2/vollie-c2-1.31.0+31-research-r31.apk
 #   SMOKE=<file> (default unset): an emulator smoke APK instead (--dart-define=VOLLIE_SMOKE_MODEL=<file>, same key), into
 #   lab/dist-prod/smoke/; never uploaded.
-# out: lab/dist-prod/vollie-3.0.0+46.aab and BUILD-3.0.0+46.txt (sha256 of the AAB, the patch, every native library per
+# out: lab/dist-prod/vollie-3.0.0+47.aab and BUILD-3.0.0+47.txt (sha256 of the AAB, the patch, every native library per
 #      runtime, 16 KB alignment of every .so, the signing certificate's SHA-256).
 set -eu
 R=$(cd "$(dirname "$0")/.." && pwd); APP=$(cd "$1" && pwd); SRC=$(cd "$2" && pwd); AAB45=$3; APK31=$4
 O=$R/lab/dist-prod; V=$(sed -n 's/^version: //p' "$APP/pubspec.yaml")
-[ "$V" = "3.0.0+46" ] && [ -f "$APP/lib/engine.dart" ] || { echo "app copy is not 3.0.0+46: apply patches/app-prod first"; exit 2; }
+[ "$V" = "3.0.0+47" ] && [ -f "$APP/lib/engine.dart" ] || { echo "app copy is not 3.0.0+47: apply patches/app-prod first"; exit 2; }
 NDK=$(ls -d "$HOME"/Library/Android/sdk/ndk/* | tail -1); RE=$(ls "$NDK"/toolchains/llvm/prebuilt/*/bin/llvm-readelf)
 JAVA_HOME=${JAVA_HOME:-"/Applications/Android Studio.app/Contents/jbr/Contents/Home"}; export JAVA_HOME
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }

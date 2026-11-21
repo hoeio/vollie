@@ -6,7 +6,7 @@ diff -uN a/pubspec.yaml b/pubspec.yaml
  publish_to: 'none'
  
 -version: 2.3.0+45
-+version: 3.0.0+46
++version: 3.0.0+47
  
  environment:
    sdk: ^3.10.7
@@ -40,7 +40,7 @@ diff -uN a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/Andro
 diff -uN a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt b/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt
 --- a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt
 +++ b/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt
-@@ -19,7 +19,50 @@
+@@ -19,7 +19,63 @@
  import kotlin.concurrent.thread
  
  /** Platform side of Vollie: model download (ModelDownloadService) and device info. */
@@ -55,6 +55,14 @@ diff -uN a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt b/andr
 +        lines.firstOrNull { it.startsWith("Features") }?.substringAfter(":")?.trim()?.split(Regex("\\s+"))?.toSet()
 +    }
 +}.getOrNull() ?: emptySet()
++
++/** The engine of a first start of 3.0.0 (nothing stored yet). Upgrading from 2.3.0+45 (or older) keeps Vollie 1
++ *  classic, a fresh install gets Vollie 2. 2.3.0+45's state, whatever its user got to: any key in Flutter's
++ *  preferences (FlutterSharedPreferences, "flutter.*": settings, chats, a started download's id), or any model file in
++ *  its download folder (a model, a .part, a .verified marker, current or legacy names). */
++internal fun firstEngine(oldPrefKeys: Set<String>, oldFiles: List<String>) =
++    if (oldPrefKeys.any { it.startsWith("flutter.") } ||
++        oldFiles.any { it.endsWith(".gguf") || it.endsWith(".gguf.part") || it.endsWith(".gguf.verified") }) "classic" else "v2"
 +
  class MainActivity : FlutterActivity() {
 +    // 3.0.0: the engine is chosen per process, before Dart starts (kit r30's mechanism). "v2" (default) = the
@@ -72,7 +80,12 @@ diff -uN a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt b/andr
 +        fun preloadEngine(ctx: Context) {
 +            if (engineDone) return
 +            engineDone = true
-+            engineStored = ctx.getSharedPreferences(ENGINE_PREFS, Context.MODE_PRIVATE).getString("engine", "v2") ?: "v2"
++            val prefs = ctx.getSharedPreferences(ENGINE_PREFS, Context.MODE_PRIVATE)
++            // Resolved once, on the first start of 3.0.0, and stored at once: it never flips afterwards.
++            engineStored = prefs.getString("engine", null) ?: firstEngine(
++                ctx.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE).all.keys,
++                (ctx.getExternalFilesDir(null) ?: ctx.filesDir).list()?.toList() ?: emptyList(),
++            ).also { prefs.edit().putString("engine", it).commit() }
 +            if (engineStored != "classic") return
 +            enginePreload = runCatching {
 +                System.loadLibrary("llama_rt_c1")
@@ -91,7 +104,7 @@ diff -uN a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt b/andr
      // Fixed per device, and Android rate-limits the call: read it once.
      private var moderateAt: Double? = null
      private var moderateAtRead = false
-@@ -41,9 +84,34 @@
+@@ -41,11 +97,36 @@
                  when (call.method) {
                      "modelPath" -> {
                          val s = ModelDownloadService
@@ -106,8 +119,8 @@ diff -uN a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt b/andr
 +                        } else {
 +                            result.success(s.model(this, m).absolutePath)
 +                        }
-+                    }
-+
+                     }
+ 
 +                    // 3.0.0: the engine of this process, the stored choice, and a switch (store, then restart).
 +                    "engine" -> result.success(mapOf(
 +                        "active" to engineActive, "stored" to engineStored, "preload" to enginePreload,
@@ -126,10 +139,12 @@ diff -uN a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt b/andr
 +                            // RestartActivity (its own process) ends this one and starts MainActivity in a new one.
 +                            startActivity(Intent(this, RestartActivity::class.java).putExtra("pid", android.os.Process.myPid()))
 +                        }
-                     }
- 
++                    }
++
                      "deviceInfo" -> {
-@@ -156,21 +224,29 @@
+                         val mem = ActivityManager.MemoryInfo()
+                         (getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(mem)
+@@ -156,21 +237,29 @@
  
                      "status" -> {
                          val s = ModelDownloadService
@@ -168,7 +183,7 @@ diff -uN a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt b/andr
                          if (Build.VERSION.SDK_INT >= 33 &&
                              checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
                          ) {
-@@ -178,42 +254,30 @@
+@@ -178,42 +267,30 @@
                              requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
                          }
                          ModelDownloadService.error = null
@@ -223,7 +238,7 @@ diff -uN a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt b/andr
                              ?.filter { it.name.startsWith("turn") && it.name.endsWith(".state") }
                              ?.forEach { it.delete() } // Assistant's saved chat turns
                          result.success(null)
-@@ -224,7 +288,7 @@
+@@ -224,7 +301,7 @@
                      "removeLegacyDownload" -> {
                          val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
                          dm.remove((call.argument<Number>("id"))!!.toLong())
@@ -232,7 +247,7 @@ diff -uN a/android/app/src/main/kotlin/com/example/vollie/MainActivity.kt b/andr
                          result.success(null)
                      }
  
-@@ -232,6 +296,10 @@
+@@ -232,6 +309,10 @@
                  }
              }
      }
@@ -501,7 +516,7 @@ diff -uN /dev/null b/android/app/src/main/kotlin/com/example/vollie/RestartActiv
 diff -uN /dev/null b/android/app/src/test/kotlin/com/example/vollie/EngineTest.kt
 --- /dev/null
 +++ b/android/app/src/test/kotlin/com/example/vollie/EngineTest.kt
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,26 @@
 +package com.insaneutils.vollie
 +
 +import org.junit.Assert.assertEquals
@@ -516,6 +531,16 @@ diff -uN /dev/null b/android/app/src/test/kotlin/com/example/vollie/EngineTest.k
 +        assertEquals(false, classicModuleIsBest(sd888 - "asimddp")) // 8.0_1
 +        assertEquals(false, classicModuleIsBest(sd888 - "asimdhp"))
 +        assertEquals(false, classicModuleIsBest(emptySet()))
++    }
++
++    // First start of 3.0.0: an upgrade from 2.3.0+45 keeps classic, a fresh install gets Vollie 2.
++    @Test fun upgradeFrom45KeepsClassic() {
++        assertEquals("v2", firstEngine(emptySet(), emptyList())) // fresh install
++        assertEquals("v2", firstEngine(setOf("other.key"), listOf("notes.txt"))) // nothing of 2.3.0+45's
++        assertEquals("classic", firstEngine(setOf("flutter.theme_mode"), emptyList())) // installed, download never finished
++        assertEquals("classic", firstEngine(emptySet(), listOf("vollie-granite-4.0-h-tiny-d6-e6.gguf.part"))) // partial
++        assertEquals("classic", firstEngine(emptySet(), listOf("vollie-granite-4.0-h-tiny-d6-e6.gguf", "vollie-granite-4.0-h-tiny-d6-e6.gguf.verified")))
++        assertEquals("classic", firstEngine(emptySet(), listOf("vollie-qwen3.5-4b-q4_0-mtp.gguf.verified"))) // a legacy build's model
 +    }
 +}
 diff -uN a/lib/assistant.dart b/lib/assistant.dart

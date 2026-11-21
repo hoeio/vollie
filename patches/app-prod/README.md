@@ -25,8 +25,28 @@ New files: `lib/engine.dart`, `RestartActivity.kt`, `android/app/src/test/.../En
 
 ## 0001-vollie-3.0.0.patch
 
-Vollie **3.0.0+46**: campaign 2's result for users, with campaign 1 kept as a choice. Apply with
+Vollie **3.0.0+47**: campaign 2's result for users, with campaign 1 kept as a choice. Apply with
 `git apply -p1` in the app copy's root (checked: it reproduces the built copy byte for byte).
+
+Version code 47, not 46: a 3.0.0+46 bundle was built and may be in the owner's hands; 47 is the one to upload.
+
+### Which engine a first start gets (owner, 2026-11-21)
+
+Users upgrading from 2.3.0+45 (or older) keep **Vollie 1 classic**; fresh installs get **Vollie 2** and the model
+choice. `MainActivity.preloadEngine` decides on the first start of 3.0.0, when no engine is stored, and stores the
+result at once, so it never flips (`firstEngine`, `EngineTest.upgradeFrom45KeepsClassic`). "Upgrading" means
+2.3.0+45's state is there:
+
+- any key in Flutter's preferences (`FlutterSharedPreferences`, `flutter.*`: settings, chats, saved turns, bench
+  results), or
+- any model file in its download folder (`getExternalFilesDir`): a `.gguf`, a `.gguf.part` (a download started but not
+  finished) or a `.gguf.verified` marker, of the current or a legacy name.
+
+2.3.0+45 writes neither on a plain open (checked on the emulator: no files, and its source sets preferences only after a
+user action, a load or a bench), so a user who installed it and never tapped Download has no state and starts like a
+fresh install. Android's backup is on (2.3.0+45's manifest does not set `allowBackup`): a restore of 2.3.0+45's
+preferences onto a new phone also counts as an upgrade. Classic users see Settings > Engine and, on the download
+screen, "Use Vollie 2 instead"; there is no extra hint.
 
 ### Two engines, one per process
 
@@ -104,9 +124,10 @@ tools/prod_build_aab.sh <app copy> <2.3.0+45 source folder> <2.3.0+45 AAB> <kit 
 The script checks the four runtime libraries against their sha256 records, places them, links (never copies) the
 release key files from the 2.3.0+45 folder for the build and removes the links afterwards, builds the bundle, checks that
 the libraries in it are the ones placed, that every `.so` is 16 KB aligned and that the signing certificate equals
-2.3.0+45's, and writes `lab/dist-prod/vollie-3.0.0+46.aab` and `lab/dist-prod/BUILD-3.0.0+46.txt`.
+2.3.0+45's, and writes `lab/dist-prod/vollie-3.0.0+47.aab` and `lab/dist-prod/BUILD-3.0.0+47.txt`.
 `SMOKE=FILE` builds an emulator smoke APK (same key) into `lab/dist-prod/smoke/` instead.
 
-Checks: `flutter analyze lib test`, `flutter test`, `./gradlew :app:testDebugUnitTest` (EngineTest: the classic CPU
+Checks: `flutter analyze lib test`, `flutter test`, `./gradlew :app:testDebugUnitTest` (EngineTest: the first-start engine and the classic CPU
 module rule), bundletool `build-apks` + `install-apks` on an arm64 emulator, and the smoke APK for both engines and
-both switch directions.
+both switch directions; the upgrade from 2.3.0+45 (bundletool install of its AAB, then of 3.0.0+47 over it) with no
+state, with a paused download and with its model downloaded, and a fresh install.
