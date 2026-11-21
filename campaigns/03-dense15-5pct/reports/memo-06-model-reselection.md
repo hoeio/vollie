@@ -184,6 +184,103 @@ Flags for the lead:
 
 ### 3.2 Ebony's challenge
 
+Ebony, 2026-11-21. Full text, tables and sources: [memo-06-work/ebony-levers.md](memo-06-work/ebony-levers.md).
+Nothing was run. Numbers are *published* (source claims, read 2026-11-21), quoted *host* results of this
+repository, or *estimated* with t = max(B ÷ r, W ÷ c) + 8 ms at R69's pre-registered bands (r 24, upper case 35;
+c 40.4 GB/s; four cores 50.3). **My tok/s are steady values; printed is 0.95 x (Bonnie's convention, adopted
+below).**
+
+**Scout.** Nothing published in 2025 to 2026 changes the arithmetic.
+- *Sparsity.* Prox (arXiv 2607.27591, 2026-07) is whole-neuron FFN skipping ranked by a low-bit proxy, the parked
+  "row skip" of memo-05. Its PPL table (*published*, FP16 weights): Qwen3-8B 60 % FFN sparsity at +4.9 %,
+  Mistral-7B 50 % at +4.1 %, Llama-3-8B +5.6 % already at 40 %, Gemma-3-12B (GeGLU) collapses at 40 %. WINA needs
+  a weight transform (not file-unchanged; its score alone is a side table). R-Sparse adds low-rank compute.
+  SGA-Sparse is trained.
+- *Kernels.* No 4-bit ARM kernel beats repacked `sdot` on a core without i8mm or SME2. The best published NEON
+  kernels run 3-bit types at 1.5 x (Q3_K) to 3 x (IQ3) per weight (ik_llama.cpp, M2 Max). LUT kernels (T-MAC,
+  T-SAR) remain 1 to 2 bit.
+- *Lossless lookahead* (Token Recycling, Cacheback, UniSpec): pays only while byte-bound (batch 2 at r 24:
+  +0.5 to +1.3 tok/s at acceptance 0.4), is negative when compute-bound, and does not stack with sparsity.
+- *Head.* No exact method found; the HNSW head (arXiv 2608.27460) is approximate with −inf misses. Campaign 2's
+  two-stage head is still the tool.
+
+**Stack and price (*estimated*, steady).** I agree with §5.1's weight line. With this repository's kernel costs,
+proxy neuron skipping at s 0.5 and k 1.8 saves 24 % of the token's bytes and **no compute** (FFN compute factor
+1.07); it cuts compute only at k ≤ about 1.5 (factor 0.77 at s 0.6). Stack = no-copy layout, two-stage head,
+`down` columns (K1), whole-neuron skip of `gate` + `up`, then a 4th big core.
+
+| body (multiplied G; GB at Q4_0) | dense r 24 / r 35 | stack, central: r 24 / r 35 / r 35 + 4 cores | stack, optimistic |
+|---|---|---|---|
+| Yi-1.5-6B class (5.80; 3.26) | 7.0 / 9.9 | 8.9 / 10.8 / **12.6** | 9.8 / **13.4** / **13.8** |
+| Llama-2-7B class (6.61; 3.72) | 6.1 / 8.8 | 7.9 / 9.6 / 11.3 | 8.7 / 11.9 / **12.3** |
+| Mistral-7B-v0.3 (7.11; 4.04) | 5.7 / 8.1 | 7.4 / 8.8 / 10.5 | 8.2 / 11.2 / 11.6 |
+| Qwen2.5-7B (7.07; 4.12) | 5.6 / 8.0 | 7.3 / 8.7 / 10.3 | 8.0 / 10.9 / 11.4 |
+| Llama-3.1-8B (7.50; 4.5) | 5.1 / 7.3 | 6.6 / 8.0 / 9.4 | 7.3 / 10.0 / 10.3 |
+
+Printed (x 0.95): the 5.8 G corners are 12.0 / 12.7 / 13.1 and Llama-2's 12.3 is 11.7. Residency is not in these
+rows; each needs C of 3.8 to 5.2 GB (body plus proxy) against R69's central 3.1. **I do not see 12 on a 7.0 G+
+body.** My judgement: P(12) about 0.07 on a 5.8 G body, about 0.02 on a 7.1 G body, P(all three) at most 0.02.
+The lead's prior is 0.05 to 0.15; both stand.
+
+**New proposal.** Skip neurons in groups of four rows of the stock 4x4 repack: kept weights cost k = 1.0, no new
+SIMD kernel, bit-identical at an empty skip list. Reordering rows is exact, so groups can be formed offline from
+co-activation. What decides it is the share of groups skippable inside the budget (prediction before data: 20 to
+35 % in file order, 30 to 45 % clustered; P(≥ 40 % on two models) 0.3).
+
+**Model properties, in order.**
+1. Multiplied weights per token (total minus lookup-only embeddings): about 1 tok/s per 0.5 G near 12. A large
+   **untied** vocabulary is an advantage under the "embeddings included" definition; a tied one is not.
+2. Neuron-skip tolerance, host-screened per candidate; published order Qwen > Mistral > Llama-3, GeGLU fails;
+   Llama-2 has two published values that disagree.
+3. FFN share of bytes (strong GQA helps through attention bytes, not KV).
+4. Quantisation robustness under 4.5 bpw, forced by residency; a mixed file (3-bit on `gate` + `up` only) is the
+   form that does not spend the compute line.
+5. Head type and tying.
+6. Activation: no ReLU-family eligible model (Bonnie's pool confirms).
+
+**Challenge to §5.1's corner.** A low-bit **column** kernel at k ≤ 1.3 to 1.5 is about 2.3 to 3 by the published
+and measured factors (3-bit dense 1.5 x or more, times K1's 1.53 to 1.64, *host*), and K-types have no exact
+column re-layout. I put it under 0.03 per subject and set the mixed file with row skipping beside it.
+
+**Challenge to §2 and §3.1** (details: ebony-levers.md §4.2; the seven checks were written before reading her
+draft).
+- Agreed: her W per token matches mine; ranks 1 and 2 (Yi-1.5-6B, ChatGLM3-6B). I adopt "printed = 0.95 x
+  steady"; §5.1's 5.4 G weight line is 5.17 G in that convention. The three files need one convention.
+- Residency is in none of the prices: at R69's central C 3.1 GB no Q4_0 candidate is resident (smallest 3.33 GB).
+  A column "largest type that fits C, and its price" is missing.
+- The served-quantisation table in bonnie-pool.md §4 has no header row.
+- Llama-2's rank leans on TEAL's own +3.0 % at 40 %; LaRoSA's re-run has +15.4 % at 25 % (*published*, memo-01
+  work §2.2). No top-five model is screened; s is assumed for 26 of 28.
+- Third subject: at 12 the weight line binds, so order by W puts DeepSeek-LLM-7B (6.49 G, 30 layers) ahead of
+  Llama-2 / Granite-7B (6.61 G). Her own r 35 column agrees (10.4 against 10.2).
+- The head penalty is only half a model property: the two-stage head reads a Q6_K head at 4.5 bits (Salamandra
+  about +0.3 tok/s at r 19, *estimated*).
+- One c (39.3 GB/s) and no four-core row: Yi's "k ≤ 1.48" is about 1.3 at c 35 and about 1.85 at four cores.
+- Disk: 1.5 to 2.2 GB free (*host*, her `df`) blocks every host screen of both lists.
+
+**Test list (host, Tom).**
+
+| # | test | closes when |
+|---|---|---|
+| T1 | group-of-four neuron rule (E1's tool), file and clustered order, 20 to 50 % of groups, both batch settings | under 30 % inside +4.5 % on either model, clustered |
+| T2 | proxy ranking with 1- and 2-bit copies (memo-05 E3, never run), `down` input 40 / 50 / 60 % | 1-bit under 40 % on either model |
+| T3 | weight-norm score without the transform (memo-04 work T6, never run) | no 5-point move on either model |
+| T4 | family screen on ranks 1 to 7: E1's `down`-input cells and H3's uniform cells | gives criterion 2 a number; under 50 % `down` input = "no neuron lever" |
+| T5 | per-type gemv cost per weight (Q4_0x4, Q4_K, IQ4_NL, Q3_K, IQ3_S), host, before S2's device rows | 3-bit above 1.3 x in the best kernel closes the all-3-bit corner |
+| T6 | 1-bit proxy kernel (`TBL`) against `sdot`, hot and cold | above 0.35 x per weight → reprice; FFN compute factor ≥ 1.0 closes proxy levers |
+| T7 | multiplied-weight inventory per chosen candidate (real GGUF headers) | no kill; feeds criteria 1 and 3 |
+| T8 | draft-size-1 acceptance on the prompt set, only if R69 reads r under 28 | under 0.30 on either model |
+
+**Try list (device, later; each pre-registered).**
+
+| # | lever | gate | class | *estimated* gain |
+|---|---|---|---|---|
+| Y8 | skip list for groups of four rows, with a row-permutation side file | T1, T2, T6 | bit-identical at an empty list; numerics above | +1.7 to +2.9 tok/s over `down` columns |
+| Y9 | mixed served file (3-bit `gate` + `up`, 4-bit elsewhere) with row skipping | T5, H2, S3 | served-file choice | about 0.3 to 0.4 GB less resident on a 5.8 G body |
+| Y10 | X1 + 3 A78, A55s on proxy and head by weighted chunks | R69, S2 | bit-identical | x 1.13 to 1.25 on compute when compute-bound, 0 when byte-bound |
+| Y11 | campaign 2's two-stage head per subject | none | numerics, +0.01 % (*host*, c2) | +0.1 to +0.3 tok/s at 100 K+ vocabularies |
+| Y12 | batch-2 lookahead | T8, r under 28 | bit-identical if gemm = gemv holds on the phone | +0.5 to +1.3 while byte-bound |
+
 ## 4. Host screens (Tom)
 
 ## 5. Re-plan at 12 tok/s: levers, rounds, kill lines (lead)
