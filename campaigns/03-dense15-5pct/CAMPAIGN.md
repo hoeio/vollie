@@ -4,6 +4,31 @@
 or quoted from campaigns 1 and 2 with its label. The terms were set by the owner on 2026-11-18. Campaign 2 is still
 open and is finished first (R68).
 
+*Correction 2026-11-21: campaign 2 is closed (owner, 2026-11-21; goal met on OLMoE, see campaign 2 CAMPAIGN.md
+Result). The sentence "Campaign 2 is still open and is finished first (R68)" was true until then.*
+
+## Amendment 1 (owner, 2026-11-21): goal 12 tok/s on three dense models
+
+Owner, 2026-11-21: "Change the goal to 12 tok/s, run three different dense 7B models on the same chipset, and the goal
+is met when all three pass. The subject models need to be reselected." This replaces the goal and model rows of the
+terms table below; every other term (file not changed, +5 % budget at `-b 512` and `-ub 1`, F16 x 1.20 ceiling,
+quality gate, metric, claim rule, start state, calibration tables) is unchanged.
+
+| item | before (2026-11-18) | from 2026-11-21 |
+|---|---|---|
+| goal | 15 tok/s, median of 10 plain runs | **12 tok/s**, median of 10 plain runs, **on each of three models** |
+| models | at least two, different families | **exactly three** dense 7B-class models (definition below), **different families**; the campaign goal is met only when **all three** pass the claim rule |
+| subjects | Mistral-7B-Instruct-v0.3, Qwen2.5-7B-Instruct; reserves Llama-3.1-8B, Yi-1.5-6B | **reselected** (memo-06); the earlier set is a candidate pool, not a decision |
+| chipset | Snapdragon 888 (Z Flip 3) | same; all three models on the same phone |
+
+Lead's notes:
+- The goal was lowered by the owner after estimates were known (memo-03: strict dense best about 12 tok/s,
+  *estimated*). It is recorded as an owner decision, not as a result; no estimate is re-scored as a pass.
+- The folder keeps its name `03-dense15-5pct` (files are not renamed); the goal is the one in this amendment.
+- A model that does not reach 12 is reported as a result; it is replaced only by the owner (COMMON_RULES).
+- Selection of the three is done before any of them is measured on the device, by a rule written first
+  (memo-06 section 1), and frozen together with each served file.
+
 ## The question
 
 > Can the same Snapdragon 888 phone run a **dense** 7B-class model, whose file is not changed, at 15 tok/s by

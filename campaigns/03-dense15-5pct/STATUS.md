@@ -3,7 +3,17 @@
 **State (2026-11-18): planning.** Terms set by the owner (CAMPAIGN.md). Campaign 2 is finished first: the owner sends
 R68's reports, the lead scores them and closes campaign 2.
 
+*Note 2026-11-21: Amendment 1 (owner): goal 12 tok/s on each of three dense 7B-class models from different
+families, all three must pass; subjects are reselected (memo-06). The state line above is superseded by this note.*
+
 ## Next actions
+
+**From 2026-11-21 (Amendment 1), first:** joint round 4, memo-06: Bonnie builds and prices the candidate pool,
+Ebony scouts new levers for 12 tok/s and challenges Bonnie's pricing, Tom readies model-generic host screens and runs
+them on the pool, Clyde re-plans rounds and kill lines at 12 tok/s, Annie keeps the books. The lead chooses three
+subjects plus two reserves by memo-06 section 1 (owner delegated: "proceed without asking"). R69 (model-independent
+probe) is still the next device round. The items below are from before the amendment.
+
 
 *Note 2026-11-21: campaign 2 is closed (owner, 2026-11-21). R69 can run (probe kit r29 is uploaded), and owner questions (a) to (d) below are due now.*
 
@@ -58,3 +68,5 @@ Collected here; the owner asked not to be asked until the R68 JSON arrives.
 | 2026-11-19 | 4 (continued) | memo-02 section 8 (*host*): block sparsity is closed as a speed lever on both models (down-only frontier 9 to 10 % of blocks, about 2.5 % of the bytes); the block-major skip-list kernel costs 0.93x per touched weight and is bit-identical; element column sparsity stays open. R69 pre-registered (probe kit r29; probe patch sha256 ac5c7057..., app patch a1c51b22...); kit upload follows, owner runs it after R68. |
 | 2026-11-19 | 4 (continued) | memo-05 *host* results: K1 at TR 128 is bit-identical, k 1.53 to 1.64, open pending phone D2. Y1b is bit-identical, hot 1.47 to 1.51, cold about 2.1 on down. Y1c is not bit-identical; the PPL delta is ±0.02 %. Closed: K2, H5 as a residency lever, gate rule, K1 at TR 512. Row skip is parked. E1: down-only 60 % fits, 70 % does not. The goal is unchanged. |
 | 2026-11-19 | 4 (continued) | Runtime patch 0002-d-rows (sha256 d9d6cdd5...) committed for the kit after R69: D2 kernel rows (K1, Y1b, short-row skip) and D3 lmk/zram/PSI header; D1 design in patches/app-c3/README.md. Knob unset equals stock per-chunk PPL at `-b 512`, `-ub 32`, `-ub 1` on Mistral (*host*). No r30 app patch yet (waits for R69). Owner decision (d), the served file per model, added. |
+| 2026-11-21 | 5 | Owner Amendment 1: goal 12 tok/s (was 15), exactly three dense 7B-class models of different families on the same phone, campaign goal met only if all three pass; subjects reselected. Lead wrote memo-06 section 1 (selection rule) before any pricing and started joint round 4 (Bonnie, Ebony, Tom, Clyde, Annie). CAMPAIGN.md stale campaign-2 sentence corrected. |
+| 2026-11-21 | 5 (hand-offs) | Joint round 4 hand-offs recorded (all open, nothing measured): Bonnie, candidate pool and pricing, memo-06-work/bonnie-pool.md; Ebony, new levers for 12 tok/s and challenge of Bonnie's pricing, memo-06-work/ebony-levers.md; Tom, model-generic host screens on the pool (*host*), memo-06-work/tom-screens.md; Clyde, re-plan of rounds and kill lines at 12 tok/s and a possible R69-amendment-1.md, memo-06-work/clyde-replan.md. |

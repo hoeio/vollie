@@ -23,6 +23,7 @@ Vollie runs a sparse (mixture-of-experts) LLM on a 2021 phone CPU (Samsung Galax
   state: [campaigns/03-dense15-5pct/STATUS.md](campaigns/03-dense15-5pct/STATUS.md). First device round R69 (probe)
   is pre-registered; campaign 2 is closed first when the owner returns R68's report.
   *Correction 2026-11-21: campaign 2 is now closed, so R69 is next.*
+  *Correction 2026-11-21: Amendment 1 (owner, 2026-11-21) changes the goal to 12 tok/s on each of three dense 7B-class models of different families (all three must pass; see [CAMPAIGN.md](campaigns/03-dense15-5pct/CAMPAIGN.md)). The subjects named above (Mistral, Qwen) are a candidate pool; the three subjects are being reselected (memo-06). The "15 tok/s on a dense 7B-class model" text above was true until then.*
 
 ## Reading order (about 30 minutes)
 
