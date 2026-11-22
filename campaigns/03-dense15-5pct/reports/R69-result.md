@@ -192,3 +192,24 @@ is not killed, so the sentence is not stated. The descriptive prices are in §5.
 - **Clock state:** the probe ran at reduced clocks after gate timeouts. c_b and the P2hot X1 cell are the numbers
   most affected. R72's L3 (all threads at once, clocks logged) is the measurement that replaces c_b. It needs a cool
   start, or a longer gate.
+
+## Addendum 2026-11-22: owner's repeat run (descriptive, does not replace the scored run)
+
+The owner ran kit r29 a second time at 17:05 after letting the phone cool
+(`reports/device/r69b-c3probe-r29-2026-11-22T1705.json`, same APK, power saving off, charger out, deep-sleeping
+list on; p2 gate passed this time, x1 gate timed out). R69 stays scored on the first run as pre-registered; a
+repeat is not a best-of choice. Verdicts from the same scorer are unchanged: A KILL (k 3.09), B KILL
+(r/c_b 1.15), C in between (4.2 GB held, 4.6 not), D rank 1 open (S 1.51).
+
+| quantity (*device*) | run 1 (16:46, scored) | run 2 (17:05, cooled) |
+|---|---|---|
+| r, q4x4 X1 + 2 A78 | 28.56 GB/s | 31.30 GB/s |
+| plain read 3 A78 | 28.79 | 31.43 |
+| c_b | 24.46 | 27.22 |
+| q4x4 X1 alone | 11.67 | 15.79 |
+| skip-list k | 1.80 | 1.66 |
+| S (CPU + GPU) | 1.575 | 1.507 |
+| C | 4.2 GB | 4.2 GB |
+
+Reading: cooling raised r and c_b by about 10 %, but c_b stays below r in both runs and the X1 hot cell was off
+its core in both, so the compute ceiling is still not measured at full clocks. R72 must measure it.
