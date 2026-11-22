@@ -17,11 +17,11 @@ llama2-7b)  repo=meta-llama/Llama-2-7b-chat-hf; rev=f5db02db724555f92da89c216ac0
             q4=8eb4952f2592fdfc1288695f6b85aaf48d5628ec5d2c75f9387d3144652ad4bf; S=$G/llama2-7b-q4_0.gguf; s=$q4;;
 deepseek7b) repo=deepseek-ai/deepseek-llm-7b-chat; rev=afbda8b347ec881666061fa67447046fc5164ec8; wg='*.bin'
             f16=29b971949796eec79583562e740d861b66680d8f8782aeeaa88c5e04b45bd5b2
-            q4=f403ddc298020af0fe8dfbbfec9a74cd3f8951938d6c21540054d85f09315118; S=$G/deepseek7b-bos-q4_0.gguf
-            s=f195d24f5e29884bdfe3a6586bff0115c1988956fabd2cf2d07a3505d35da9ec;;
+            q4=f403ddc298020af0fe8dfbbfec9a74cd3f8951938d6c21540054d85f09315118; S=$G/deepseek7b-q4_0.gguf; s=$q4;;
+            # owner 2026-11-22: the BOS metadata change is not allowed; the served file is the unmodified Q4_0
 *) echo "unknown subject $m" >&2; exit 2;;
 esac
-F=$G/$m-f16.gguf; [ $m = deepseek7b ] && F=$G/deepseek7b-bos-f16.gguf   # the F16 reference scored (BOS as served)
+F=$G/$m-f16.gguf
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 say() { echo "$(date '+%F %T') $*" | tee -a $log; }
 fin() { grep -q 'Final estimate' "$OUT/ppl-$1-wiki.log" 2>/dev/null; }
@@ -56,11 +56,6 @@ PY
   R=$G/$m-requant-q4_0.gguf; "$B/llama-quantize" $G/$m-f16.gguf $R Q4_0 8 >> $log 2>&1
   cmp -s $R $G/$m-q4_0.gguf && [ "$(sha $R)" = $q4 ] || { say "re-made Q4_0 differs from $G/$m-q4_0.gguf: stop"; exit 1; }
   rm -f $R; say "re-made Q4_0 equals $G/$m-q4_0.gguf (sha256 $q4)"
-  if [ $m = deepseek7b ]; then   # same one-field BOS change as the served file (memo-08-work/clyde-r72-plan.md §5)
-    venv-c3/bin/python -E -s llama.cpp-c3/gguf-py/gguf/scripts/gguf_set_metadata.py $G/$m-f16.gguf tokenizer.ggml.add_bos_token true --force >> $log 2>&1
-    mv $G/$m-f16.gguf $F
-    say "BOS: served vs kept Q4_0 differ in $(cmp -l $G/deepseek7b-q4_0.gguf $S | wc -l | tr -d ' ') byte(s); F16 with BOS $F sha256 $(sha $F)"
-  fi
 fi
 
 if [ $need_f16 = 1 ]; then

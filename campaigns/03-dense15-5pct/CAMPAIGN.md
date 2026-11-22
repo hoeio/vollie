@@ -111,3 +111,16 @@ memo-09: a small next-token guess head, trained on a host, used only to propose 
 5. R-numbers continue from campaign 2's last entry.
 
 *Added 2026-11-19: RWKV-7 G1 is not a subject (owner, 2026-11-19): "There is no need to include RWKV-7 G1; the subject models and their reserves are enough."*
+
+*Owner decisions 2026-11-22 (after memo-10):* "BOS 설정은 허용하지 않습니다. HoeioUser/vollie3에 올리는 걸 허용합니다. 다만,
+실제 돌파구가 나올 때까지 R73을 허용하지 않겠습니다. 진전이 확실한 것들에만 테스트를 허용합니다." Lead's reading:
+
+- **DeepSeek is served unmodified:** `deepseek7b-q4_0.gguf` (sha256 `f403ddc2…5118`), not the one-field BOS copy
+  (`f195d24f…a9ec`). The freeze, budget and every later number use that file as it is. Host values measured on the BOS
+  copy stay as history and are not reused for the budget. A runtime that inserts BOS on its own is not used either,
+  unless the owner allows it.
+- **Public hosting:** the three frozen files may go to a new public repo `HoeioUser/vollie3`, one folder per model with
+  the publisher's licence. Upload only after the freeze checks pass and when a round needs the files on the phone.
+- **Device rounds are held:** R73 (the first real decode) does not run until there is a real breakthrough. A device test
+  is proposed only for a lever whose progress is certain on host evidence, with that evidence named in its
+  pre-registration. Host research, host checks and the freeze continue.
