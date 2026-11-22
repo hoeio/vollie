@@ -80,7 +80,7 @@ memo-11 Ebony 0.002 to 0.003).
 **Next actions.**
 1. Let the S3 freeze finish (about 12 to 21 h serial, *estimated*, memo-10-work/clyde-freeze.md); record the results when the logs arrive.
 2. Host test E-T3 and remaining host tests from memo-11; no device request until a breakthrough.
-3. Owner to tag `prereg-R72` (tags are the owner's).
+3. ~~Owner to tag `prereg-R72`~~ *Correction 2026-11-22 (lead): done; `prereg-R72` (364c438) and `prereg-R72-amendment-1` (dc19d32) exist on the remote, created by the owner and checked by the lead.*
 4. The R73 plan stays a draft (memo-10-work/clyde-r73-plan.md).
 
 ## Open owner decisions
