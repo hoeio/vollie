@@ -108,3 +108,8 @@ Every §3 row is marked hit or miss against its 80 % band by the scorer:
 The probabilities in §3 (P(3.4 held) and so on) and the X2 "prints all lines" row are scored by hand from the P1
 table and the X2 lines. Clocks: cells with cpu4 ≥ 2,419 and cpu7 ≥ 2,841 MHz at both readings, counted over every
 line with `mhz=`; a hit if at least 80 %.
+
+*Correction 2026-11-22 (lead, after the data):* the reading in §1 that "a worker left its cpu" excludes the cell from
+every rule input is withdrawn. R69 §4's void list has no such rule, so excluding the cell would add a void. The cells
+are used as written, and their cpu_ok and clocks are stated beside each number (R69-result.md §1). The scorer was
+changed the same way.

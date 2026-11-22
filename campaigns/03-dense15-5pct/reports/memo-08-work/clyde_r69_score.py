@@ -22,7 +22,7 @@ def cell(p, kern, cores):
     """GB/s of a p2 cell; None if missing or a worker left its cpu ('*')."""
     for f in p['p2']:
         if f.get('kern') == kern and f.get('cores') == cores:
-            return num(f['gbs']) if okmark(f) == '' else None
+            return num(f['gbs'])  # strict R69: cpu_ok < n is a condition reported beside the number, not a void (correction 2026-11-22)
     return None
 
 
@@ -60,23 +60,23 @@ def score(p):
     r = cell(p, 'q4x4', '7,4-5')
     L.append('r source: %s' % ('X1 + 2 A78 (7,4-5)' if r is not None else '3 A78 (4-6), fallback of R69 §3'))
     r = r if r is not None else cell(p, 'q4x4', '4-6')
-    hot = {f['core']: num(f['ns_per_w']) for f in p['p2hot'] if okmark(f) == ''}
+    hot = {f['core']: num(f['ns_per_w']) for f in p['p2hot']}
     # R69 §3 bands are cycles per weight; the line prints ns. cycles = ns x the cell's own cluster clock (GHz), the mean
     # of the before and after readings of field mhz=<cpu0>/<cpu4>/<cpu7>->...; A55 uses cpu0, A78 cpu4, X1 cpu7.
     cyc = {}
     for f in p['p2hot']:
-        if okmark(f) == '' and '->' in f.get('mhz', ''):
+        if '->' in f.get('mhz', ''):
             i = {'a55': 0, 'a78': 1, 'x1': 2}[f['core']]
             ghz = statistics.mean(num(x.split('/')[i]) for x in f['mhz'].split('->')) / 1000
             cyc[f['core']] = num(f['ns_per_w']) * ghz
     cb = 0.87 * 0.5625 * (1 / hot['x1'] + 2 / hot['a78']) if 'x1' in hot and 'a78' in hot else None
     q3, rd3 = cell(p, 'q4x4', '4-6'), cell(p, 'read', '4-6')
-    col = {f['kern']: num(f['ns_per_touched_w']) for f in p['p2col'] if f.get('cores') == '4' and okmark(f) == ''}
+    col = {f['kern']: num(f['ns_per_touched_w']) for f in p['p2col'] if f.get('cores') == '4'}
     kcol = col['col'] / col['stock'] if 'col' in col and 'stock' in col else None
     kskip = col['skip'] / col['stock'] if 'skip' in col and 'stock' in col else None
-    x1 = {f['streams']: num(f['gbs']) for f in p['x1'] if okmark(f) == ''}
+    x1 = {f['streams']: num(f['gbs']) for f in p['x1']}
     x2 = {f['kern']: num(f['gbs']) for f in p['x2']}
-    tog = [num(f['sum_gbs']) for f in p['x1gpu'] if f.get('gpu_kern') == 'read' and okmark(f) == '']
+    tog = [num(f['sum_gbs']) for f in p['x1gpu'] if f.get('gpu_kern') == 'read']
     S = tog[0] / q3 if tog and q3 else None
     steps, C = p1_steps(p)
     ratio = lambda a, b: a / b if a is not None and b else None
