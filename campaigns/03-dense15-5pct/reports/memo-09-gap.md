@@ -280,3 +280,289 @@ R73 (first real decode) is unchanged and still first on the phone.
 
 Not done: no host run, no device run, no review by Ebony, no Hexagon SDK document read first-hand, and the Medusa
 first-head accuracy is from memory.
+
+## 10. Ebony review (2026-11-22)
+
+Reviewer: Ebony (`claude-fable-5-2`). Appended, not committed. Nothing here is measured by me. Prices are *estimated*
+with Bonnie's own model (`memo-09-work/bonnie_gap.py`, re-typed and self-checked at 6.90 / 6.21 / 6.22); source code
+statements are read from `lab/llama.cpp-base` (base `620d2225c`); web sources carry their read status in §10.8.
+§1 to §9 above are Bonnie's and are unchanged; the header's "Ebony has not reviewed this yet" was true until this
+section.
+
+### 10.1 Verdict of the review
+
+- **I agree with the memo's verdict**: no priced stack reaches 12 on any subject. My centres are lower than hers on
+  L, M and G, so my best stack is further away (9.9 / 9.0 / 8.9 with the trained head allowed, against her
+  11.7 / 10.6 / 10.6).
+- **P(all three at 12): about 0.003** (my judgement; range 0.001 to 0.01; Bonnie 0.005). P(Yi alone): about 0.03.
+  We agree in substance.
+- **Lookahead (L) is worth its two free or cheap tests, but I price it at about half of her centre**
+  (−8 to −10 ms against −18 to −21), because (a) the stock runtime does not give a cheap batch of two, (b) kB at the
+  clock caps a sustained decode runs under is nearer 1.2 than 1.08, and (c) p on a 32-token official run is nearer
+  0.20 than 0.25.
+- **GPU (G): I move to her g band** (8, 4 to 15) on two pieces of evidence I had not used, but I add two costs she
+  left out (dispatch latency, the GPU's copy of the weights), which take about 5 ms off her centre.
+- **Two things were missed that change the work order, not the verdict:** campaign 1 already built and ran the
+  OpenCL backend on this phone (so T3 starts from that build, by the start-from-Vollie-1 rule), and R69 Rule B's
+  written inside-kill for a drafted second token is a match rate of 0.4, not 0.20 (§10.6).
+
+### 10.2 Lookahead, the code question: does a batch of two share one weight read? (§8 item 1)
+
+Read in `lab/llama.cpp-base` (base `620d2225c`), arm64:
+
+| path | what happens at 2 positions | shared read? | compute against one gemv |
+|---|---|---|---|
+| ggml repack (`repack.cpp`, `forward_mul_mat_one_chunk`, lines 4637 to 4646) | "If there are more than three rows in src1, use gemm; otherwise, use gemv": the gemv runs **once per position over the whole chunk** | **no**, the chunk is traversed twice. A chunk is rows ÷ (4 × threads): about 0.6 MB (4096-row matrices) to 1.5 MB (11008-row and `down`) at 4 threads, against an A78 L2 of 512 KB, so the second traversal comes from L3 or DRAM | 2.0 × |
+| KleidiAI (`kleidiai/kleidiai.cpp`, lines 850 to 975; pinned v1.31.0) | `use_gemv` needs m == 1; m = 2 goes to the gemm kernel `qsi8d32p4x4_qsi4c32p4x4_16x4_neon_dotprod` over column chunks | **yes**, one traversal per chunk for both positions | **about 2.3 to 2.6 ×** (*estimated* from the assembly): fewer than 16 rows run in 4-row blocks, and the block does four `sdot` per weight vector whatever m is; only the stores depend on m |
+
+- The assembly I read is the KleidiAI copy under `lab/llama.cpp-c1h6/build-kai/_deps` (its version against v1.31.0
+  is not checked). Tom to confirm on the c3 tree.
+- So Bonnie's recollection is right for the ggml path, and the KleidiAI path the app runs shares the read but pays
+  for four rows. **Neither stock path gives her 1.45 ×.** The dedicated two-vector kernel in T2 is needed; it is
+  not optional.
+- Greedy identity is not given either: at m = 2 the KleidiAI path packs and quantises the activations through the
+  gemm packer and uses a different kernel than at m = 1. Position 1's logits at batch 2 may differ in the last bits
+  from batch 1, and campaign 1's R47 showed that last-bit changes can change greedy text. CAMPAIGN.md asks for
+  identical greedy output, so the new kernel must keep the gemv's per-column operation order (her label), and a
+  host check must show it (T1b below).
+- A fallback that is bit-identical by construction and needs no new kernel: keep the two gemv calls but cut the
+  chunk to fit L2 (about 128 rows of a 4096-column matrix), so the second call reads from L2. Compute is 2.0 ×, so
+  it pays only at full clocks with the X1 on-core. It is a third arm of T2, not a lever I would price.
+
+### 10.3 Lookahead, kB (§8 item 1)
+
+- **1.45 × per weight for a dedicated 4x2 kernel: agreed (band 1.40 to 1.60).** My count per 4-row × 32-column
+  block: about 26 vector operations for the gemv, of which 8 `sdot` and 3 to 4 float operations repeat for the
+  second vector. The A78 measured 0.118 cycles per weight (*device*, R72 L3: 2,419 MHz ÷ 20.5 G weights/s), which
+  is 15 cycles per block against a two-pipe floor of 13, so the kernel is near the pipe floor and the extra 12
+  operations cost about 6 cycles: 1.40 ×.
+- **The X1 prediction (0.078 cycles per weight) is usable as an upper bound only.** It is plausible on four vector
+  pipes, but there is no on-core hot X1 cell in R69 or R72. kB must be priced with and without it.
+- **kB is not max(bus, compute).** Stock already loses to the bus rate while compute has slack: 26.0 GB/s at full
+  clocks and 23.3 to 25.6 GB/s in the capped L4 arms, against a 29.9 GB/s read (*device*). A fit
+  time = max(bus, compute) + 0.25 × min(bus, compute) reproduces both (26.0 and 24.7 GB/s; *estimated*, two points,
+  and it leans on the unmeasured X1). With it, a 1.45 × batch of two gives:
+
+  | state | compute rate assumed | kB |
+  |---|---|---|
+  | full clocks, X1 on-core | 55 → 50 GB/s (her c, less 10 %) | 1.06 |
+  | L4 caps (A78 1,555 MHz), X1 on-core | 35 GB/s | 1.22 |
+  | L4 caps, X1 thread on a small core | 24 GB/s | about 1.5 |
+
+- A real decode is sustained, and the L4 arms are the nearest thing we have to it; Llama-2 and DeepSeek ran at
+  1,555 MHz throughout. The batch of two also does 1.45 × the arithmetic in the same time, which can only lower the
+  cap. **My kB centre is 1.15 (1.05 to 1.30); hers is 1.08 (1.00 to 1.20). Split, decided by T2**, which must run
+  long enough to show the cap (60 s or more per arm, not a 2-minute total).
+
+### 10.4 Lookahead, p for one model-free guess (§8 item 2)
+
+What the papers give for 7B chat (all *published*; none reports a one-guess number):
+
+| source | number | read |
+|---|---|---|
+| Token Recycling (arXiv 2408.08696v3), Vicuna-7B, Spec-Bench | mean accepted tokens 2.70 with an 81-node tree; **no one-node or k = 1 result**; breadth and depth ablations only as figures | full text |
+| same table: PLD / Lookahead / REST | mean accepted tokens 1.75 / 1.64 / 1.84; speed 1.53 / 1.27 / 1.22 ×; on the MT-bench category 1.53 / 1.42 / 1.37 × | full text |
+| LogitSpec (arXiv 2507.01449v2, preprint) | PLD has a draft at all in **63.9 %** of steps (Vicuna-7B, Spec-Bench); PLD mean accepted tokens 1.73; "in over 50 % of decoding steps the next-next token is within the top-60 entries of the last logit" | first 100,000 characters |
+| N-Grammys (arXiv 2411.03786; NeurIPS 2024 workshop), Mistral-7B | the greedy token "will seldom match" the top-1 of the model-derived unigram or bigram, but is often in their top-k; 2.13 tokens per call on MT-bench only at 10 rows × 10 tokens; top-25 bigram rows give about +50 % tokens per call at w = 2 | text; the k = 1 values are in figures only |
+| campaign 1 R16 | prompt lookup 1.20 to 1.27 tokens per evaluation on the official prompt, drafts longer than one | *device* / *host* |
+
+- **Bounding the first token from PLD (*estimated*):** 0.73 extra tokens per step over 0.639 of the steps is 1.14
+  accepted tokens per draft; with a constant per-token acceptance a, a ÷ (1 − a) = 1.14 gives a = 0.53, so one PLD
+  guess is right in about 0.639 × 0.53 = **0.34** of steps on Spec-Bench with 1,024-token answers. That is an upper
+  reading for us: our official run is 32 new tokens, where a prompt-lookup or self-successor table has little
+  history. R16's 1.20 to 1.27 with multi-token drafts puts the first-token rate at or below 0.20 to 0.27.
+- A model-derived bigram alone (the "self-successor from weights" idea) is the weak source by N-Grammys' own words;
+  it needs many rows, which is R20's regime. It is useful only as the fallback when lookup finds nothing.
+- **My p: 0.20 on the official 32-token run, 0.25 to 0.30 on a 128-token set; band 0.10 to 0.35.** Bonnie's 0.25
+  (0.15 to 0.40) overlaps it. **Agreed as a band; her centre is the optimistic half on the official prompt.** T1
+  is free and decides.
+- Two guess sources to add to T1, both free:
+  - (e) **last-logit rescoring** (LogitSpec's observation): the candidates from lookup and tables are ranked by the
+    logits the previous pass already produced; without a candidate, no guess is made and the pass runs at batch 1
+    (so a miss costs nothing on those steps).
+  - (f) a **3- or 4-gram successor table counted from the model's own greedy continuation of the calibration
+    text**. No training; it is a calibration-derived table in the sense of the owner's 2026-11-19 decision.
+- "No guess, then batch 1" matters for the price: with a confidence gate the cost kB is paid only on steps that
+  have a candidate. T1 should print coverage and accuracy separately, as PLD's 63.9 % shows they differ.
+
+**My price for L** (p 0.22, kB 1.15): **−8.4 / −9.5 / −8.9 ms** (Yi / Llama-2 / DeepSeek), 7.3 / 6.6 / 6.6 tok/s.
+Low corner (p 0.15, kB 1.30): +15 to +17 ms, a loss. P(it delivers Bonnie's centre) 0.15; P(a net gain over
+5 ms on all three, on the device) 0.35.
+
+### 10.5 Trained guess head (M): the source of 0.60 (§8 item 3)
+
+- **Found.** Together AI's Medusa post (2023-09-11; read): "Medusa heads achieve a top-1 accuracy rate of
+  approximately 60 % for predicting the 'next-next' token" and "the top-5 accuracy soars to over 80 %". Vicuna
+  models, backbone frozen ("only the Medusa heads are fine-tuned"), trained one epoch on ShareGPT, "a few hours to
+  a day ... on a single A100-80G". Each head is "a single layer of feed-forward network, augmented with a residual
+  connection".
+- **Not in the paper.** arXiv 2401.10774v3 was read to the end (108,599 characters): no top-1 or top-5 head
+  accuracy, only acceleration rates (Medusa-2: 3.47 tokens per step on Vicuna-7B with a tree) and Medusa-1's
+  2.18 × wall-clock. So 0.60 rests on a blog sentence.
+- **Why 0.60 does not transfer as written:**
+  - It is trained on chat data and scored on chat data. T5 trains on wikitext-2 train (about 2.4 M tokens of
+    encyclopedia text) and scores on chat prompts. I expect 0.35 to 0.50 there (judgement).
+  - Reaching 0.6 most likely needs the model's own chat outputs as training text (Medusa's self-distillation), which
+    is a second calibration text and widens owner question (e).
+  - It is accuracy against dataset text under teacher forcing, not against the model's greedy output. That
+    difference should help us a little.
+- **The extra head is not a flat +5 ms.** Per pass the guess needs one more pass through the vocabulary matrix
+  (the residual block itself is 16.8 M weights, under 1 ms). Per committed token that is head ÷ (1 + p): 5.7 /
+  2.8 / 8.7 ms at p 0.60. A wrong guess only costs speed, so the guess may use an unverified screen (half the
+  rows): about 3.8 / 2.4 / 5.3 ms. Her +5 is fair for Yi, kind to DeepSeek by a few ms.
+- **My price for M** (p 0.45, kB 1.15, screened guess head): −23.3 / −29.1 / −23.8 ms; hers −37.2 / −43.7 / −40.5.
+  **Split on p (0.45 against 0.60) and kB.** P(owner allows and it delivers her centre) about 0.10.
+- **Rule reading (§8 item 5): agreed, it is an owner question.** The 2026-11-19 decision names thresholds and
+  hot-first orders; a head is weights fitted by gradient descent, which sits nearer to "a different file or model".
+  I read counted tables (10.4 f) as covered by the decision as written; the lead should confirm that too.
+- A cheaper T5 first: a closed-form ridge map from the last hidden state to the next-next token's embedding, fitted
+  on hidden states that T1's replay already produces (minutes on the host, no GPU). If its top-1 is under 0.35,
+  a one-block head on the same text is unlikely to reach 0.50. I recall published probes of this kind reaching
+  under 0.5 on a 6B model (Future Lens, 2023: *recalled*, not re-read today).
+
+### 10.6 Rule B: the written kill line (not in the memo)
+
+- R69's pre-registration (§ Rule B, with amendment 1 item 3) says of the reopened item: "killed inside if the match
+  rate is under 0.4 on any of the three subjects". Rule B scored KILL, so that item never opened.
+- Memo-09's T1 closes L at p < 0.20. That is a new, softer line for the same quantity. Bonnie says she does not ask
+  to re-score Rule B, and I agree the cost model has changed for stated reasons (a shared unpack at 1.45 × instead
+  of 2 ×; R72's finding that stock is bus-bound; a fourth core). But the reopening must be written as such by the
+  lead in a new pre-registration, with why 0.4 no longer binds, before T2 runs on the phone.
+- My proposal for the line: close L when the measured pair gives (1 + p) ÷ kB < 1.05 on any subject (that is a
+  predicted body gain under 5 %), in place of separate lines for p and kB. With kB 1.15 it needs p ≥ 0.21; with kB
+  1.08, p ≥ 0.13. **Recorded as a split**: Bonnie's lines are p < 0.20 or kB > 1.20, each alone.
+
+### 10.7 GPU lane (G) (§8 item 3) and Hexagon (H) (§8 item 4)
+
+**G: I accept g = 8 (4 to 15) as the band; her P of 0.25 stands.** Why I move from 5 (3 to 10):
+- Qualcomm's own table (IWOCL 2025 slides, read from the PDF text): Llama-2-7B Q4_0 token generation 12 tok/s on
+  an Adreno 750, 15 on an 830, 18 on X Elite. At 3.6 GB per token that is about 43 GB/s on the 750 (*estimated*
+  from *published*): the upstream gemv is a memory-bound kernel on a premium part. The same slides say of our
+  class "Support selected Adreno 600 devices (like the Qualcomm Robotics RB5)" and "Ported to old devices:
+  performance being optimized (Adreno 600 series)". A 660 with roughly a third of the 750's arithmetic would land
+  near 14 GB/s alone if the 750 were at its compute limit.
+- **Campaign 1 ran the OpenCL backend on this phone** (`reports/02_methods.md` row 13: "measured on this phone
+  (Qwen): writes ~35 % slower than CPU ... runs with workarounds"; `reports/01_vollie_vs_llamacpp.md`: "OpenCL
+  (self-built for Adreno 6xx) opt-in"; whole-model runs 0.7 to 2.9 tok/s, *device*). So the build risk is lower
+  than either of us priced, and a whole model at 0.65 × the CPU is not a 1.88 GB/s kernel. I do not know that run's
+  model size, file type or driver state; Tom should read the sibling `vollie` build script before T3's bands are
+  written. Its conclusion ("always below the CPU") stands for GPU alone and is not what a lane tests.
+- The driver date `05/11/25` and compiler E031.38.01.08: the upstream document's "recent driver and compiler"
+  wording has no version in it, and I found no A660 or E031.38 number today (two searches). A community patch for
+  the Adreno 650 exists (subgroup size hard-coded to 128, `-Dcl_khr_subgroups`, the OpenCL 3.0 version query
+  skipped; no speed given). PR numbers #30176 and #26476 in R72 §11 are from my earlier reading and were not found
+  again today; treat them as unverified.
+
+**Two costs missing from her G price:**
+- **Dispatch.** She prices 64 dispatches at 3 ms for G and 6.4 ms for H. An Adreno enqueue, flush and wait is not
+  cheaper than a FastRPC call; 0.1 to 0.2 ms each is 6 to 13 ms. With 8 ms: **G = −11.8 / −15.1 / −13.5 ms**
+  (hers −16.8 / −20.1 / −18.5). T3 must print the round trip per dispatch at lane-shaped sizes.
+- **Memory.** The upstream kernel reads its own flattened copy of the weights. A lane at g 8 holds about a quarter
+  of the body (0.8 to 1.0 GB) in GPU buffers that cannot be evicted. She charges this to H and not to G. It is
+  neutral only if the split is static and the CPU never touches the lane's rows (file-backed: never faulted in;
+  repacked: not repacked). Yi's anonymous margin is 0.04 GB and anon42 was not held, so T3 needs a residency arm
+  with the GPU buffers allocated.
+
+**H: agreed, last, P 0.10.** On reachability I found no primary source for a retail Samsung SM8350, like her.
+- For: Qualcomm's SDKs ship unsigned skeleton libraries and (QAIRT 2.33 notes) load the HTP backend into an
+  unsigned PD by default; a forum report says the DSP runtime is available on a Galaxy S22 Ultra; an Android kernel
+  commit restricts untrusted apps to unsigned-PD offload, which implies that route is the intended one (all three:
+  search summaries).
+- Against: a forum report of an 888 device failing `isRuntimeAvailable` on Android 12 with SNPE 2.5; the Pixel
+  SELinux block (search summaries). Qualcomm's forum pages now redirect to a login site, so none was read first-hand.
+- I put P(reachable) at 0.6, a little above her 0.5; it does not move the price. The cDSP's own DRAM read rate: not
+  found. T4 as she wrote it is the right zero-cost check.
+
+### 10.8 What else could close the gap (§8, "anything missed")
+
+Nothing I found closes 60 to 83 ms. What I can add is small or diagnostic:
+
+| item | what | price | status |
+|---|---|---|---|
+| DDR clock readout | The big cores ran capped at 1,555 MHz in L4. If the DDR clock follows the CPU clock down (BWMON or a static table), r in a real decode is below the 29.9 GB/s read at full clocks. This rider (memo-08 D3) and the THP rider were **not built into r32 or r33** (`tom-r32-build.md` line 90) | diagnostic; if DDR sits a step low, r 10 to 25 % (memo-08 §2.4, P 0.25) | carry into the R73 decode kit |
+| confidence-gated lookahead | batch 2 only when a candidate exists (10.4) | removes the miss cost on uncovered steps; inside L | T1 prints coverage |
+| GPU share | the GPU port read 25.8 GB/s beside the CPU (*device*); a lane at g 8 uses a third of it. Every GB/s of GPU arithmetic above 8 is worth about −2 ms on Yi | inside G's band | T3 |
+| lookahead against byte cuts | L spends the compute slack; K1-type exact byte cuts spend the same slack and are compute-bound. They do not stack. C5 and C7 (numerics, fewer bytes and less compute) do | no new price | note for the stack table |
+
+Searched and not found today: a one-guess (chain of one) number for any training-free method on 7B chat; an
+Adreno 660 token rate with the upstream kernels; unsigned PD on a retail Samsung 888.
+
+### 10.9 Per-lever verdicts
+
+| lever | Bonnie | Ebony | verdict |
+|---|---|---|---|
+| L, kernel cost 1.45 × | 1.45 | 1.40 to 1.60 | **agreed**; a new kernel is required (neither stock path gives it) |
+| L, kB | 1.08 (1.00 to 1.20) | 1.15 (1.05 to 1.30) | **split**; T2, sustained |
+| L, p | 0.25 (0.15 to 0.40) | 0.20 official, 0.25 to 0.30 set (0.10 to 0.35) | **agreed band**, centres differ; T1 |
+| L, price | −18.0 / −20.7 / −19.4 | −8.4 / −9.5 / −8.9 | **split** |
+| L, kill line | p < 0.20, or kB > 1.20 | (1 + p) ÷ kB < 1.05; and Rule B's 0.4 needs the lead's written reopening | **split** |
+| M, p | 0.60 | 0.45 (0.35 to 0.60); 0.60 is a blog figure on in-domain chat | **split** |
+| M, price | −37.2 / −43.7 / −40.5 | −23.3 / −29.1 / −23.8 | **split** |
+| M, rule | owner question (e) | owner question (e) | **agreed** |
+| G, g | 8 (4 to 15) | 8 (4 to 15), moved from 5 | **agreed** |
+| G, price | −16.8 / −20.1 / −18.5 | −11.8 / −15.1 / −13.5 (dispatch 8 ms) | **split** on dispatch |
+| G, P | 0.25 | 0.25 | **agreed** |
+| H | −6.8 / −9.0 / −7.9, P 0.10, last | same | **agreed** |
+| C7, C5, O, clocks | as §4 | not re-priced | not reviewed |
+| P(all three at 12) | 0.005 | 0.003 | **agreed** in substance |
+
+My stacks, same model (ms, change, tok/s; *estimated*):
+
+| stack | Yi | Llama-2 | DeepSeek |
+|---|---|---|---|
+| L (p 0.22, kB 1.15) | 129.3 (−8.4) → 7.3 | 143.5 (−9.5) → 6.6 | 143.7 (−8.9) → 6.6 |
+| G (g 8, dispatch 8) | 125.8 (−11.8) → 7.6 | 137.9 (−15.1) → 6.9 | 139.2 (−13.5) → 6.8 |
+| L + G | 122.2 (−15.4) → 7.8 | 134.2 (−18.8) → 7.1 | 135.5 (−17.1) → 7.0 |
+| L + G + C7 + O 5.2 + C5 | 108.4 (−29.2) → 8.8 | 121.5 (−31.5) → 7.8 | 118.7 (−34.0) → 8.0 |
+| M (p 0.45) + G + C7 + O 5.2 + C5 | 96.1 (−41.6) → 9.9 | 105.1 (−47.9) → 9.0 | 106.8 (−45.9) → 8.9 |
+
+### 10.10 Merged lists for Tom (through the lead)
+
+**Tests** (T1 to T5 are Bonnie's, with my additions marked +):
+
+| # | test | where | cost | closes when |
+|---|---|---|---|---|
+| T1 | Guess accuracy p, arms (a) to (d) as §7.1. **+** arms (e) last-logit rescoring and (f) counted 3/4-gram table from the calibration text; **+** print coverage and accuracy separately, and the official 32-token run apart from the 128-token set; **+** all three subjects if the files are frozen, else Yi and Llama-2 | host | one script on replayed greedy decodes; free | lines in dispute (10.6): Bonnie p < 0.20; Ebony joint with T2; the lead writes the line before T2 |
+| T1b | **+** Batch-2 identity: position-1 logits at batch 2 against batch 1, bitwise, on the stock KleidiAI path and on the new kernel; greedy text on the prompt set | host | minutes | not identical on the new kernel → Y1 is not exact as built |
+| T2 | Batch-2 pass cost kB on `4-7`, subject-shaped layers. **+** three arms: stock ggml layer cell at 2 positions (no new code; I expect 1.3 or more), the new 4x2 kernel, two gemv calls with L2-sized chunks. **+** each arm 60 s or more, with per-thread placement, caps and the four-way label | device, model-free | one kernel; about 6 phone-minutes | new-kernel kB > 1.20 sustained, or the joint line of 10.6 |
+| T3 | GPU Q4_0 gemv, upstream kernel, alone and beside ggml on `4-7`, with a batch-2 call. **+** start from campaign 1's OpenCL build and its workarounds; **+** round trip per dispatch at lane shapes; **+** a residency arm with the lane's GPU buffers allocated (majflt, MemAvailable, read rate, as anon34 / anon42) | device | as planned, plus two cells | build fails, or g < 7, or sum < 1.15 × CPU alone (R72 §11 draft); **+** or 64 × round trip > half the lane's gain; **+** or the residency arm is not held |
+| T4 | Hexagon reachability, no SDK (as §7.1) | device | a few lines | any step fails → H closed |
+| T5 | Next-next head ceiling, only if the lead asks (e). **+** first the closed-form ridge probe on T1's hidden states; **+** score on held-out chat prompts, train text stated | host | minutes, then hours | ridge top-1 < 0.35, or head top-1 < 0.50 → M closed before the owner is asked |
+| T6 | **+** Riders that missed r32 and r33: DDR / bus devfreq nodes readable without root, and the THP mode, logged during the R73 decode with the clock caps | device, in the R73 kit | a few lines | DDR below its top step in 20 % or more of samples → memo-08 §2.4 opens |
+
+**Try list** (build only after its test; every item env-gated, off by default, model-generic, measured on at least
+two subjects):
+
+| # | lever | after | label | price, Bonnie | price, Ebony | P |
+|---|---|---|---|---|---|---|
+| Y1 | Lookahead decode, batch 2, new 4x2 Q4_0 kernel, confidence-gated guess, KV drop on a miss, lazy second head | T1, T1b, T2; the lead's written reopening of Rule B | bit-identical output | −18.0 / −20.7 / −19.4 | −8.4 / −9.5 / −8.9 | 0.30 / 0.15 for her centre |
+| Y2 | GPU lane on a static row share, upstream kernel, the CPU never touching the lane's rows | T3 | numerics (fp16 scales), one budget | −16.8 / −20.1 / −18.5 | −11.8 / −15.1 / −13.5 | 0.25 |
+| Y3 | Head screen C7; O trimming | none; R73 for O | numerics; none | −4.5 / −2.2 / −6.9; −2.8 | not re-priced | 0.35; 0.6 |
+| Y5 | Trained guess head on Y1 | T5, owner (e) | exact output; new sidecar | −37.2 / −43.7 / −40.5 | −23.3 / −29.1 / −23.8 | 0.35 given (e) / 0.10 for her centre |
+| Y4 | Hexagon lane | T4, and G closed for a reason H does not share | bit-identical intended | −6.8 / −9.0 / −7.9 | same | 0.10 |
+
+Order (agreed with her §7.2): T1 and T1b on the host now; R73 (first real decode) stays first on the phone and
+carries T6; T2 and T4 ride in the kit that carries T3.
+
+### 10.11 Sources of this review (read 2026-11-22)
+
+- Together AI, Medusa post, 2023-09-11 (read): <https://together.ai/blog/medusa>
+- Medusa, arXiv 2401.10774v3 (read in full, two parts): <https://arxiv.org/html/2401.10774v3>
+- Token Recycling, arXiv 2408.08696v3 (read): <https://arxiv.org/html/2408.08696v3>
+- LogitSpec, arXiv 2507.01449v2, preprint, v3 dated 2026-04-29 (first 100,000 characters read):
+  <https://arxiv.org/html/2507.01449v2>
+- N-Grammys, arXiv 2411.03786, PMLR 262 (text read through ar5iv; figures not readable):
+  <https://ar5iv.labs.arxiv.org/html/2411.03786>
+- Qualcomm, "Adreno optimized OpenCL backend for llama.cpp", IWOCL 2025 slides (PDF text extracted locally):
+  <https://www.iwocl.org/wp-content/uploads/iwocl-2025-hongqiang-wang-lamacpp-backend-update.pdf>
+- Community Adreno 650 patch for the OpenCL backend (read; no date on the page):
+  <https://github.com/garagehq/nightcrawler/blob/main/patches/llama-cpp-opencl-adreno650.patch>
+- Search summaries only: Qualcomm developer forum threads on the DSP runtime (S22 Ultra; Snapdragon 888; they now
+  redirect to a login page), QAIRT 2.33 notes, the Android kernel FastRPC commit, Check Point 2021, llama.cpp
+  `docs/speculative.md` copies.
+- Repository: `lab/llama.cpp-base/ggml/src/ggml-cpu/repack.cpp` and `kleidiai/kleidiai.cpp` (base `620d2225c`),
+  `ggml-cpu/CMakeLists.txt` line 653 (KleidiAI v1.31.0), `prereg/R69-probe-read-rate-capacity-gpu-device.md` and
+  `R69-amendment-1.md` (Rule B), `reports/02_methods.md`, `reports/01_vollie_vs_llamacpp.md` (campaign 1 OpenCL).
+
+Not done: no host run, no device run; the KleidiAI assembly was read in an older lab checkout; the campaign 1
+OpenCL run's model and file type were not looked up; Future Lens and the two llama.cpp PR numbers were not re-read.
