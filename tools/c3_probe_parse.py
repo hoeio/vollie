@@ -1,5 +1,6 @@
 # Campaign 3: tabulates a c3 probe report (kit r29, "Save c3 probe to Downloads"; patches/llama.cpp-c3/0001-probe; and
-# 0002-d-rows: the per-block "hdr" lines (D3) and the "p2d" rows (D2)).
+# 0002-d-rows: the per-block "hdr" lines (D3) and the "p2d" rows (D2); kit r32, 0003-r72-rows: the R72 rows a, l1, l4,
+# l2/l3, l5, l6, l7, anon and x2r / x2info, under "R72 rows").
 # usage: python3 -I tools/c3_probe_parse.py <vollie-c3probe-r29-*.json>      python3 -I tools/c3_probe_parse.py --selftest
 # Every number it prints is *device* (from the phone's lines); the ratios are arithmetic on them. A cell whose workers did
 # not all stay on their cpu (cpu_ok < n) is marked '*' and should not be used for a claim.
@@ -21,7 +22,7 @@ def num(v):
 
 def parse(rep):
     out = {'p2': [], 'p2hot': [], 'p2col': [], 'p2col_id': None, 'x1': [], 'x2': [], 'x1gpu': [], 'p1': [], 'p1_info': {},
-           'p2d': [], 'p2d_id': None, 'hdr': [],
+           'p2d': [], 'p2d_id': None, 'hdr': [], 'r32': {t: [] for t in R32},
            'gates': [], 'errors': [], 'meta': {k: rep.get(k) for k in ('kit', 'app', 'started', 'label', 'session_label',
                                                                           'deep_sleeping_list', 'stopped_early', 'model_unloaded')}}
     for b in rep.get('blocks', []):
@@ -47,9 +48,89 @@ def parse(rep):
                 out['p1'].append(f)
             elif tag == 'p1':
                 out['p1_info'].update(f)
+            elif tag in R32:
+                out['r32'][tag].append((line.split('c3-probe:', 1)[1].split()[1], f))
             elif tag in out and isinstance(out[tag], list):
                 out[tag].append(f)
     return out
+
+
+R32 = ('a', 'l1', 'l4', 'l4sum', 'l2', 'l3', 'l5', 'l6', 'l7', 'anon', 'x2r', 'x2info')
+
+
+def table(L, rows, cols):
+    """markdown table of the given fields; '*' after a cell whose workers left their cpu"""
+    L.append('| ' + ' | '.join(cols) + ' |'); L.append('|' + '---|' * len(cols))
+    for f in rows:
+        L.append('| ' + ' | '.join(str(f.get(c, '')) for c in cols) + ' |' + (' *' if 'cpu_ok' in f and okmark(f) else ''))
+
+
+def r32report(r):
+    """kit r32 (R72): every row as printed by the phone, plus the ratios the plan reads (k1m4 / k1 = L1x; type / Q4_0)"""
+    if not any(r.values()):
+        return []
+    L = ['\nR72 rows (kit r32; numbers *device*, ratios arithmetic on them)']
+    for f in [f for k, f in r['x2info']]:
+        L.append('  x2info: ' + ', '.join('%s=%s' % kv_ for kv_ in f.items()))
+    for k, f in r['x2r']:
+        L.append('  x2r (-cl-opt-disable) kern %s: %s GB/s' % (f.get('kern'), f.get('gbs')))
+    if r['a']:
+        L.append('\nanchors (R69 code)'); table(L, [f for k, f in r['a']], ['kern', 'cores', 'gbs', 'ns_per_w', 'cpu_ok', 'mhz'])
+    ids = [f for k, f in r['l1'] if k == 'identity']
+    for f in ids:
+        L.append('  l1 identity k_in=%s keep=%s: k1=%s k1m=%s k1m4=%s' % (f['k_in'], f['keep'], f['k1'], f['k1m'], f['k1m4']))
+    cells = [f for k, f in r['l1'] if k != 'identity' and 'kern' in f]
+    if cells:
+        L.append('\nL1: k = ns per touched weight / stock (mean of before and after), same shape, regime and cpu')
+        table(L, cells, ['k_in', 'regime', 'cpu', 'kern', 'keep', 'd', 'k', 't_vs_stock', 'gbs', 'drift', 'cpu_ok', 'mhz_range'])
+        by = {}
+        for f in cells:
+            by[(f['k_in'], f['regime'], f['cpu'], f['keep'], f['kern'])] = num(f['k'])
+        L.append('\nL1x = k1m4 / k1 and k1m / k1, same cell')
+        L.append('| k_in | regime | cpu | keep | k1m / k1 | k1m4 / k1 |'); L.append('|---|---|---|---|---|---|')
+        for (ki, rg, cp, kp, kn), v in by.items():
+            if kn == 'k1' and v:
+                a, b = by.get((ki, rg, cp, kp, 'k1m')), by.get((ki, rg, cp, kp, 'k1m4'))
+                L.append('| %s | %s | %s | %s | %s | %s |' % (ki, rg, cp, kp, '%.3f' % (a / v) if a else '-', '%.3f' % (b / v) if b else '-'))
+    for f in [f for k, f in r['l4'] if k == 'identity']:
+        L.append('  l4 identity %s keep %s: k1=%s k1m=%s (layer %s MB, rule reads %s MB)' % (f['subj'], f['keep'], f['k1'], f['k1m'], f['layer_mb'], f['rule_layer_mb']))
+    if r['l4sum']:
+        L.append('\nL4 (ABBA means; body_ms = ms per layer x layers)')
+        table(L, [f for k, f in r['l4sum']], ['subj', 'set', 't_stock', 't_k1', 't_k1m', 'k1_vs_stock', 'k1m_vs_stock', 'body_ms_stock', 'body_ms_k1', 'body_ms_k1m'])
+        table(L, [f for k, f in r['l4'] if f.get('arm') == 'ggml_stock'], ['subj', 'arm', 'buft', 'set', 'ms_per_layer', 'body_ms', 'gbs', 'proc_cpu_over_wall', 'proc_nivcsw'])
+    if r['l2'] or r['l3']:
+        L.append('\nL2 read rate and L3 compute ceiling (thr = cpu:cpu_time/wall:involuntary:voluntary switches)')
+        table(L, [f for k, f in r['l2']], ['kern', 'set', 'gbs', 'ns_per_w', 'cpu_ok', 'thr', 'proc_cpu_over_wall', 'mhz_range'])
+        table(L, [f for k, f in r['l3']], ['set', 'gw_per_s', 'per_thread_gw_per_s', 'cpu_ok', 'thr', 'mhz_range'])
+    if r['l5']:
+        L.append('\nL5 per-type gemv (ratio = ns per weight / Q4_0 pass 1, same k_in, regime and set)')
+        q = {(f['k_in'], f['regime'], f['set']): num(f['ns_per_w']) for k, f in r['l5'] if f.get('type') == 'q4_0' and f.get('pass') == '1'}
+        rows = []
+        for k, f in r['l5']:
+            if 'type' not in f:
+                continue
+            b = q.get((f['k_in'], f['regime'], f['set'])); v = num(f['ns_per_w'])
+            rows.append(dict(f, ratio='%.3f' % (v / b) if b and v else '-'))
+        table(L, rows, ['type', 'pass', 'k_in', 'regime', 'set', 'rows', 'buft', 'ns_per_w', 'ratio', 'gbs', 'proc_cpu_over_wall', 'mhz_range'])
+    if r['l6']:
+        L.append('\nL6 barriers per token'); table(L, [f for k, f in r['l6'] if 'kind' in f], ['kind', 'nodes', 'barriers', 'set', 'ms_per_token', 'us_per_node', 'us_per_barrier'])
+    if r['l7']:
+        L.append('\nL7 head gemv, cold'); table(L, [f for k, f in r['l7'] if 'type' in f], ['type', 'vocab', 'set', 'buft', 'ms_per_call', 'gbs', 'proc_cpu_over_wall'])
+    passes = [f for k, f in r['anon'] if 'pass' in f]
+    if r['anon']:
+        L.append('\nanonymous-memory arms')
+        for f in [f for k, f in r['anon'] if 'pass' not in f]:
+            L.append('  ' + ', '.join('%s=%s' % kv_ for kv_ in f.items()))
+        steps = {}
+        for f in passes:
+            steps.setdefault(f['n'], []).append(f)
+        L.append('| GB | passes | median GB/s | last 5 GB/s (median) | majflt total | majflt last 5 | vmrss kB (last) | vmswap kB (last) | swapfree kB (last) |')
+        L.append('|---|---|---|---|---|---|---|---|---|')
+        for n, fs in steps.items():
+            g = [num(f['gbs']) for f in fs]; mf = [int(f['majflt']) for f in fs]
+            L.append('| %s | %d | %.2f | %.2f | %d | %d | %s | %s | %s |' % (n, len(fs), statistics.median(g), statistics.median(g[-5:]), sum(mf), sum(mf[-5:]),
+                     fs[-1]['vmrss'], fs[-1]['vmswap'], fs[-1]['swapfree']))
+    return L
 
 
 def okmark(f):
@@ -119,6 +200,7 @@ def report(p):
         s = [num(f['s']) for f in fs]; g = [num(f['gbs']) for f in fs]; mf = [int(f['majflt']) for f in fs]
         L.append('| %s | %s | %d | %.3f | %.2f | %.2f | %d | %d | %s | %s | %s |' % (n, m, len(fs), statistics.median(s), statistics.median(g),
                  statistics.median(g[-5:]), sum(mf), sum(mf[-5:]), fs[-1]['cached'], fs[-1]['swapfree'], fs[-1]['vmswap']))
+    L += r32report(p['r32'])
     L += header(p['hdr'])
     return '\n'.join(L)
 
@@ -178,7 +260,17 @@ SELFTEST = {'kit': 'r29', 'label': 'power-save off', 'blocks': [
     {'block': 'p1', 'rc': 100, 'ms': 9000, 'gate': {'timeout': False, 'series': []}, 'lines': [
         'c3-probe: p1 free_gb=20.00 top_gb=4.6',
         'c3-probe: p1 n=2.7 map=r pass=0 s=3.000 gbs=0.90 majflt=600000 cached=100 swapfree=5 vmswap=0',
-        'c3-probe: p1 n=2.7 map=r pass=1 s=0.150 gbs=18.00 majflt=0 cached=200 swapfree=5 vmswap=0']}]}
+        'c3-probe: p1 n=2.7 map=r pass=1 s=0.150 gbs=18.00 majflt=0 cached=200 swapfree=5 vmswap=0']},
+    {'block': 'l1', 'rc': 100, 'ms': 9000, 'gate': {'timeout': False, 'series': []}, 'lines': [
+        'c3-probe: l1 identity k_in=4096 keep=0.60 rows=256 k1=1 k1m=1 k1m4=1',
+        'c3-probe: l1 kern=k1 k_in=4096 rows=128 regime=hot ws_kb=288 keep=0.600 d=0.600 cpu=4 ns_per_touched_w=0.2 stock_ns_per_w=0.1 k=2.000 t_vs_stock=1.2 gbs=1 cpu_ok=1/1 thr=4:1.000:0:0',
+        'c3-probe: l1 kern=k1m4 k_in=4096 rows=128 regime=hot ws_kb=288 keep=0.600 d=0.600 cpu=4 ns_per_touched_w=0.16 stock_ns_per_w=0.1 k=1.600 t_vs_stock=0.96 gbs=1 cpu_ok=1/1 thr=4:1.000:0:0']},
+    {'block': 'l5', 'rc': 100, 'ms': 9000, 'gate': {'timeout': False, 'series': []}, 'lines': [
+        'c3-probe: l5 type=q4_0 pass=1 k_in=4096 rows=112 copies=1 row_b=2304 regime=hot buft=CPU_REPACK ns_per_w=0.1000 gbs=5 set=4 threads=1',
+        'c3-probe: l5 type=q6_K pass=1 k_in=4096 rows=64 copies=1 row_b=3360 regime=hot buft=CPU ns_per_w=0.1500 gbs=5 set=4 threads=1']},
+    {'block': 'anon34', 'rc': 100, 'ms': 9000, 'gate': {'timeout': False, 'series': []}, 'lines': [
+        'c3-probe: anon n=3.4 pass=0 s=0.2 gbs=17.00 majflt=0 minflt=0 cached=1 swapfree=2 vmswap=0 vmrss=3400000',
+        'c3-probe: anon n=3.4 pass=1 s=0.2 gbs=19.00 majflt=5 minflt=0 cached=1 swapfree=2 vmswap=0 vmrss=3400000']}]}
 
 
 def selftest():
@@ -195,6 +287,8 @@ def selftest():
     assert '| 4096 | 1024 | cold | stock_after | 1.00 | 1.000 | 1.000 | 1.000 | 5.62 | 1.000000 |' in r, r
     assert 'mem_used_total=50' in r and 'mem_used_max=60' in r and 'ro.lmk.low=1001' in r, r
     assert '| p2d | memory | some | 1.50 | 0.80 | 0.20 | 12345 |' in r and '| p2d | cpu | e13 |' in r, r
+    assert '| 4096 | hot | 4 | 0.600 | - | 0.800 |' in r and '| q6_K | 1 | 4096 | hot | 4 | 64 | CPU | 0.1500 | 1.500 |' in r, r
+    assert '| 3.4 | 2 | 18.00 | 18.00 | 5 | 5 | 3400000 | 0 | 2 |' in r and 'l1 identity k_in=4096 keep=0.60: k1=1 k1m=1 k1m4=1' in r, r
     print('selftest ok')
 
 

@@ -16,6 +16,9 @@
 #   <app copy>: app 2.3.0+45 with patches/app-c2/*.patch applied in order (APP_SERIES: the app series dirs recorded in
 #   kit_build.json, default patches/app-c2; c3 kit r29: APP_SERIES="patches/app-c2 patches/app-c3").
 #   kit r29 (c3 probe): APP_SERIES="patches/app-c2 patches/app-c3" tools/c2_build_kit.sh lab/llama.cpp-c3k lab/app-c3 patches/llama.cpp patches/llama.cpp-c1-olmoe patches/llama.cpp-c3
+#   An APP_SERIES entry may also be one patch file (kit r32: app-c2 0001 to 0012 by name, since app-c2 0013 and 0014 are
+#   not in the c3 app copy): APP_SERIES="$(cd patches/app-c2 && ls 00[01][0-9]-kit-r[12][0-9].patch | sed 's#^#patches/app-c2/#' | tr '\n' ' ')patches/app-c3"
+#   tools/c2_build_kit.sh lab/llama.cpp-c3r32 lab/app-c3 patches/llama.cpp patches/llama.cpp-c1-olmoe patches/llama.cpp-c3
 #   APP_ID_SUFFIX / APP_LABEL (default unset: the .c2 app, unchanged): build a separate app beside it, e.g. the r28 stock
 #   reference after the phone refused it as an update (R68 session R): APP_ID_SUFFIX=.c2stock APP_LABEL="Vollie stock r28"
 #   RUNTIME=stock ... ; build.gradle's suffix and the manifest label are changed for the build only and restored, the
@@ -71,7 +74,7 @@ sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 { printf '{"kit": "%s", "app": "%s", "runtime": "%s", "llama_cpp": "%s",\n "series": [' "$KIT" "$V" "$RT" "$(git -C "$SRC" rev-parse HEAD)"
   sep=; for p in $PATCHES; do printf '%s\n  {"file": "%s", "sha256": "%s"}' "$sep" "$(basename "$p")" "$(sha "$p")"; sep=,; done
   printf '],\n "app_patches": ['; sep=
-  for p in $(for d in ${APP_SERIES:-patches/app-c2}; do ls "$R/$d"/0*.patch; done); do printf '%s\n  {"file": "%s", "sha256": "%s"}' "$sep" "$(basename "$p")" "$(sha "$p")"; sep=,; done
+  for p in $(for d in ${APP_SERIES:-patches/app-c2}; do if [ -f "$R/$d" ]; then echo "$R/$d"; else ls "$R/$d"/0*.patch; fi; done); do printf '%s\n  {"file": "%s", "sha256": "%s"}' "$sep" "$(basename "$p")" "$(sha "$p")"; sep=,; done
   printf '],\n "libs": {"libggml-cpu-android_armv8.2_2.so": "%s", "libllama.so": "%s"}}\n' \
     "$(sha "$M/libggml-cpu-android_armv8.2_2.so")" "$(sha "$M/libllama.so")"; } > "$APP/assets/kit_build.json"
 python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$APP/assets/kit_build.json"

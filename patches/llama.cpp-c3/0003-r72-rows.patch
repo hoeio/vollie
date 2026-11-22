@@ -1,0 +1,912 @@
+diff --git a/src/llama-vollie-probe.cpp b/src/llama-vollie-probe.cpp
+index 5fab6db..a883ed1 100644
+--- a/src/llama-vollie-probe.cpp
++++ b/src/llama-vollie-probe.cpp
+@@ -14,6 +14,23 @@
+ // unreadable source gives e<errno>). Block "p2" ends with D2's "p2d" rows (K1 at TR 128 and Y1b against stock on one
+ // pinned A78, hot and cold, plus Y1b on a kept-row list); block "p2d" runs D2 alone, block "hdr" only the header.
+ // Still off unless VOLLIE_PROBE is set; nothing outside this file calls it.
++// 0003-r72-rows (kit r32, campaign 3 memo-08-work/clyde-r72-plan.md, rows L1 to L7): new blocks
++//   a       anchors: R69's plain read and cold q4x4 rows on 4-6, 7+4-5, 4-7 (the same code as p2's)
++//   l1      K1, K1m, k1m4 (tools/c3_k1v_bench.c) against stock at keep 1.0 / 0.666 / 0.60 / 0.58 / 0.50, inputs 4096 and
++//           11008, hot and cold, on cpu 4 (A78) and cpu 7 (X1); identity lines (memcmp, adversarial scales) first
++//   l4      one layer of each subject's shapes (Yi-1.5-6B, Llama-2-7B, DeepSeek-7B), stock against the rule (k, v stock;
++//           q, o, gate, up, down on K1 or K1m at the subject's keep), on 4-6, 7+4-5, 4-7, ABBA; plus a stock layer through
++//           a ggml graph (CPU backend, the buffer type llama would pick, VOLLIE_POOL + VOLLIE_CPUMASK pins)
++//   l23     L2: read and cold q4x4 (probe threads) and cold Q4_0 gemv through ggml, at 3 and 4 big cores; L3: hot q4x4
++//           on every thread at once, each in its own slice; per thread CPU time / wall time and context switches
++//   l5      ggml's own gemv for Q4_0, IQ4_NL, Q4_K, IQ4_XS, Q3_K, IQ3_S, IQ3_XXS, Q2_K, Q6_K, Q8_0 (4096 and 11008
++//           inputs; hot and cold on one A78 and the X1; hot on all threads of 7+4-5 and 4-7)
++//   l6      empty-node graphs (ggml barriers per token, the subjects' decode node counts) and the probe's spin barrier
++//   l7      Q6_K and Q8_0 head gemv at 64,000 / 32,000 / 102,400 rows x 4096, cold, 3 and 4 threads
++//   anon34, anon42  anonymous-memory capacity: a 3.4 / 4.2 GB anonymous arena, filled once, read 20 passes or 45 s
++//   x2      also retries with "-cl-opt-disable" (x2r lines) and prints the device's extension and driver strings
++// Still off unless VOLLIE_PROBE is set; nothing outside this file calls it. The ggml cells set VOLLIE_POOL=1 and
++// VOLLIE_CPUMASK for their own duration only (restored after) and restore the calling thread's affinity.
+ #if defined(VOLLIE_PROBE_STUB)
+ #include <cstddef>
+ extern "C" int llama_vollie_probe(const char *, const char *, char *, size_t) { return -1; }
+@@ -44,6 +61,12 @@ extern "C" int llama_vollie_probe(const char *, const char *, char *, size_t) {
+ #if defined(__ANDROID__)
+ #include <sys/system_properties.h>
+ #endif
++#include <climits>
++#include <ctime>
++#include <memory>
++#include "ggml.h"
++#include "ggml-alloc.h"
++#include "ggml-backend.h"
+ 
+ namespace {
+ 
+@@ -453,11 +476,8 @@ void d2(Out & o) {
+     munmap(a, AR);
+ }
+ 
+-void p2(Out & o) {
+-    const size_t AR = (size_t) 1 << 30; uint8_t * a = (uint8_t *) mmap(nullptr, AR, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+-    if (a == MAP_FAILED) { o.line("p2 error=mmap"); return; }
+-    fill_q4x4(a, AR); init_x();
+-    const char * sets[] = { "4", "4-5", "4-6", "7", "7,4-5", "4-7", "0-6" };
++// P2 (a) and (b) on the given sets; tag "p2" (block p2) or "a" (0003's anchors, same code and line format)
++void p2ab(Out & o, const char * tag, uint8_t * a, size_t AR, const std::vector<const char *> & sets) {
+     for (const char * s : sets) {   // (a) plain read loop over the whole arena, one slice per thread
+         auto set = cores(s); std::string m0 = mhz(); std::vector<size_t> off(set.size(), 0);
+         Cell c = run_cell(set, [&](int i, int n, double & b, double & u) {
+@@ -470,7 +490,7 @@ void p2(Out & o) {
+             volatile uint64_t sink = vgetq_lane_u64(vaddq_u64(vaddq_u64(s0, s1), vaddq_u64(s2, s3)), 0); (void) sink;
+             off[i] = (off[i] + ch) % (sl - sl % ch); b += ch; u += ch;
+         });
+-        o.line("p2 kern=read cores=%s gbs=%.2f cpu_ok=%d/%d mhz=%s->%s", s, c.gbs, c.cpu_ok, c.n, m0.c_str(), mhz().c_str());
++        o.line("%s kern=read cores=%s gbs=%.2f cpu_ok=%d/%d mhz=%s->%s", tag, s, c.gbs, c.cpu_ok, c.n, m0.c_str(), mhz().c_str());
+     }
+     for (const char * s : sets) {   // (b) stock q4_0 4x4 gemv walked cold through the arena (K = 4096; 4-row groups)
+         auto set = cores(s); std::string m0 = mhz(); std::vector<size_t> g(set.size(), 0);
+@@ -479,8 +499,15 @@ void p2(Out & o) {
+             for (int k = 0; k < 64; k++) { vst1q_f32(y + 4 * k, group4((const bq4x4 *)(a + (i * (AR / n) / G4 + g[i]) * G4), X, nullptr, 0)); g[i] = (g[i] + 1) % ng; }
+             volatile float sink = y[0]; (void) sink; b += 64.0 * G4; u += 64.0 * 4 * K;
+         });
+-        o.line("p2 kern=q4x4 cores=%s gbs=%.2f ns_per_w=%.4f cpu_ok=%d/%d mhz=%s->%s", s, c.gbs, c.secs * c.n * 1e9 / c.units, c.cpu_ok, c.n, m0.c_str(), mhz().c_str());
++        o.line("%s kern=q4x4 cores=%s gbs=%.2f ns_per_w=%.4f cpu_ok=%d/%d mhz=%s->%s", tag, s, c.gbs, c.secs * c.n * 1e9 / c.units, c.cpu_ok, c.n, m0.c_str(), mhz().c_str());
+     }
++}
++
++void p2(Out & o) {
++    const size_t AR = (size_t) 1 << 30; uint8_t * a = (uint8_t *) mmap(nullptr, AR, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    if (a == MAP_FAILED) { o.line("p2 error=mmap"); return; }
++    fill_q4x4(a, AR); init_x();
++    p2ab(o, "p2", a, AR, { "4", "4-5", "4-6", "7", "7,4-5", "4-7", "0-6" });
+     // (c) hot sdot ceiling: a working set that fits the core's L2 (X1 1 MB -> 512 KB, A78 512 KB -> 256 KB, A55 128 KB -> 64 KB)
+     struct { int cpu; size_t ws; const char * cls; } hot[] = { {4, 256 << 10, "a78"}, {7, 512 << 10, "x1"}, {0, 64 << 10, "a55"} };
+     for (auto & h : hot) {
+@@ -582,53 +609,83 @@ void x2(Out & o) {
+     if (cl.GetPlatformIDs(1, &plat, &np) || !np || cl.GetDeviceIDs(plat, 1 << 2, 1, &dev, nullptr)) { o.line("x2 error=no_gpu"); return; }
+     char name[128] = {0}; cl.GetDeviceInfo(dev, 0x102B, sizeof name - 1, name, nullptr);
+     for (char * c = name; *c; c++) if (*c == ' ') *c = '_';
++    {   // 0003: what the device says it is (memo-08 Ebony D1): driver, versions, units, clock, memory, extensions
++        auto str = [&](cl_uint p) { std::vector<char> v(8192, 0); cl.GetDeviceInfo(dev, p, v.size() - 1, v.data(), nullptr);
++            std::string s(v.data()); while (!s.empty() && s.back() == ' ') s.pop_back(); for (auto & c : s) if (c == ' ') c = ','; return s.empty() ? std::string("empty") : s; };
++        cl_uint cu = 0, clk_mhz = 0; uint64_t gmem = 0;
++        cl.GetDeviceInfo(dev, 0x1002, sizeof cu, &cu, nullptr); cl.GetDeviceInfo(dev, 0x100C, sizeof clk_mhz, &clk_mhz, nullptr); cl.GetDeviceInfo(dev, 0x101F, sizeof gmem, &gmem, nullptr);
++        o.line("x2info device=%s driver=%s version=%s c_version=%s compute_units=%u max_mhz=%u global_mb=%llu ext=%s", name, str(0x102D).c_str(), str(0x102F).c_str(),
++               str(0x103D).c_str(), cu, clk_mhz, (unsigned long long)(gmem >> 20), str(0x1030).c_str());
++    }
+     H ctx = cl.CreateContext(nullptr, 1, &dev, nullptr, nullptr, &e); H qu = cl.CreateCommandQueue(ctx, dev, 0, &e);
+-    H prg = cl.CreateProgramWithSource(ctx, 1, &kSrc, nullptr, &e);
+-    if (cl.BuildProgram(prg, 1, &dev, "", nullptr, nullptr)) { o.line("x2 error=build device=%s", name); return; }
++    struct Prog { H prg = nullptr, kf = nullptr, kr = nullptr, kq = nullptr; cl_int err = 0; };
++    auto build = [&](const char * opts) {   // r29 built with "" only; 0003 adds the "-cl-opt-disable" retry
++        Prog p; p.prg = cl.CreateProgramWithSource(ctx, 1, &kSrc, nullptr, &e);
++        if ((p.err = cl.BuildProgram(p.prg, 1, &dev, opts, nullptr, nullptr))) return p;
++        p.kf = cl.CreateKernel(p.prg, "fill", &e); p.kr = cl.CreateKernel(p.prg, "rd", &e); p.kq = cl.CreateKernel(p.prg, "q4", &e);
++        return p;
++    };
++    Prog P0 = build(""), P1 = build("-cl-opt-disable");
++    if (P0.err) o.line("x2 error=build device=%s", name);
++    if (P1.err) o.line("x2r error=build opts=-cl-opt-disable device=%s err=%d", name, P1.err);
++    if (P0.err && P1.err) return;
+     const size_t BYTES = (size_t) 512 << 20, NBQ = 128, ROWS = BYTES / (NBQ * 18);
+     H buf = cl.CreateBuffer(ctx, 1 /*READ_WRITE*/ | (1 << 4) /*ALLOC_HOST_PTR*/, BYTES, nullptr, &e);
+     std::vector<int8_t> xs(NBQ * 32); for (auto & v : xs) v = (int8_t)((int) (rnd() % 255) - 127);
+     H xb = cl.CreateBuffer(ctx, (1 << 2) | (1 << 5) /*READ_ONLY|COPY_HOST_PTR*/, xs.size(), xs.data(), &e);
+     H ob = cl.CreateBuffer(ctx, 1, std::max<size_t>(ROWS * 4, (size_t) 4 << 20), nullptr, &e);
+     if (!buf || !xb || !ob) { o.line("x2 error=alloc device=%s", name); return; }
+-    H kf = cl.CreateKernel(prg, "fill", &e), kr = cl.CreateKernel(prg, "rd", &e), kq = cl.CreateKernel(prg, "q4", &e);
+-    size_t gf = BYTES / 4; cl.SetKernelArg(kf, 0, sizeof(H), &buf); cl.EnqueueNDRangeKernel(qu, kf, 1, nullptr, &gf, nullptr, 0, nullptr, nullptr); cl.Finish(qu);
++    const Prog & PF = P0.err ? P1 : P0;
++    size_t gf = BYTES / 4; cl.SetKernelArg(PF.kf, 0, sizeof(H), &buf); cl.EnqueueNDRangeKernel(qu, PF.kf, 1, nullptr, &gf, nullptr, 0, nullptr, nullptr); cl.Finish(qu);
+     cl_uint n4 = (cl_uint)(BYTES / 16), nb = (cl_uint) NBQ;
+-    cl.SetKernelArg(kr, 0, sizeof(H), &buf); cl.SetKernelArg(kr, 1, sizeof(H), &ob); cl.SetKernelArg(kr, 2, sizeof n4, &n4);
+-    cl.SetKernelArg(kq, 0, sizeof(H), &buf); cl.SetKernelArg(kq, 1, sizeof(H), &xb); cl.SetKernelArg(kq, 2, sizeof(H), &ob); cl.SetKernelArg(kq, 3, sizeof nb, &nb);
+-    auto one = [&](const char * k) {   // one pass over the 512 MB buffer; returns bytes read
+-        if (!strcmp(k, "read")) { size_t g = 1 << 20, l = 64; cl.EnqueueNDRangeKernel(qu, kr, 1, nullptr, &g, &l, 0, nullptr, nullptr); }
+-        else { size_t g = ROWS * 64, l = 64; cl.EnqueueNDRangeKernel(qu, kq, 1, nullptr, &g, &l, 0, nullptr, nullptr); }
++    for (const Prog * P : { &P0, &P1 }) {
++        if (P->err) continue;
++        cl.SetKernelArg(P->kr, 0, sizeof(H), &buf); cl.SetKernelArg(P->kr, 1, sizeof(H), &ob); cl.SetKernelArg(P->kr, 2, sizeof n4, &n4);
++        cl.SetKernelArg(P->kq, 0, sizeof(H), &buf); cl.SetKernelArg(P->kq, 1, sizeof(H), &xb); cl.SetKernelArg(P->kq, 2, sizeof(H), &ob); cl.SetKernelArg(P->kq, 3, sizeof nb, &nb);
++    }
++    auto one = [&](const Prog & P, const char * k) {   // one pass over the 512 MB buffer; returns bytes read
++        if (!strcmp(k, "read")) { size_t g = 1 << 20, l = 64; cl.EnqueueNDRangeKernel(qu, P.kr, 1, nullptr, &g, &l, 0, nullptr, nullptr); }
++        else { size_t g = ROWS * 64, l = 64; cl.EnqueueNDRangeKernel(qu, P.kq, 1, nullptr, &g, &l, 0, nullptr, nullptr); }
+         cl.Finish(qu); return !strcmp(k, "read") ? (double) BYTES : (double) ROWS * NBQ * 18;
+     };
+-    auto gpu_for = [&](const char * k, std::atomic<int> & phase, double & bytes) {   // warm-up while phase 0, count while phase 1
+-        while (phase.load() == 0) one(k);
+-        bytes = 0; while (phase.load() == 1) bytes += one(k);
++    auto gpu_for = [&](const Prog & P, const char * k, std::atomic<int> & phase, double & bytes) {   // warm-up while phase 0, count while phase 1
++        while (phase.load() == 0) one(P, k);
++        bytes = 0; while (phase.load() == 1) bytes += one(P, k);
+     };
+-    for (const char * k : { "read", "q4" }) {   // GPU alone
+-        std::atomic<int> ph{0}; double by = 0; std::thread t([&] { gpu_for(k, ph, by); });
+-        std::this_thread::sleep_for(std::chrono::seconds(1)); ph = 1; auto t0 = clk::now();
+-        std::this_thread::sleep_for(std::chrono::seconds(2)); ph = 2; auto t1 = clk::now(); t.join();
+-        o.line("x2 kern=%s device=%s gbs=%.2f", k, name, by / secs(t0, t1) / 1e9);   // counts passes finished inside the window (each about 15-60 ms)
++    for (int r = 0; r < 2; r++) {   // GPU alone: r29's cells (x2), then the -cl-opt-disable retry (x2r)
++        const Prog & P = r ? P1 : P0; if (P.err) continue;
++        for (const char * k : { "read", "q4" }) {
++            std::atomic<int> ph{0}; double by = 0; std::thread t([&] { gpu_for(P, k, ph, by); });
++            std::this_thread::sleep_for(std::chrono::seconds(1)); ph = 1; auto t0 = clk::now();
++            std::this_thread::sleep_for(std::chrono::seconds(2)); ph = 2; auto t1 = clk::now(); t.join();
++            if (!r) o.line("x2 kern=%s device=%s gbs=%.2f", k, name, by / secs(t0, t1) / 1e9);   // counts passes finished inside the window (each about 15-60 ms)
++            else o.line("x2r kern=%s opts=-cl-opt-disable device=%s gbs=%.2f", k, name, by / secs(t0, t1) / 1e9);
++        }
+     }
+-    // CPU (stock q4x4 gemv, 3 A78, cold 1 GB arena) and GPU together, same 1 s + 2 s window
++    // CPU (stock q4x4 gemv, 3 A78, cold 1 GB arena) and GPU together, same 1 s + 2 s window (r29's build, else the retry's)
+     const size_t AR = (size_t) 1 << 30; uint8_t * a = (uint8_t *) mmap(nullptr, AR, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+     if (a != MAP_FAILED) {
+         fill_q4x4(a, AR); init_x();
+         for (const char * k : { "read", "q4" }) {
+             std::atomic<int> ph{0}; double by = 0; auto set = cores("4-6"); std::vector<size_t> g(set.size(), 0);
+-            std::thread t([&] { while (ph.load() == 0) one(k); by = 0; auto t0 = clk::now(); while (ph.load() == 1) by += one(k); by /= secs(t0, clk::now()); });
++            std::thread t([&] { while (ph.load() == 0) one(PF, k); by = 0; auto t0 = clk::now(); while (ph.load() == 1) by += one(PF, k); by /= secs(t0, clk::now()); });
+             Cell c = run_cell(set, [&](int i, int n, double & b, double & u) {
+                 const size_t ng = AR / n / G4; float y[4 * 64];
+                 for (int q = 0; q < 64; q++) { vst1q_f32(y + 4 * q, group4((const bq4x4 *)(a + (i * (AR / n) / G4 + g[i]) * G4), X, nullptr, 0)); g[i] = (g[i] + 1) % ng; }
+                 volatile float sink = y[0]; (void) sink; b += 64.0 * G4; u += 64.0 * 4 * K;
+             }, &ph);
+             t.join();   // both count only the same 2 s window after the shared 1 s warm-up
+-            o.line("x1gpu gpu_kern=%s cpu_kern=q4x4 cores=4-6 device=%s cpu_gbs=%.2f gpu_gbs=%.2f sum_gbs=%.2f cpu_ok=%d/%d", k, name, c.gbs, by / 1e9, c.gbs + by / 1e9, c.cpu_ok, c.n);
++            o.line("x1gpu gpu_kern=%s cpu_kern=q4x4 cores=4-6 device=%s cpu_gbs=%.2f gpu_gbs=%.2f sum_gbs=%.2f cpu_ok=%d/%d%s", k, name, c.gbs, by / 1e9, c.gbs + by / 1e9, c.cpu_ok, c.n,
++                   P0.err ? " opts=-cl-opt-disable" : "");
+         }
+         munmap(a, AR);
+     }
+-    cl.ReleaseKernel(kf); cl.ReleaseKernel(kr); cl.ReleaseKernel(kq); cl.ReleaseProgram(prg);
++    for (Prog * P : { &P0, &P1 }) {
++        if (P->kf) cl.ReleaseKernel(P->kf);
++        if (P->kr) cl.ReleaseKernel(P->kr);
++        if (P->kq) cl.ReleaseKernel(P->kq);
++        if (P->prg) cl.ReleaseProgram(P->prg);
++    }
+     cl.ReleaseMemObject(buf); cl.ReleaseMemObject(xb); cl.ReleaseMemObject(ob); cl.ReleaseCommandQueue(qu); cl.ReleaseContext(ctx);
+ }
+ 
+@@ -669,6 +726,703 @@ void p1(Out & o, const char * dir) {
+     close(fd); unlink(path.c_str()); o.line("p1 done");
+ }
+ 
++// ======== 0003 (kit r32): rows L1 to L7 of memo-08-work/clyde-r72-plan.md, the anonymous-memory arm, the anchors
++namespace r32 {
++
++// ---- timing helpers: per-thread CPU time against wall time and context switches (ebony-paths.md §12), clock range
++double tcpu() { timespec t; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
++void csw(long & iv, long & v, bool self) {   // involuntary / voluntary switches of this thread (self: the process)
++    rusage r;
++#if defined(__linux__)
++    getrusage(self ? RUSAGE_SELF : RUSAGE_THREAD, &r); iv = r.ru_nivcsw; v = r.ru_nvcsw;
++#else
++    if (!self) { iv = v = -1; return; }
++    getrusage(RUSAGE_SELF, &r); iv = r.ru_nivcsw; v = r.ru_nvcsw;
++#endif
++}
++double proc_cpu() { rusage r; getrusage(RUSAGE_SELF, &r); return r.ru_utime.tv_sec + r.ru_utime.tv_usec * 1e-6 + r.ru_stime.tv_sec + r.ru_stime.tv_usec * 1e-6; }
++long khz(int p) {
++    char path[96]; snprintf(path, sizeof path, "/sys/devices/system/cpu/cpufreq/policy%d/scaling_cur_freq", p);
++    FILE * f = fopen(path, "r"); long v = -1000; if (f) { if (fscanf(f, "%ld", &v) != 1) v = -1000; fclose(f); }
++    return v;
++}
++struct Mhz {   // the range of each policy's clock (A55 / A78 / X1) over the samples taken during a cell
++    long lo[3] = { LONG_MAX, LONG_MAX, LONG_MAX }, hi[3] = { LONG_MIN, LONG_MIN, LONG_MIN }; int n = 0;
++    void sample() { const int p[3] = { 0, 4, 7 }; for (int i = 0; i < 3; i++) { long v = khz(p[i]) / 1000; lo[i] = std::min(lo[i], v); hi[i] = std::max(hi[i], v); } n++; }
++    std::string str() const {
++        if (!n) return "none";
++        char b[96]; snprintf(b, sizeof b, "%ld/%ld/%ld..%ld/%ld/%ld,n=%d", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], n); return b;
++    }
++};
++// clock ramp (R69: 25 of 26 cells ran below full clocks): after the base warm-up, keep warming until every policy the set
++// uses reads its scaling_max_freq (bounded by cap seconds); the cell prints ramp_s, ramp_ok and the max clocks it waited for
++int policy_of(int cpu) { return cpu >= 7 ? 7 : cpu >= 4 ? 4 : 0; }
++long maxkhz(int p, const char * f) {
++    char path[96]; snprintf(path, sizeof path, "/sys/devices/system/cpu/cpufreq/policy%d/%s", p, f);
++    FILE * fp = fopen(path, "r"); long v = -1000; if (fp) { if (fscanf(fp, "%ld", &v) != 1) v = -1000; fclose(fp); }
++    return v;
++}
++bool at_max(const std::vector<int> & set) {
++    for (int c : set) { const int p = policy_of(c); const long m = maxkhz(p, "scaling_max_freq"), v = khz(p); if (m <= 0 || v <= 0) return true; if (v < m) return false; }
++    return true;
++}
++struct Ramp { double s = 0; int ok = 0; std::string max; };
++template <class W> Ramp ramp(const std::vector<int> & set, double warm, double cap, W step) {   // step(): one wait or one unit of warm work
++    Ramp r; const auto t0 = clk::now();
++    while (secs(t0, clk::now()) < warm) step();
++    while (!(r.ok = at_max(set)) && secs(t0, clk::now()) < warm + cap) step();
++    r.s = secs(t0, clk::now());
++    std::vector<int> ps; for (int c : set) if (std::find(ps.begin(), ps.end(), policy_of(c)) == ps.end()) ps.push_back(policy_of(c));
++    for (int p : ps) { char b[64]; snprintf(b, sizeof b, "%sp%d:%ld/%ld", r.max.empty() ? "" : ",", p, maxkhz(p, "scaling_max_freq") / 1000, maxkhz(p, "cpuinfo_max_freq") / 1000); r.max += b; }
++    return r;
++}
++std::string rampstr(const Ramp & r) { char b[160]; snprintf(b, sizeof b, "ramp_s=%.2f ramp_ok=%d max_mhz=%s", r.s, r.ok, r.max.c_str()); return b; }
++const double RAMP_CAP = 4.0;
++#if defined(__linux__)
++struct Aff { cpu_set_t m; bool ok; Aff() { ok = sched_getaffinity(0, sizeof m, &m) == 0; } ~Aff() { if (ok) sched_setaffinity(0, sizeof m, &m); } };
++bool pin_cpus(const std::vector<int> & s) { cpu_set_t m; CPU_ZERO(&m); for (int c : s) CPU_SET(c, &m); return sched_setaffinity(0, sizeof m, &m) == 0; }
++#else
++struct Aff { Aff() {} ~Aff() {} };
++bool pin_cpus(const std::vector<int> &) { return false; }
++#endif
++struct EnvSet {   // sets a variable for the life of this object, then restores the old value (or unsets it)
++    std::string k, old; bool had;
++    EnvSet(const char * key, const std::string & v) : k(key) { const char * o = getenv(key); had = o != nullptr; if (had) old = o; setenv(key, v.c_str(), 1); }
++    ~EnvSet() { if (had) setenv(k.c_str(), old.c_str(), 1); else unsetenv(k.c_str()); }
++};
++std::string setname(const std::vector<int> & s) { std::string r; for (size_t i = 0; i < s.size(); i++) r += (i ? "," : "") + std::to_string(s[i]); return r; }
++void sleep_s(double s) { std::this_thread::sleep_for(std::chrono::microseconds((long long)(s * 1e6))); }
++
++// a timed cell like run_cell, with set warm-up and measured seconds, per-thread accounting and clock sampling; the
++// caller's thread waits on the A55s (0-3) meanwhile and gets its affinity back afterwards
++struct Cell2 { double gbs = 0, units = 0, secs = 0; int cpu_ok = 0, n = 0; std::vector<double> cpu, wall, b, u; std::vector<long> niv, nv, chk, off; std::vector<int> other;
++               std::string m0, m1; Mhz mz; Ramp rp; };
++// per thread: pinned cpu : cpu time / wall time : involuntary : voluntary switches : checks off the pinned cpu / checks @ the
++// last other cpu seen (sched_getcpu every 16th work unit of the measured window; R69 had 6 cells with a worker off its core)
++std::string thr(const Cell2 & c, const std::vector<int> & set) {
++    std::string s;
++    for (int i = 0; i < c.n; i++) {
++        char b[96]; snprintf(b, sizeof b, "%s%d:%.3f:%ld:%ld:%ld/%ld@%d", i ? "," : "", set[i], c.wall[i] > 0 ? c.cpu[i] / c.wall[i] : -1.0, c.niv[i], c.nv[i],
++                             c.off.empty() ? -1L : c.off[i], c.chk.empty() ? -1L : c.chk[i], c.other.empty() ? -1 : c.other[i]);
++        s += b;
++    }
++    return s;
++}
++template <class F> Cell2 cell2(const std::vector<int> & set, F work, double warm, double meas) {
++    Aff aff; pin_cpus({ 0, 1, 2, 3 });
++    const int n = (int) set.size(); std::atomic<int> ready{0}, phase{0};
++    Cell2 c; c.n = n; c.cpu.assign(n, 0); c.wall.assign(n, 0); c.b.assign(n, 0); c.u.assign(n, 0); c.niv.assign(n, -1); c.nv.assign(n, -1);
++    c.chk.assign(n, 0); c.off.assign(n, 0); c.other.assign(n, -1);
++    std::vector<int> ok(n); std::vector<std::thread> th;
++    for (int i = 0; i < n; i++) th.emplace_back([&, i] {
++        bool p = pin(set[i]); int c0 = where(); ready++;
++        while (ready.load() < n) {}
++        double b = 0, u = 0;
++        while (phase.load(std::memory_order_relaxed) == 0) work(i, n, b, u);
++        b = 0; u = 0; const double q0 = tcpu(); const auto w0 = clk::now(); long iv0, v0; csw(iv0, v0, false);
++        for (long k = 0; phase.load(std::memory_order_relaxed) == 1; k++) {
++            work(i, n, b, u);
++            if (!(k & 15)) { const int w = where(); c.chk[i]++; if (w != set[i]) { c.off[i]++; c.other[i] = w; } }
++        }
++        long iv1, v1; csw(iv1, v1, false);
++        c.cpu[i] = tcpu() - q0; c.wall[i] = secs(w0, clk::now()); c.niv[i] = iv0 < 0 ? -1 : iv1 - iv0; c.nv[i] = v0 < 0 ? -1 : v1 - v0;
++        c.b[i] = b; c.u[i] = u; ok[i] = p && c0 == set[i] && where() == set[i];
++    });
++    while (ready.load() < n) {}
++    c.m0 = mhz(); c.rp = ramp(set, warm, RAMP_CAP, [] { sleep_s(0.05); }); phase = 1; const auto t0 = clk::now();
++    while (secs(t0, clk::now()) < meas) { c.mz.sample(); sleep_s(std::min(0.1, std::max(0.0, meas - secs(t0, clk::now())))); }
++    phase = 2; const auto t1 = clk::now();
++    for (auto & t : th) t.join();
++    c.secs = secs(t0, t1); c.m1 = mhz();
++    for (int i = 0; i < n; i++) { c.gbs += c.b[i]; c.units += c.u[i]; c.cpu_ok += ok[i]; }
++    c.gbs /= c.secs * 1e9;
++#if !defined(__linux__)
++    c.cpu_ok = -1;
++#endif
++    return c;
++}
++
++// ---- K1 family (tools/c3_k1v_bench.c, bit-identical there and checked again below): per-call kept lists from a
++// 32-bit mask per block, then the tile kernel on tiles [t0, t1). MODE 0 = K1 (0002's kernel; the kept x sum is in the
++// lists), 1 = K1m (SSHLL + ADD magic + FSUB instead of SCVTF), 4 = k1m4 (SADDW + FSUB, and the fp16 scale by SSHLL #13 +
++// BIC instead of FCVTL, with dx * 2^112).
++struct Lists { int nb = 0; std::vector<uint32_t> mask; std::vector<uint8_t> kc; std::vector<int> nk, sx; long kept = 0; };
++Lists mklists(int nb, double keep) {
++    Lists L; L.nb = nb; L.mask.assign(nb, 0); L.kc.assign((size_t) nb * 32, 0); L.nk.assign(nb, 0); L.sx.assign(nb, 0);
++    for (int b = 0; b < nb; b++) for (int j = 0; j < 32; j++) if ((rnd() & 0xffff) < keep * 65536) { L.mask[b] |= 1u << j; L.kept++; }
++    return L;
++}
++void build_lists(Lists & L, const bq8 * x) {
++    for (int b = 0; b < L.nb; b++) {
++        uint32_t m = L.mask[b]; int n = 0, s = 0; uint8_t * kc = L.kc.data() + (size_t) b * 32;
++        while (m) { const int j = __builtin_ctz(m); m &= m - 1; kc[n++] = (uint8_t) j; s += x[b].qs[j]; }
++        L.nk[b] = n; L.sx[b] = s;
++    }
++}
++template <int MODE> void k1x(const uint8_t * w, int nb, const bq8 * x, const Lists & Ls, float * y, int t0, int t1) {
++    const uint8x16_t m4 = vdupq_n_u8(15); const int32x4_t vmagic0 = vdupq_n_s32(0x4B400000); const float32x4_t vmagf0 = vdupq_n_f32(12582912.0f);
++    for (int t = t0; t < t1; t++) {
++        float * af = y + (size_t) t * KT;
++        for (int i = 0; i < KT; i += 4) vst1q_f32(af + i, vdupq_n_f32(0));
++        for (int b = 0; b < nb; b++) {
++            const int nk = Ls.nk[b]; if (!nk) continue;
++            const uint8_t * p = w + ((size_t) t * nb + b) * KB; const __fp16 * d = (const __fp16 *) p; const uint8_t * col = p + KT * 2;
++            const uint8_t * kc = Ls.kc.data() + (size_t) b * 32;
++            const int16x8_t corr = vdupq_n_s16((int16_t)(8 * Ls.sx[b]));
++            const float32x4_t vdx = vdupq_n_f32(MODE == 4 ? (float) x[b].d * 0x1p112f : (float) x[b].d);
++            int16x8_t a[16];
++#pragma clang loop unroll(full)
++            for (int i = 0; i < 16; i++) a[i] = vdupq_n_s16(0);
++            for (int q = 0; q < nk; q++) {
++                const int j = kc[q]; const int8x16_t xv = vdupq_n_s8(x[b].qs[j]); const int8x8_t xh = vget_low_s8(xv); const uint8_t * c = col + j * 64;
++#pragma clang loop unroll(full)
++                for (int L = 0; L < 4; L++) {
++                    const uint8x16_t v = vld1q_u8(c + 16 * L);
++                    const int8x16_t lo = vreinterpretq_s8_u8(vandq_u8(v, m4)), hi = vreinterpretq_s8_u8(vshrq_n_u8(v, 4));
++                    a[4 * L + 0] = vmlal_s8(a[4 * L + 0], vget_low_s8(lo), xh); a[4 * L + 1] = vmlal_high_s8(a[4 * L + 1], lo, xv);
++                    a[4 * L + 2] = vmlal_s8(a[4 * L + 2], vget_low_s8(hi), xh); a[4 * L + 3] = vmlal_high_s8(a[4 * L + 3], hi, xv);
++                }
++            }
++            int32x4_t vmagic = vmagic0; float32x4_t vmagf = vmagf0; __asm__ volatile("" : "+w"(vmagic), "+w"(vmagf));   // keep the constants in registers
++#pragma clang loop unroll(full)
++            for (int i = 0; i < 16; i++) {   // register i = rows 8i .. 8i+7 of the tile
++                const int16x8_t v = vsubq_s16(a[i], corr); float32x4_t pl, ph, fl, fh;
++                if (MODE == 4) {
++                    const int16x8_t h = vld1q_s16((const int16_t *)(d + 8 * i));
++                    pl = vmulq_f32(vdx, vreinterpretq_f32_s32(vbicq_s32(vshll_n_s16(vget_low_s16(h), 13), vdupq_n_s32(0x70000000))));
++                    ph = vmulq_f32(vdx, vreinterpretq_f32_s32(vbicq_s32(vshll_high_n_s16(h, 13), vdupq_n_s32(0x70000000))));
++                } else {
++                    const float16x8_t dw = vld1q_f16(d + 8 * i); pl = vmulq_f32(vdx, vcvt_f32_f16(vget_low_f16(dw))); ph = vmulq_f32(vdx, vcvt_high_f32_f16(dw));
++                }
++                if (MODE == 0) { fl = vcvtq_f32_s32(vmovl_s16(vget_low_s16(v))); fh = vcvtq_f32_s32(vmovl_high_s16(v)); }
++                else if (MODE == 1) {
++                    fl = vsubq_f32(vreinterpretq_f32_s32(vaddq_s32(vmovl_s16(vget_low_s16(v)), vmagic)), vmagf);
++                    fh = vsubq_f32(vreinterpretq_f32_s32(vaddq_s32(vmovl_high_s16(v), vmagic)), vmagf);
++                } else {
++                    fl = vsubq_f32(vreinterpretq_f32_s32(vaddw_s16(vmagic, vget_low_s16(v))), vmagf);
++                    fh = vsubq_f32(vreinterpretq_f32_s32(vaddw_high_s16(vmagic, v)), vmagf);
++                }
++                vst1q_f32(af + 8 * i, vfmaq_f32(vld1q_f32(af + 8 * i), fl, pl)); vst1q_f32(af + 8 * i + 4, vfmaq_f32(vld1q_f32(af + 8 * i + 4), fh, ph));
++            }
++        }
++    }
++}
++typedef void (*colfn)(const uint8_t *, int, const bq8 *, const Lists &, float *, int, int);
++const char * const KNAME[3] = { "k1", "k1m", "k1m4" };
++const colfn KFN[3] = { k1x<0>, k1x<1>, k1x<4> };
++
++// layouts from the file's row blocks (as the bench)
++void to_4x4(const bq4 * w, int N, int nb, uint8_t * out) {
++    for (int r = 0; r < N; r += 4) for (int b = 0; b < nb; b++) {
++        bq4x4 * o = (bq4x4 *) out + (size_t)(r / 4) * nb + b;
++        for (int k = 0; k < 4; k++) o->d[k] = w[(size_t)(r + k) * nb + b].d;
++        for (int i = 0; i < 16; ++i) { uint32_t e; memcpy(&e, &w[(size_t)(r + i % 4) * nb + b].qs[(i / 4) * 4], 4); e ^= 0x88888888u; memcpy(&o->qs[i * 4], &e, 4); }
++    }
++}
++void to_k1(const bq4 * w, int N, int nb, uint8_t * out) {
++    for (int t = 0; t < N / KT; t++) for (int b = 0; b < nb; b++) {
++        uint8_t * p = out + ((size_t) t * nb + b) * KB; __fp16 * d = (__fp16 *) p; uint8_t * col = p + KT * 2;
++        for (int r = 0; r < KT; r++) d[r] = w[(size_t)(t * KT + r) * nb + b].d;
++        for (int j = 0; j < 32; j++) for (int k = 0; k < 64; k++) {
++            const int r0 = t * KT + (k / 16) * 32 + k % 16; const bq4 & lo = w[(size_t) r0 * nb + b], & hi = w[(size_t)(r0 + 16) * nb + b];
++            const uint8_t ql = j < 16 ? lo.qs[j] & 15 : lo.qs[j - 16] >> 4, qh = j < 16 ? hi.qs[j] & 15 : hi.qs[j - 16] >> 4;
++            col[j * 64 + k] = ql | (qh << 4);
++        }
++    }
++}
++std::vector<bq8> rand_x(int nb, bool adversarial) {   // adversarial: some dx = 0 and some dx = 60000 blocks (the bench's)
++    std::vector<bq8> x(nb);
++    for (int b = 0; b < nb; b++) {
++        x[b].d = (__fp16)(0.01f + 0.02f * (rnd() & 1023) / 1023.f);
++        if (adversarial && b % 97 == 5) x[b].d = (__fp16) 0.0f;
++        if (adversarial && b % 89 == 7) x[b].d = (__fp16) 60000.f;
++        for (auto & q : x[b].qs) q = (int8_t)((int)(rnd() % 255) - 127);
++    }
++    return x;
++}
++// identity on the phone: each kernel against stock 4x4 fed the same x with the dropped inputs zeroed (memcmp), 256 rows;
++// weight scales as the bench: negative, -0, +0, subnormal and large values. bit v set = kernel v equal.
++int identity(int K, double keep) {
++    const int N = 256, nb = K / QK; std::vector<bq4> w((size_t) N * nb);
++    for (auto & b : w) {
++        const uint32_t u = rnd() & 1023; float dv = 0.001f + 0.01f * (rnd() & 1023) / 1023.f; if (rnd() & 1) dv = -dv;
++        b.d = (__fp16) dv;
++        if (u < 10) b.d = (__fp16) -0.0f; else if (u < 15) b.d = (__fp16) 0.0f;
++        else if (u < 25) { uint16_t h = (uint16_t)((rnd() & 0x3ff) | (rnd() & 0x8000)); memcpy(&b.d, &h, 2); }
++        else if (u < 30) b.d = (__fp16)(dv * 4000.f);
++        for (auto & q : b.qs) q = (uint8_t) rnd();
++    }
++    std::vector<bq8> x = rand_x(nb, true), xz = x; Lists L = mklists(nb, keep);
++    for (int b = 0; b < nb; b++) for (int j = 0; j < 32; j++) if (!(L.mask[b] >> j & 1)) xz[b].qs[j] = 0;
++    std::vector<uint8_t> w4((size_t) N * nb * 18), wk((size_t) N * nb * 18); to_4x4(w.data(), N, nb, w4.data()); to_k1(w.data(), N, nb, wk.data());
++    std::vector<float> ys(N), yk(N); stock_n(w4.data(), N, nb, xz.data(), ys.data());
++    int id = 0;
++    for (int v = 0; v < 3; v++) { std::fill(yk.begin(), yk.end(), 1.f); build_lists(L, x.data()); KFN[v](wk.data(), nb, x.data(), L, yk.data(), 0, N / KT); if (!memcmp(ys.data(), yk.data(), 4 * N)) id |= 1 << v; }
++    return id;
++}
++double touched_bytes(const Lists & L, int rows) { double by = 0; for (int b = 0; b < L.nb; b++) if (L.nk[b]) by += KT * 2 + 64.0 * L.nk[b]; return by * (rows / KT); }
++void fix_k1_scales(uint8_t * a, size_t n) { fix_scales(a, n, sizeof(bq4x4), 4); fix_scales(a, n, KB, KT); }   // both layouts' scales finite
++
++// ---- L1: K1, K1m, k1m4 at the subjects' shapes on one A78 (cpu 4) and the X1 (cpu 7)
++void l1(Out & o) {
++    const double keeps[6] = { 1.0, 0.666, 0.65, 0.60, 0.58, 0.50 };   // 0.666 / 0.65: the Llama-2 and DeepSeek body densities (R69 result)
++    for (int K : { 4096, 11008 }) for (double kp : { 1.0, 0.60, 0.58 }) {
++        const int id = identity(K, kp);
++        o.line("l1 identity k_in=%d keep=%.2f rows=256 k1=%d k1m=%d k1m4=%d", K, kp, id & 1, (id >> 1) & 1, (id >> 2) & 1);
++    }
++    const size_t AR = (size_t) 512 << 20; uint8_t * a = (uint8_t *) mmap(nullptr, AR, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    if (a == MAP_FAILED) { o.line("l1 error=mmap errno=%d", errno); return; }
++    fill(a, AR); fix_k1_scales(a, AR);
++    std::vector<float> y(1024);
++    for (int K : { 4096, 11008 }) {
++        const int nb = K / QK; const size_t rb = (size_t) nb * 18; std::vector<bq8> xs = rand_x(nb, false);
++        std::vector<Lists> Ls; for (double kp : keeps) { Ls.push_back(mklists(nb, kp)); build_lists(Ls.back(), xs.data()); }
++        for (int cpu : { 4, 7 }) for (int cold = 0; cold < 2; cold++) {
++            // hot: one 128-row tile (288 KB at 4096 inputs, 774 KB at 11008), repeated; cold: 1024-row matrices through 512 MB
++            const int rows = cold ? 1024 : KT; const size_t mb = rows * rb, nm = cold ? AR / mb : 1;
++            const size_t l2 = cpu == 7 ? (1u << 20) : (512u << 10);
++            const char * regime = cold ? "cold" : mb + (size_t) nb * 34 <= l2 ? "hot" : "l3";   // a tile larger than the core's L2 is served by the L3
++            const std::vector<int> set{ cpu };
++            struct R { std::string kern; double keep, d, ns, gbs; Cell2 c; };
++            std::vector<R> rs;
++            auto run = [&](const char * kern, double keep, double d, double bytes, double units, const std::function<void(const uint8_t *)> & f) {
++                size_t g = 0;
++                Cell2 c = cell2(set, [&](int, int, double & b, double & u) { f(a + g * mb); g = (g + 1) % nm; b += bytes; u += units; }, 0.5, 1.0);
++                rs.push_back({ kern, keep, d, c.secs * 1e9 / c.units, c.gbs, c });
++            };
++            auto stock = [&] { run("stock", 1.0, 1.0, (double) mb, (double) rows * K, [&](const uint8_t * m) { stock_n(m, rows, nb, xs.data(), y.data()); }); };
++            stock();
++            for (int s = 0; s < 6; s++) for (int v = 0; v < 3; v++) {
++                Lists & L = Ls[s];
++                run(KNAME[v], keeps[s], L.kept / (double) K, touched_bytes(L, rows), (double) L.kept * rows,
++                    [&, v](const uint8_t * m) { build_lists(L, xs.data()); KFN[v](m, nb, xs.data(), L, y.data(), 0, rows / KT); });
++            }
++            run("lists", 0.60, Ls[3].kept / (double) K, 0, (double) Ls[3].kept * rows, [&](const uint8_t *) { build_lists(Ls[3], xs.data()); });
++            stock();   // stock before and after; k is against their mean, drift = after / before
++            const double st = (rs.front().ns + rs.back().ns) / 2;
++            for (size_t i = 0; i < rs.size(); i++) {
++                const R & r = rs[i]; const bool s = r.kern == "stock";
++                o.line("l1 kern=%s%s k_in=%d rows=%d regime=%s ws_kb=%zu keep=%.3f d=%.3f cpu=%d ns_per_touched_w=%.4f stock_ns_per_w=%.4f k=%.3f t_vs_stock=%.3f%s gbs=%.2f cpu_ok=%d/%d thr=%s mhz=%s->%s mhz_range=%s %s",
++                       r.kern.c_str(), s ? (i ? "_after" : "_before") : "", K, rows, regime, mb >> 10, r.keep, r.d, cpu, r.ns, st, r.ns / st, r.ns / st * r.d,
++                       s && i ? (" drift=" + std::to_string(rs.back().ns / rs.front().ns)).c_str() : "", r.gbs, r.c.cpu_ok, r.c.n, thr(r.c, set).c_str(),
++                       r.c.m0.c_str(), r.c.m1.c_str(), r.c.mz.str().c_str(), rampstr(r.c.rp).c_str());
++            }
++        }
++    }
++    munmap(a, AR);
++}
++
++// ---- ggml cells: the CPU backend and the weight buffer type llama would pick (the first extra buffer type of the CPU
++// device that supports the mat-vec, else the CPU buffer), timed through ggml_backend_graph_compute
++struct GB {
++    ggml_backend_dev_t dev = nullptr; ggml_backend_t be = nullptr; std::vector<ggml_backend_buffer_type_t> bufts;
++    ggml_backend_set_n_threads_t set_nt = nullptr; std::string how;
++    bool init() {
++        dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU); how = "loaded";
++        if (!dev) { ggml_backend_load_all(); dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU); how = "load_all"; }
++        if (!dev) { ggml_backend_load("libggml-cpu-android_armv8.2_2.so"); dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU); how = "load_variant"; }
++        if (!dev || !(be = ggml_backend_dev_init(dev, nullptr))) return false;
++        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
++        auto ex = (ggml_backend_dev_get_extra_bufts_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_dev_get_extra_bufts");
++        if (ex) for (ggml_backend_buffer_type_t * p = ex(dev); p && *p; p++) bufts.push_back(*p);
++        bufts.push_back(ggml_backend_dev_buffer_type(dev));
++        set_nt = (ggml_backend_set_n_threads_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_n_threads");
++        return true;
++    }
++    ~GB() { if (be) ggml_backend_free(be); }
++    std::string desc() const { std::string s = how + ":" + ggml_backend_dev_name(dev) + ":"; for (auto b : bufts) s += std::string(ggml_backend_buft_name(b)) + "|"; return s; }
++    ggml_backend_buffer_type_t pick(ggml_type t, int K, int R) const {   // as llama-model.cpp's weight_buft_supported
++        for (auto bt : bufts) {
++            if (bt == bufts.back()) return bt;
++            ggml_init_params ip{ ggml_tensor_overhead() * 4, nullptr, true }; ggml_context * c = ggml_init(ip);
++            ggml_tensor * w = ggml_new_tensor_2d(c, t, K, R), * x = ggml_new_tensor_2d(c, GGML_TYPE_F32, K, 1), * op = ggml_mul_mat(c, w, x);
++            ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(bt, 0); w->buffer = b;
++            const bool ok = ggml_backend_dev_supports_op(dev, op);
++            ggml_backend_buffer_free(b); ggml_free(c);
++            if (ok) return bt;
++        }
++        return bufts.back();
++    }
++};
++struct GCell { double secs = 0, cpu_over_wall = 0; long calls = 0, niv = 0, off0 = 0; std::string m0, m1; Mhz mz; int cpu_ok = -1; Ramp rp; };
++// runs gf on the set: n threads, thread 0 = this thread (pinned to set[0]); more threads go through VOLLIE_POOL's
++// persistent pool with VOLLIE_CPUMASK = one cpu per thread (c1-olmoe 0010, the kit's pin path)
++GCell gtime(GB & g, ggml_cgraph * gf, const std::vector<int> & set, double warm, double meas, long max_calls = 0) {
++    Aff aff; GCell r; const int n = (int) set.size();
++    std::string mask; for (int i = 0; i < n; i++) { char b[24]; snprintf(b, sizeof b, "%s%llx", i ? "," : "", 1ull << set[i]); mask += b; }
++    EnvSet e1("VOLLIE_POOL", "1"), e2("VOLLIE_CPUMASK", mask);
++    pin(set[0]); if (g.set_nt) g.set_nt(g.be, n);
++    std::atomic<int> stop{0}; std::thread smp([&] { pin_cpus({ 0, 1, 2, 3 }); while (!stop.load()) { r.mz.sample(); sleep_s(0.1); } });
++    r.m0 = mhz();
++    r.rp = ramp(set, warm, RAMP_CAP, [&] { ggml_backend_graph_compute(g.be, gf); });
++    const double p0 = proc_cpu(); long iv0, v0; csw(iv0, v0, true); const auto t0 = clk::now();
++    do { ggml_backend_graph_compute(g.be, gf); r.calls++; if (where() != set[0]) r.off0++; } while (max_calls ? r.calls < max_calls : secs(t0, clk::now()) < meas);
++    r.secs = secs(t0, clk::now()); long iv1, v1; csw(iv1, v1, true);
++    r.cpu_over_wall = (proc_cpu() - p0) / (r.secs * n); r.niv = iv1 - iv0;
++    r.cpu_ok = where() == set[0];
++#if !defined(__linux__)
++    r.cpu_ok = -1;
++#endif
++    stop = 1; smp.join(); r.m1 = mhz();
++    return r;
++}
++struct WSet {   // ncopies weight tensors [K, R] of one type, x [K, 1] F32, and a graph of their mat-vecs
++    ggml_context * cw = nullptr, * cx = nullptr; ggml_backend_buffer_t bw = nullptr, bx = nullptr; ggml_cgraph * gf = nullptr;
++    std::string buft; size_t bytes = 0; double weights = 0; bool ok = false;
++    ~WSet() { if (bw) ggml_backend_buffer_free(bw); if (bx) ggml_backend_buffer_free(bx); if (cw) ggml_free(cw); if (cx) ggml_free(cx); }
++};
++std::vector<float> rand_f(size_t n) {   // about N(0, 1): sum of four uniforms
++    std::vector<float> f(n);
++    for (auto & v : f) { float s = 0; for (int k = 0; k < 4; k++) s += (rnd() & 0xffff) / 65535.f; v = (s - 2.f) * 1.732f; }
++    return f;
++}
++std::vector<uint8_t> templ(ggml_type t, int K, int nr) {   // nr rows quantized by ggml, replicated into the tensors
++    std::vector<float> f = rand_f((size_t) nr * K); std::vector<uint8_t> q((size_t) nr * ggml_row_size(t, K));
++    ggml_quantize_chunk(t, f.data(), q.data(), 0, nr, K, nullptr);
++    return q;
++}
++bool make_wset(GB & g, WSet & s, ggml_type t, int K, int R, int ncopies, const std::vector<uint8_t> & tq, int tr) {
++    ggml_init_params ip{ ggml_tensor_overhead() * (ncopies + 2), nullptr, true }; s.cw = ggml_init(ip);
++    ggml_init_params ix{ ggml_tensor_overhead() * (ncopies + 2) + ggml_graph_overhead_custom(ncopies + 8, false), nullptr, true }; s.cx = ggml_init(ix);
++    std::vector<ggml_tensor *> w(ncopies); for (auto & p : w) p = ggml_new_tensor_2d(s.cw, t, K, R);
++    ggml_backend_buffer_type_t bt = g.pick(t, K, R); s.buft = ggml_backend_buft_name(bt);
++    if (!(s.bw = ggml_backend_alloc_ctx_tensors_from_buft(s.cw, bt))) return false;
++    ggml_tensor * x = ggml_new_tensor_2d(s.cx, GGML_TYPE_F32, K, 1);
++    s.gf = ggml_new_graph_custom(s.cx, ncopies + 8, false);
++    for (auto * p : w) ggml_build_forward_expand(s.gf, ggml_mul_mat(s.cx, p, x));
++    if (!(s.bx = ggml_backend_alloc_ctx_tensors_from_buft(s.cx, g.bufts.back()))) return false;
++    const size_t rb = ggml_row_size(t, K); std::vector<uint8_t> h((size_t) R * rb);
++    for (int r = 0; r < R; r++) memcpy(h.data() + (size_t) r * rb, tq.data() + (size_t)(r % tr) * rb, rb);
++    for (auto * p : w) ggml_backend_tensor_set(p, h.data(), 0, h.size());
++    std::vector<float> xf = rand_f(K); ggml_backend_tensor_set(x, xf.data(), 0, 4 * (size_t) K);
++    s.bytes = h.size() * ncopies; s.weights = (double) K * R * ncopies; s.ok = true;
++    return true;
++}
++std::string gline(const GCell & c, const std::vector<int> & set) {
++    char b[400]; snprintf(b, sizeof b, "set=%s threads=%zu calls=%ld secs=%.3f proc_cpu_over_wall=%.3f proc_nivcsw=%ld cpu0_ok=%d cpu0_off_calls=%ld mhz=%s->%s mhz_range=%s %s",
++                          setname(set).c_str(), set.size(), c.calls, c.secs, c.cpu_over_wall, c.niv, c.cpu_ok, c.off0, c.m0.c_str(), c.m1.c_str(), c.mz.str().c_str(), rampstr(c.rp).c_str());
++    return b;
++}
++
++// ---- L5: per-type gemv through ggml (hot and cold on one A78 and the X1; hot on every thread of 7+4-5 and 4-7)
++const ggml_type TYPES[10] = { GGML_TYPE_Q4_0, GGML_TYPE_IQ4_NL, GGML_TYPE_Q4_K, GGML_TYPE_IQ4_XS, GGML_TYPE_Q3_K,
++                              GGML_TYPE_IQ3_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_Q2_K, GGML_TYPE_Q6_K, GGML_TYPE_Q8_0 };
++void l5(Out & o) {
++    GB g; if (!g.init()) { o.line("l5 error=no_cpu_backend"); return; }
++    o.line("l5 backend=%s", g.desc().c_str());
++    for (int K : { 4096, 11008 }) for (int ti = 0; ti <= 10; ti++) {   // Q4_0 again at the end: the drift reference
++        const ggml_type t = TYPES[ti % 10]; const size_t rb = ggml_row_size(t, K);
++        const std::vector<uint8_t> tq = templ(t, K, 64);
++        const int rh = std::max<int>(16, (int)((256u << 10) / rb) / 16 * 16);   // hot: about 256 KB per thread
++        const int ncold = (int) std::min<size_t>(64, ((size_t) 256 << 20) / (rb * 4096) + 1);   // cold: >= 256 MB of 4096-row tensors
++        struct C { const char * regime; std::vector<int> set; int R, nc; };
++        const C cs[] = { { "hot", { 4 }, rh, 1 }, { "hot", { 7 }, rh, 1 }, { "cold", { 4 }, 4096, ncold }, { "cold", { 7 }, 4096, ncold },
++                         { "hot", { 7, 4, 5 }, rh * 3, 1 }, { "hot", { 4, 5, 6, 7 }, rh * 4, 1 } };
++        std::unique_ptr<WSet> ws; int wR = -1, wN = -1;
++        for (const C & c : cs) {
++            if (c.R != wR || c.nc != wN) { ws.reset(new WSet); wR = c.R; wN = c.nc; if (!make_wset(g, *ws, t, K, c.R, c.nc, tq, 64)) { o.line("l5 error=alloc type=%s k_in=%d", ggml_type_name(t), K); break; } }
++            GCell r = gtime(g, ws->gf, c.set, 0.5, 1.0);
++            o.line("l5 type=%s pass=%d k_in=%d rows=%d copies=%d row_b=%zu regime=%s buft=%s ns_per_w=%.4f gbs=%.2f %s", ggml_type_name(t), ti / 10 + 1, K, c.R, c.nc, rb, c.regime,
++                   ws->buft.c_str(), r.secs * 1e9 / (r.calls * ws->weights), r.calls * (double) ws->bytes / r.secs / 1e9, gline(r, c.set).c_str());
++        }
++    }
++}
++
++// ---- L7: the head gemv (Q6_K, llama-quantize's default head type, and Q8_0) at each subject's vocabulary, cold
++void l7(Out & o) {
++    GB g; if (!g.init()) { o.line("l7 error=no_cpu_backend"); return; }
++    o.line("l7 backend=%s", g.desc().c_str());
++    for (int V : { 64000, 32000, 102400 }) for (ggml_type t : { GGML_TYPE_Q6_K, GGML_TYPE_Q8_0 }) {
++        WSet ws; if (!make_wset(g, ws, t, 4096, V, 1, templ(t, 4096, 64), 64)) { o.line("l7 error=alloc type=%s vocab=%d", ggml_type_name(t), V); continue; }
++        for (const std::vector<int> & set : { std::vector<int>{ 4, 5, 6 }, std::vector<int>{ 7, 4, 5 }, std::vector<int>{ 4, 5, 6, 7 } }) {
++            GCell r = gtime(g, ws.gf, set, 0.5, 1.5);
++            o.line("l7 type=%s vocab=%d k_in=4096 mb=%.1f buft=%s ms_per_call=%.3f gbs=%.2f %s", ggml_type_name(t), V, ws.bytes / 1048576.0, ws.buft.c_str(),
++                   r.secs * 1e3 / r.calls, r.calls * (double) ws.bytes / r.secs / 1e9, gline(r, set).c_str());
++        }
++    }
++}
++
++// ---- L6: barriers. ggml: a chain of N one-element ADD nodes (each a real node: a barrier after it), N = the subjects'
++// non-empty decode nodes (617 Yi-1.5-6B and Llama-2-7B, 579 DeepSeek-7B: host count of one -ub 1 graph) and 225 (the
++// mat-vec count); spin: the probe's own barrier N times per token on pinned threads
++struct Bar {
++    std::atomic<int> cnt{0}, gen{0}; int n = 1;
++    void wait() {
++        const int g = gen.load(std::memory_order_acquire);
++        if (cnt.fetch_add(1, std::memory_order_acq_rel) == n - 1) { cnt.store(0, std::memory_order_relaxed); gen.store(g + 1, std::memory_order_release); }
++        else while (gen.load(std::memory_order_acquire) == g) {}
++    }
++};
++void l6(Out & o) {
++    GB g; if (!g.init()) { o.line("l6 error=no_cpu_backend"); return; }
++    o.line("l6 backend=%s", g.desc().c_str());
++    const std::vector<std::vector<int>> sets = { { 7 }, { 4, 5, 6 }, { 7, 4, 5 }, { 4, 5, 6, 7 } };
++    for (int N : { 617, 579, 225 }) {
++        ggml_init_params ip{ ggml_tensor_overhead() * (N + 4) + ggml_graph_overhead_custom(N + 8, false), nullptr, true }; ggml_context * c = ggml_init(ip);
++        ggml_tensor * t = ggml_new_tensor_1d(c, GGML_TYPE_F32, 1), * one = ggml_new_tensor_1d(c, GGML_TYPE_F32, 1);
++        ggml_cgraph * gf = ggml_new_graph_custom(c, N + 8, false);
++        for (int i = 0; i < N; i++) t = ggml_add(c, t, one);
++        ggml_build_forward_expand(gf, t);
++        ggml_backend_buffer_t b = ggml_backend_alloc_ctx_tensors_from_buft(c, g.bufts.back());
++        if (!b) { o.line("l6 error=alloc"); ggml_free(c); return; }
++        ggml_backend_buffer_clear(b, 0);
++        for (const auto & set : sets) {
++            GCell r = gtime(g, gf, set, 0.3, 0, 200);
++            o.line("l6 kind=ggml nodes=%d graph_nodes=%d tokens=%ld ms_per_token=%.3f us_per_node=%.3f %s", N, ggml_graph_n_nodes(gf), r.calls, r.secs * 1e3 / r.calls,
++                   r.secs * 1e6 / (r.calls * (double) N), gline(r, set).c_str());
++        }
++        ggml_backend_buffer_free(b); ggml_free(c);
++        for (const auto & set : sets) {
++            if (set.size() < 2) continue;
++            Bar bar; bar.n = (int) set.size(); const int T = 200;
++            std::vector<std::thread> th; std::atomic<int> ready{0}; double ms = 0; Aff aff; pin_cpus({ 0, 1, 2, 3 });
++            for (int i = 0; i < bar.n; i++) th.emplace_back([&, i] {
++                pin(set[i]); ready++; while (ready.load() < bar.n) {}
++                for (int k = 0; k < 20 * N; k++) bar.wait();   // warm-up: 20 tokens
++                const auto t0 = clk::now();
++                for (int k = 0; k < T * N; k++) bar.wait();
++                if (i == 0) ms = secs(t0, clk::now()) * 1e3 / T;
++            });
++            for (auto & x : th) x.join();
++            o.line("l6 kind=spin barriers=%d set=%s threads=%zu tokens=%d ms_per_token=%.3f us_per_barrier=%.3f", N, setname(set).c_str(), set.size(), T, ms, ms * 1e3 / N);
++        }
++    }
++}
++
++// ---- L2, L3: read rate and compute ceiling at 3 and 4 big cores, with per-thread accounting
++void l23(Out & o) {
++    const size_t AR = (size_t) 1 << 30; uint8_t * a = (uint8_t *) mmap(nullptr, AR, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    if (a == MAP_FAILED) { o.line("l23 error=mmap"); return; }
++    fill_q4x4(a, AR); init_x();
++    const std::vector<std::vector<int>> sets3 = { { 4, 5, 6 }, { 7, 4, 5 }, { 4, 5, 6, 7 } };
++    for (const auto & set : sets3) {   // L2 (a): plain read, one slice per thread
++        std::vector<size_t> off(set.size(), 0);
++        Cell2 c = cell2(set, [&](int i, int n, double & b, double & u) {
++            const size_t sl = AR / n, ch = 1 << 20; const uint8_t * p = a + i * sl + off[i];
++            uint64x2_t s0 = vdupq_n_u64(0), s1 = s0, s2 = s0, s3 = s0;
++            for (size_t k = 0; k < ch; k += 64) {
++                s0 = vaddq_u64(s0, vld1q_u64((const uint64_t *)(p + k))); s1 = vaddq_u64(s1, vld1q_u64((const uint64_t *)(p + k + 16)));
++                s2 = vaddq_u64(s2, vld1q_u64((const uint64_t *)(p + k + 32))); s3 = vaddq_u64(s3, vld1q_u64((const uint64_t *)(p + k + 48)));
++            }
++            volatile uint64_t sink = vgetq_lane_u64(vaddq_u64(vaddq_u64(s0, s1), vaddq_u64(s2, s3)), 0); (void) sink;
++            off[i] = (off[i] + ch) % (sl - sl % ch); b += ch; u += ch;
++        }, 0.5, 1.5);
++        o.line("l2 kern=read set=%s threads=%zu gbs=%.2f cpu_ok=%d/%d thr=%s mhz=%s->%s mhz_range=%s %s", setname(set).c_str(), set.size(), c.gbs, c.cpu_ok, c.n, thr(c, set).c_str(), c.m0.c_str(), c.m1.c_str(), c.mz.str().c_str(), rampstr(c.rp).c_str());
++    }
++    for (const auto & set : sets3) {   // L2 (b): stock q4x4 gemv walked cold, one slice per thread
++        std::vector<size_t> g(set.size(), 0);
++        Cell2 c = cell2(set, [&](int i, int n, double & b, double & u) {
++            const size_t ng = AR / n / G4; float y[4 * 64];
++            for (int k = 0; k < 64; k++) { vst1q_f32(y + 4 * k, group4((const bq4x4 *)(a + (i * (AR / n) / G4 + g[i]) * G4), X, nullptr, 0)); g[i] = (g[i] + 1) % ng; }
++            volatile float sink = y[0]; (void) sink; b += 64.0 * G4; u += 64.0 * 4 * K;
++        }, 0.5, 1.5);
++        o.line("l2 kern=q4x4 set=%s threads=%zu gbs=%.2f ns_per_w=%.4f cpu_ok=%d/%d thr=%s mhz=%s->%s mhz_range=%s %s", setname(set).c_str(), set.size(), c.gbs, c.secs * c.n * 1e9 / c.units,
++               c.cpu_ok, c.n, thr(c, set).c_str(), c.m0.c_str(), c.m1.c_str(), c.mz.str().c_str(), rampstr(c.rp).c_str());
++    }
++    // L3: hot q4x4 on every thread at once, each in its own slice of its own L2 (A78 256 KB, X1 512 KB, as p2hot)
++    for (const auto & set : std::vector<std::vector<int>>{ { 4 }, { 7 }, { 4, 5, 6 }, { 7, 4, 5 }, { 4, 5, 6, 7 } }) {
++        std::vector<size_t> gi(set.size(), 0);
++        Cell2 c = cell2(set, [&](int i, int, double & b, double & u) {
++            const size_t ws = set[i] == 7 ? (512u << 10) : (256u << 10), ng = ws / G4; const uint8_t * base = a + (size_t) i * (4u << 20);
++            float y[4 * 16];
++            for (int k = 0; k < 16; k++) { vst1q_f32(y + 4 * k, group4((const bq4x4 *)(base + gi[i] * G4), X, nullptr, 0)); gi[i] = (gi[i] + 1) % ng; }
++            volatile float sink = y[0]; (void) sink; b += 16.0 * G4; u += 16.0 * 4 * K;
++        }, 0.5, 1.5);
++        std::string per; for (int i = 0; i < c.n; i++) { char b[32]; snprintf(b, sizeof b, "%s%d:%.3f", i ? "," : "", set[i], c.u[i] / c.secs / 1e9); per += b; }
++        o.line("l3 kern=q4x4_hot set=%s threads=%zu gw_per_s=%.3f per_thread_gw_per_s=%s cpu_ok=%d/%d thr=%s mhz=%s->%s mhz_range=%s %s", setname(set).c_str(), set.size(),
++               c.units / c.secs / 1e9, per.c_str(), c.cpu_ok, c.n, thr(c, set).c_str(), c.m0.c_str(), c.m1.c_str(), c.mz.str().c_str(), rampstr(c.rp).c_str());
++    }
++    munmap(a, AR);
++    // L2 (c): cold Q4_0 gemv through ggml's own threads (the weight buffer llama picks), 4096 inputs, 64 x 4096-row tensors (604 MB)
++    GB g; if (!g.init()) { o.line("l2 error=no_cpu_backend"); return; }
++    WSet ws; if (!make_wset(g, ws, GGML_TYPE_Q4_0, 4096, 4096, 64, templ(GGML_TYPE_Q4_0, 4096, 64), 64)) { o.line("l2 error=alloc"); return; }
++    for (const auto & set : sets3) {
++        GCell r = gtime(g, ws.gf, set, 0.5, 1.5);
++        o.line("l2 kern=ggml_q4_0 buft=%s mb=%.0f gbs=%.2f ns_per_w=%.4f %s", ws.buft.c_str(), ws.bytes / 1048576.0, r.calls * (double) ws.bytes / r.secs / 1e9,
++               r.secs * 1e9 / (r.calls * ws.weights), gline(r, set).c_str());
++    }
++}
++
++// ---- L4: one layer of each subject's mat-vecs, cold, stock against the rule, threads in lock step (spin barrier after
++// each mat-vec, 128-row chunks taken from a shared counter, as ggml's chunking); the rule's lists are built by thread 0
++// before each layer (their cost is in the layer time)
++struct Subj { const char * name; int kv, layers; double keep; };
++const Subj SUBJ[3] = { { "yi15-6b", 512, 32, 0.58 }, { "llama2-7b", 4096, 32, 0.60 }, { "deepseek7b", 4096, 30, 0.60 } };
++struct Mat { const char * name; int rows, K, in; bool rule; size_t off; };
++std::vector<Mat> layer_mats(const Subj & s, size_t & lb) {
++    std::vector<Mat> m = { { "q", 4096, 4096, 0, true, 0 }, { "k", s.kv, 4096, 0, false, 0 }, { "v", s.kv, 4096, 0, false, 0 }, { "o", 4096, 4096, 1, true, 0 },
++                           { "gate", 11008, 4096, 2, true, 0 }, { "up", 11008, 4096, 2, true, 0 }, { "down", 4096, 11008, 3, true, 0 } };
++    lb = 0; for (auto & x : m) { x.off = lb; lb += (size_t) x.rows * (x.K / QK) * 18; }
++    return m;
++}
++struct LRun { double ms = 0; long layers = 0; Cell2 c; };
++LRun run_layers(const std::vector<int> & set, int arm, uint8_t * a, size_t lb, int nl, const std::vector<Mat> & M, std::vector<std::vector<bq8>> & xs,
++                std::vector<Lists> & Ls, std::vector<std::vector<float>> & y, double warm, double meas) {
++    Aff aff; pin_cpus({ 0, 1, 2, 3 });
++    const int n = (int) set.size(); Bar bar; bar.n = n; std::atomic<int> ready{0}, phase{0}, cur{0}; std::atomic<int> ctr[8];
++    LRun r; Cell2 & c = r.c; c.n = n; c.cpu.assign(n, 0); c.wall.assign(n, 0); c.niv.assign(n, -1); c.nv.assign(n, -1); c.u.assign(n, 0);
++    c.chk.assign(n, 0); c.off.assign(n, 0); c.other.assign(n, -1);
++    std::vector<int> ok(n); std::vector<std::thread> th; clk::time_point ts, te;
++    for (int i = 0; i < n; i++) th.emplace_back([&, i] {
++        bool p = pin(set[i]); int c0 = where(); ready++;
++        while (ready.load() < n) {}
++        int li = 0, last = 0; long cnt = 0; double q0 = 0; clk::time_point w0; long iv0 = -1, v0 = -1;
++        for (;;) {
++            if (i == 0) {
++                const int ph = phase.load(); cur.store(ph);
++                for (int k = 0; k < 8; k++) ctr[k].store(0, std::memory_order_relaxed);
++                if (arm) for (int k = 0; k < 4; k++) build_lists(Ls[k], xs[k].data());
++                if (ph == 1 && cnt == 0) ts = clk::now();
++            }
++            bar.wait();
++            const int ph = cur.load();
++            if (ph != last) {   // this thread's accounting window = the measured layers
++                if (ph == 1) { q0 = tcpu(); w0 = clk::now(); csw(iv0, v0, false); }
++                else { long iv1, v1; csw(iv1, v1, false); c.cpu[i] = tcpu() - q0; c.wall[i] = secs(w0, clk::now()); c.niv[i] = iv0 < 0 ? -1 : iv1 - iv0; c.nv[i] = v0 < 0 ? -1 : v1 - v0; }
++                last = ph;
++            }
++            if (ph == 2) break;
++            const uint8_t * base = a + (size_t) li * lb;
++            for (size_t m = 0; m < M.size(); m++) {
++                const Mat & x = M[m]; const int nb = x.K / QK, units = x.rows / KT;
++                for (;;) {
++                    const int u = ctr[m].fetch_add(1, std::memory_order_relaxed); if (u >= units) break;
++                    if (!arm || !x.rule) stock_n(base + x.off + (size_t) u * (KT / 4) * nb * sizeof(bq4x4), KT, nb, xs[x.in].data(), y[m].data() + u * KT);
++                    else KFN[arm - 1](base + x.off, nb, xs[x.in].data(), Ls[x.in], y[m].data(), u, u + 1);
++                    if (ph == 1) c.u[i] += 1;
++                }
++                bar.wait();
++            }
++            if (i == 0 && ph == 1) { cnt++; te = clk::now(); }
++            if (ph == 1) { const int w = where(); c.chk[i]++; if (w != set[i]) { c.off[i]++; c.other[i] = w; } }
++            li = (li + 1) % nl;
++        }
++        if (i == 0) r.layers = cnt;
++        ok[i] = p && c0 == set[i] && where() == set[i];
++    });
++    while (ready.load() < n) {}
++    c.m0 = mhz(); c.rp = ramp(set, warm, RAMP_CAP, [] { sleep_s(0.05); }); phase = 1; const auto t0 = clk::now();
++    while (secs(t0, clk::now()) < meas) { c.mz.sample(); sleep_s(0.1); }
++    phase = 2;
++    for (auto & t : th) t.join();
++    c.m1 = mhz(); for (int i = 0; i < n; i++) c.cpu_ok += ok[i];
++#if !defined(__linux__)
++    c.cpu_ok = -1;
++#endif
++    r.ms = r.layers ? secs(ts, te) * 1e3 / r.layers : -1;
++    return r;
++}
++void l4(Out & o) {
++    const std::vector<std::vector<int>> sets = { { 4, 5, 6 }, { 7, 4, 5 }, { 4, 5, 6, 7 } };
++    const char * arms[3] = { "stock", "k1", "k1m" };
++    for (const Subj & s : SUBJ) {
++        size_t lb; std::vector<Mat> M = layer_mats(s, lb);
++        const size_t AR = (size_t) 1 << 30; const int nl = (int)(AR / lb); const size_t used = nl * lb;
++        uint8_t * a = (uint8_t *) mmap(nullptr, used, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++        if (a == MAP_FAILED) { o.line("l4 error=mmap subj=%s", s.name); continue; }
++        fill(a, used); fix_k1_scales(a, used);   // every matrix size is a multiple of 2304 B, so both layouts' scale positions are fixed
++        std::vector<std::vector<bq8>> xs = { rand_x(128, false), rand_x(128, false), rand_x(128, false), rand_x(344, false) };
++        std::vector<Lists> Ls = { mklists(128, s.keep), mklists(128, s.keep), mklists(128, s.keep), mklists(344, s.keep) };
++        for (int k = 0; k < 4; k++) build_lists(Ls[k], xs[k].data());
++        std::vector<std::vector<float>> y(M.size(), std::vector<float>(11008));
++        // identity at this subject's keep: K1 and K1m against stock with the dropped inputs zeroed (memcmp), both input widths
++        const int i4 = identity(4096, s.keep), i11 = identity(11008, s.keep); const int id[2] = { i4 & i11 & 1, (i4 & i11) >> 1 & 1 };
++        // bytes per layer: stock reads every matrix; the rule reads k, v whole and the kept columns (plus scales) of the rest
++        double bst = (double) lb, bru = 0; for (auto & x : M) bru += x.rule ? touched_bytes(Ls[x.in], x.rows) : (double) x.rows * (x.K / QK) * 18;
++        o.line("l4 identity subj=%s keep=%.2f k1=%d k1m=%d layers_in_arena=%d layer_mb=%.1f rule_layer_mb=%.1f d_in=%.3f/%.3f/%.3f/%.3f", s.name, s.keep, id[0], id[1], nl, bst / 1048576.0,
++               bru / 1048576.0, Ls[0].kept / 4096.0, Ls[1].kept / 4096.0, Ls[2].kept / 4096.0, Ls[3].kept / 11008.0);
++        for (const auto & set : sets) {
++            double sum[3] = { 0, 0, 0 };
++            const int order[6] = { 0, 1, 2, 2, 1, 0 };   // ABBA (A stock, B K1, C K1m: A B C C B A)
++            for (int k = 0; k < 6; k++) {
++                const int arm = order[k];
++                LRun r = run_layers(set, arm, a, lb, nl, M, xs, Ls, y, 0.5, 1.5);
++                sum[arm] += r.ms / 2;
++                const double by = arm ? bru : bst;
++                o.line("l4 subj=%s arm=%s pos=%d set=%s threads=%zu keep=%.2f layers=%ld ms_per_layer=%.3f body_ms=%.2f n_layer=%d gbs=%.2f cpu_ok=%d/%d thr=%s mhz=%s->%s mhz_range=%s %s",
++                       s.name, arms[arm], k, setname(set).c_str(), set.size(), arm ? s.keep : 1.0, r.layers, r.ms, r.ms * s.layers, s.layers, by / (r.ms * 1e6),
++                       r.c.cpu_ok, r.c.n, thr(r.c, set).c_str(), r.c.m0.c_str(), r.c.m1.c_str(), r.c.mz.str().c_str(), rampstr(r.c.rp).c_str());
++            }
++            o.line("l4sum subj=%s set=%s t_stock=%.3f t_k1=%.3f t_k1m=%.3f k1_vs_stock=%.3f k1m_vs_stock=%.3f body_ms_stock=%.2f body_ms_k1=%.2f body_ms_k1m=%.2f", s.name, setname(set).c_str(),
++                   sum[0], sum[1], sum[2], sum[1] / sum[0], sum[2] / sum[0], sum[0] * s.layers, sum[1] * s.layers, sum[2] * s.layers);
++        }
++        munmap(a, used);
++        // the same stock layer through a ggml graph (Q4_0 weights in the buffer llama picks), cold, as many layers as fit 1 GB
++        GB g; if (!g.init()) { o.line("l4 error=no_cpu_backend"); continue; }
++        const int ng = nl; ggml_init_params ip{ ggml_tensor_overhead() * (M.size() * ng + 2), nullptr, true }; ggml_context * cw = ggml_init(ip);
++        ggml_init_params ix{ ggml_tensor_overhead() * (M.size() * ng + 8) + ggml_graph_overhead_custom(M.size() * ng + 8, false), nullptr, true }; ggml_context * cx = ggml_init(ix);
++        std::vector<ggml_tensor *> w; for (int l = 0; l < ng; l++) for (auto & x : M) w.push_back(ggml_new_tensor_2d(cw, GGML_TYPE_Q4_0, x.K, x.rows));
++        ggml_backend_buffer_type_t bt = g.pick(GGML_TYPE_Q4_0, 4096, 4096);
++        ggml_backend_buffer_t bw = ggml_backend_alloc_ctx_tensors_from_buft(cw, bt);
++        ggml_tensor * xin[4] = { ggml_new_tensor_2d(cx, GGML_TYPE_F32, 4096, 1), ggml_new_tensor_2d(cx, GGML_TYPE_F32, 4096, 1), ggml_new_tensor_2d(cx, GGML_TYPE_F32, 4096, 1), ggml_new_tensor_2d(cx, GGML_TYPE_F32, 11008, 1) };
++        ggml_cgraph * gf = ggml_new_graph_custom(cx, M.size() * ng + 8, false);
++        for (int l = 0; l < ng; l++) for (size_t m = 0; m < M.size(); m++) ggml_build_forward_expand(gf, ggml_mul_mat(cx, w[l * M.size() + m], xin[M[m].in]));
++        ggml_backend_buffer_t bx = bw ? ggml_backend_alloc_ctx_tensors_from_buft(cx, g.bufts.back()) : nullptr;
++        if (!bw || !bx) o.line("l4 error=ggml_alloc subj=%s", s.name);
++        else {
++            std::vector<uint8_t> h((size_t) 11008 * (4096 / QK) * 18); fill(h.data(), h.size());
++            for (size_t i = 0; i + 18 <= h.size(); i += 18) { __fp16 d = (__fp16)(0.001f + 0.01f * (rnd() & 1023) / 1023.f); memcpy(h.data() + i, &d, 2); }
++            for (auto * t : w) ggml_backend_tensor_set(t, h.data(), 0, ggml_nbytes(t));
++            for (auto * t : xin) { std::vector<float> f = rand_f(t->ne[0]); ggml_backend_tensor_set(t, f.data(), 0, 4 * f.size()); }
++            for (const auto & set : sets) {
++                GCell r = gtime(g, gf, set, 0.5, 1.5);
++                const double ms = r.secs * 1e3 / (r.calls * (double) ng);
++                o.line("l4 subj=%s arm=ggml_stock buft=%s layers_in_graph=%d ms_per_layer=%.3f body_ms=%.2f n_layer=%d gbs=%.2f %s", s.name, ggml_backend_buft_name(bt), ng, ms,
++                       ms * s.layers, s.layers, bst / (ms * 1e6), gline(r, set).c_str());
++            }
++        }
++        if (bx) ggml_backend_buffer_free(bx);
++        if (bw) ggml_backend_buffer_free(bw);
++        ggml_free(cx); ggml_free(cw);
++    }
++}
++
++// ---- anonymous-memory capacity (bonnie-path.md D3): with repack on, the body lives in anonymous memory, not in the
++// file's pages. One anonymous arena of gb GB, filled with incompressible data by 3 threads, then read by 3 threads (4-6)
++// for 20 passes or 45 s, with P1's counters; the header again at the end (PSI and zram after the arm)
++void anon(Out & o, double gb) {
++    const size_t n = (size_t)(gb * 1e9) & ~(size_t) 4095;
++    o.line("anon n=%.1f memavail_kb=%ld swapfree_kb=%ld", gb, kv("/proc/meminfo", "MemAvailable"), kv("/proc/meminfo", "SwapFree"));
++    uint8_t * m = (uint8_t *) mmap(nullptr, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    if (m == MAP_FAILED) { o.line("anon n=%.1f error=mmap errno=%d", gb, errno); return; }
++    auto set = cores("4-6"); long f0 = majflt(); auto t0 = clk::now();
++    { std::vector<std::thread> th;
++      for (int i = 0; i < 3; i++) th.emplace_back([&, i] {
++          pin(set[i]); uint64_t s = 0x9e3779b97f4a7c15ull * (i + 1); uint64_t * p = (uint64_t *)(m + i * (n / 3)); const size_t c = (n / 3) / 8;
++          for (size_t k = 0; k < c; k++) { s ^= s << 13; s ^= s >> 7; s ^= s << 17; p[k] = s; }
++      });
++      for (auto & t : th) t.join(); }
++    o.line("anon n=%.1f fill_s=%.1f majflt=%ld vmrss_kb=%ld vmswap_kb=%ld swapfree_kb=%ld", gb, secs(t0, clk::now()), majflt() - f0, kv("/proc/self/status", "VmRSS"),
++           kv("/proc/self/status", "VmSwap"), kv("/proc/meminfo", "SwapFree"));
++    const auto a0 = clk::now();
++    for (int pass = 0; pass < 20 && secs(a0, clk::now()) < 45; pass++) {
++        long g0 = majflt(); rusage r0; getrusage(RUSAGE_SELF, &r0); auto p0 = clk::now(); std::vector<std::thread> th;
++        for (int i = 0; i < 3; i++) th.emplace_back([&, i] {
++            pin(set[i]); const uint8_t * p = m + i * (n / 3); uint64x2_t acc = vdupq_n_u64(0);
++            for (size_t k = 0; k + 64 <= n / 3; k += 64) acc = vaddq_u64(acc, vaddq_u64(vld1q_u64((const uint64_t *)(p + k)), vld1q_u64((const uint64_t *)(p + k + 32))));
++            volatile uint64_t sink = vgetq_lane_u64(acc, 0); (void) sink;
++        });
++        for (auto & t : th) t.join();
++        const double sec = secs(p0, clk::now()); rusage r1; getrusage(RUSAGE_SELF, &r1);
++        o.line("anon n=%.1f pass=%d s=%.3f gbs=%.2f majflt=%ld minflt=%ld cached=%ld swapfree=%ld vmswap=%ld vmrss=%ld", gb, pass, sec, n / sec / 1e9, majflt() - g0,
++               r1.ru_minflt - r0.ru_minflt, kv("/proc/meminfo", "Cached"), kv("/proc/meminfo", "SwapFree"), kv("/proc/self/status", "VmSwap"), kv("/proc/self/status", "VmRSS"));
++    }
++    munmap(m, n);
++    hdr(o);
++    o.line("anon n=%.1f done", gb);
++}
++
++// ---- anchors: R69's plain read and cold q4x4 rows on the three big-core sets (p2's code; compare with R69 in this heat state)
++void anchors(Out & o) {
++    const size_t AR = (size_t) 1 << 30; uint8_t * a = (uint8_t *) mmap(nullptr, AR, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    if (a == MAP_FAILED) { o.line("a error=mmap"); return; }
++    fill_q4x4(a, AR); init_x();
++    p2ab(o, "a", a, AR, { "4-6", "7,4-5", "4-7" });
++    munmap(a, AR);
++}
++
++} // namespace r32
++
+ } // namespace
+ 
+ extern "C" int llama_vollie_probe(const char * block, const char * dir, char * out, size_t cap);
+@@ -677,9 +1431,20 @@ extern "C" int llama_vollie_probe(const char * block, const char * dir, char * o
+     if (!on || !*on || !strcmp(on, "0") || !out || cap < 2) return -1;
+     out[0] = 0; Out o{out, cap};
+     auto t0 = clk::now();
+-    if (strcmp(block, "hdr") && strcmp(block, "p2") && strcmp(block, "p2d") && strcmp(block, "x1") && strcmp(block, "x2") && strcmp(block, "p1")) return -2;
++    static const char * const known[] = { "hdr", "p2", "p2d", "x1", "x2", "p1", "a", "l1", "l4", "l23", "l5", "l6", "l7", "anon34", "anon42" };
++    bool ok = false; for (const char * k : known) ok |= !strcmp(block, k);
++    if (!ok) return -2;
+     hdr(o);
+     if (!strcmp(block, "hdr")) {}
++    else if (!strcmp(block, "a")) r32::anchors(o);
++    else if (!strcmp(block, "l1")) r32::l1(o);
++    else if (!strcmp(block, "l4")) r32::l4(o);
++    else if (!strcmp(block, "l23")) r32::l23(o);
++    else if (!strcmp(block, "l5")) r32::l5(o);
++    else if (!strcmp(block, "l6")) r32::l6(o);
++    else if (!strcmp(block, "l7")) r32::l7(o);
++    else if (!strcmp(block, "anon34")) r32::anon(o, 3.4);
++    else if (!strcmp(block, "anon42")) r32::anon(o, 4.2);
+     else if (!strcmp(block, "p2")) p2(o);
+     else if (!strcmp(block, "p2d")) d2(o);
+     else if (!strcmp(block, "x1")) x1(o);

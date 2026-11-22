@@ -17,6 +17,18 @@ series, and every `c3-probe:` line; saved in the app and next to the models, and
 Build: `APP_SERIES="patches/app-c2 patches/app-c3" tools/c2_build_kit.sh lab/llama.cpp-c3k lab/app-c3 patches/llama.cpp
 patches/llama.cpp-c1-olmoe patches/llama.cpp-c3`, then the APK is copied to a plain name without '+'.
 
+## 0002-kit-r32-probe.patch
+
+Kit r32 (version 1.32.0+32, versionCode 32), applied after 0001; installs over r29. The button "Run c3 probe r32" (no
+model needed) runs the blocks a, l1, l4, l23, l5, l6, l7, x2, anon34, anon42 in that order with `patches/llama.cpp-c3/0003`.
+The cool-down gate before each block waits at most 180 s (r29: 90 s) and records `max_s` and whether it timed out. The
+report is saved before each block (`running_block`) and after it, so a killed run (anon arms) keeps the finished blocks.
+The probe's output buffer is 1 MB. File name `vollie-c3probe-r32-<time>.json`.
+
+Build: `APP_SERIES="$(cd patches/app-c2 && ls 00[01][0-9]-kit-r[12][0-9].patch | sed 's#^#patches/app-c2/#' | tr '\n' ' ')patches/app-c3"
+tools/c2_build_kit.sh lab/llama.cpp-c3r32 lab/app-c3 patches/llama.cpp patches/llama.cpp-c1-olmoe patches/llama.cpp-c3`
+(app-c2 0001 to 0012 by name: 0013 and 0014 are not in the c3 app copy), then the APK is copied to a plain name without '+'.
+
 ## D1 harness (memo-05 §4): design only, no patch yet
 
 D1 loads a real Q4_0 7B body with no repack, maps it executable and touches it, and records residency and kills

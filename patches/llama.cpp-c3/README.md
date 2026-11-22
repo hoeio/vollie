@@ -43,3 +43,28 @@ Checked (*host*, Mistral-7B-v0.3 Q4_0, `llama-perplexity -c 512 -t 8`, knob unse
 `620d2225c` at `-b 512` and `-ub 32` (4 chunks) and `-ub 1` (2 chunks). The new code compiles with the NDK (API 28,
 `-march=armv8.2-a+dotprod+fp16`). Blocks `hdr` and `p2d` ran on the host as a functional test (identity lines all 1;
 host timings mean nothing for the phone). Parser: `tools/c3_probe_parse.py` (`--selftest`) reads `hdr` and `p2d`.
+
+## 0003-r72-rows.patch: kit r32 rows for R72 (no numerics change)
+
+Changes only `src/llama-vollie-probe.cpp` (on 0002). Still off unless `VOLLIE_PROBE` is set, and nothing outside the file
+calls it. Plan: `campaigns/03-dense15-5pct/reports/memo-08-work/clyde-r72-plan.md`; build notes and limits:
+`memo-08-work/tom-r32-build.md`. Kernels K1, K1m, k1m4 as `tools/c3_k1v_bench.c`.
+
+| block | what it runs |
+|---|---|
+| `a` | R69's p2 read and q4x4 anchors on 4-6, 7+4-5, 4-7 (R69 timing) |
+| `l1` | K1 / K1m / k1m4 at keep 1.0, 0.666, 0.65, 0.60, 0.58, 0.50, widths 4096 and 11008, hot and cold, on cpu 4 and cpu 7; stock before and after each group; identity lines first |
+| `l23` | 3 and 4 big cores: read, q4x4 and ggml Q4_0 gemv, cold and per-thread hot slices |
+| `l4` | one layer of real shapes per subject (Yi-1.5-6B, Llama-2-7B, DeepSeek-7B), stock vs rule (k, v stock; others K1 / K1m), 3 core sets, ABBA, plus a ggml stock layer |
+| `l5` | ggml gemv cost of 10 weight types (Q4_0 twice) at 4096 and 11008, hot and cold |
+| `l6` | graph barrier cost: chains of 617, 579, 225 nodes on 4 core sets, plus a spin barrier |
+| `l7` | Q6_K and Q8_0 output head at vocab 64000, 32000, 102400 |
+| `x2` | r29's X2 rows, then a retry built with `-cl-opt-disable` (`x2r`), and an `x2info` line (driver, versions, extensions) |
+| `anon34`, `anon42` | 3.4 GB and 4.2 GB of anonymous memory, filled and read back, with faults, swap and RSS |
+
+Every measured cell prints its clock range sampled during the measurement, a ramp check (`ramp_s`, `ramp_ok`, the
+policy's max), and per thread CPU time over wall time, involuntary and voluntary context switches and the
+`sched_getcpu` off-core count. Checked (*host*, Llama-2-7B Q4_0, `llama-perplexity -c 512 -t 8`, knob unset): running
+values identical to stock `620d2225c` at `-b 512` and `-ub 32` (4 chunks) and `-ub 1` (2 chunks). Compiles with the NDK
+(`-Wall -Wextra` clean). All blocks ran on the host as a functional test (identity lines all 1; host timings mean nothing
+for the phone). Parser: `tools/c3_probe_parse.py` (`--selftest`).
