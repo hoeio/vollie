@@ -60,3 +60,33 @@ for name, g in (("Mistral-7B-Instruct-v0.3", .33), ("Qwen2.5-7B-Instruct", .36))
         cells = ["%.1f to %.1f" % (max(ffn(name, r, n, 12), ffn(name, r, n, 12, **kw_lo)), max(ffn(name, r, n, 6), ffn(name, r, n, 6, **kw_hi)))
                  for r, n in ((24, 3), (35, 3), (35, 4), (45, 4))]
         print("| %s | %s | %s |" % (name, lab, " | ".join(cells)))
+# Section 7 addendum (2026-11-22): slots 2-3 among Mistral, Qwen2.5 (plain) and Llama-2, DeepSeek (attn k, v dense,
+# stock layout; host: tom-split.md section 5). Agreed conventions (ebony-compute.md section 8): c 40.4 GB/s, fourth
+# core x 1.15 on compute at R69's four-core read rate (27 GB/s, band 21 to 35), O 8, printed 0.95 x steady.
+R4 = (27, 35)
+def p7(name, s, kvdense, r, k, O, n=3):
+    m = next(x for x in M if x[0] == name); WL, WH, _ = shape(m)
+    kv = 2 * m[4] * m[8] * m[9] * m[3] / 1e9 if kvdense else 0.0; WS = WL - kv     # weights left on the stock path
+    c = C[3] * (1.15 if n == 4 else 1)
+    t = lambda s, k: max((WH * Q6 + kv * Q4 + WS * Q4 * (1 - 0.889 * s)) / r, (WH + kv + WS * (1 - s) * k) / c) * 1000 + O
+    return 950 / min(t(0, 1), t(s, k)), WL, WH, kv, WS, c
+S7 = (("Mistral-7B-Instruct-v0.3", .40, False), ("Qwen2.5-7B-Instruct", .35, False),
+      ("Llama-2-7b-chat", .40, True), ("deepseek-llm-7b-chat", .40, True))
+band7 = lambda nm, s, kv, r, n=3: (p7(nm, s, kv, r, 2.2, 12, n)[0], p7(nm, s, kv, r, 1.55, 6, n)[0])
+rows7 = sorted(S7, key=lambda x: -sum(sum(band7(x[0], x[1], x[2], r)) for r in (19, 24, 35)))
+print("\n| rank | model | rule (host frontier) | share of body skipped | stock r 19 / 24 / 35 | levers r 19 | levers r 24 | levers r 35 | 4 cores at r4 27 / 35 |\n|" + "---|" * 9)
+for i, (nm, s, kv) in enumerate(rows7, 1):
+    _, WL, WH, kvw, WS, _ = p7(nm, s, kv, 19, 1, 8)
+    st = " / ".join("%.1f" % p7(nm, 0, kv, r, 1, 8)[0] for r in (19, 24, 35))
+    b = ["%.1f to %.1f" % band7(nm, s, kv, r) for r in (19, 24, 35)]
+    f4 = " / ".join("%.1f to %.1f" % band7(nm, s, kv, r, 4) for r in R4)
+    print("| %d | %s | %s | %.1f %% | %s | %s | %s |" % (i, nm, "%.2f, k and v dense" % s if kv else "%.2f uniform" % s,
+          100 * s * WS / WL, st, " | ".join(b), f4))
+T7 = 950 / 12 - 8
+print("\n| model | k max, 3 cores | k max, 4 cores (x 1.15) | r min GB/s at s | Q4_0 GB | R69 step | P(step held) |\n|" + "---|" * 7)
+for nm, s, kv in rows7:
+    _, WL, WH, kvw, WS, _ = p7(nm, s, kv, 19, 1, 8); B = WL * Q4 + WH * Q6
+    km = ["%.2f" % ((C[3] * f * T7 / 1000 - WH - kvw) / (WS * (1 - s))) for f in (1, 1.15)]
+    rmin = (WH * Q6 + kvw * Q4 + WS * Q4 * (1 - 0.889 * s)) / T7 * 1000
+    print("| %s | %s | %s | %.1f | %.2f | %.1f | %s |" % (nm, km[0], km[1], rmin, B, step(B), PH[step(B)]))
+assert abs(0.834 - (lambda r: r[4] / r[1])(p7("Llama-2-7b-chat", .4, True, 19, 1, 8))) < 0.001   # Tom's 33.4 % = 0.834 x 0.40

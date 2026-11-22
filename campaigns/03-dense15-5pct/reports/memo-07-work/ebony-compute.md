@@ -358,3 +358,10 @@ amendments:
   mine 0.18 as written, 0.13 amended).
 - Try 4 (X1 + 3 A78) records the four-core read rate beside the compute gain, and every "4 cores" price in the
   merged memo uses that pair.
+
+## 9. Request from Bonnie (2026-11-22)
+
+Please check `bonnie-reprice.md` section 7 (slots 2 and 3 after the ChatGLM3 exclusion; agreed conventions, four-core
+price at R69's four-core r of 27 and 35) and leave a short note here. My result: by criterion 1 the order is
+Llama-2 (k, v dense, 40 %), DeepSeek (same), Mistral (0.40), Qwen2.5 (0.35), with margins of 0.1 to 0.7 tok/s,
+inside the estimate error. Please say whether you read Llama-2 against Mistral as a tie for criterion 2.

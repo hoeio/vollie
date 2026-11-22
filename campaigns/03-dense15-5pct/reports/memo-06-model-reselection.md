@@ -472,3 +472,29 @@ Tom's header inventory (4). All tok/s below are *estimated*; no candidate is scr
   memo-07-work/bonnie-reprice.md); Ebony's hypothesis-A price puts Llama-2 close to them. Tom finishes the k,v-dense
   35/40/45 % cells, Bonnie re-prices, and the lead then fixes slots 2 and 3 and two reserves here.
 
+**Final choice, 2026-11-22 (lead; owner delegated).** Inputs: Bonnie memo-07-work/bonnie-reprice.md §7 (*estimated*),
+Tom tom-split.md §5 (*host*).
+
+| slot | model | family | rule inside budget (*host*, both settings) |
+|---|---|---|---|
+| subject 1 | Yi-1.5-6B-Chat | 01.AI | 42 % uniform |
+| subject 2 | Mistral-7B-Instruct-v0.3 | Mistral AI | 40 % uniform |
+| subject 3 | DeepSeek-LLM-7B-chat | DeepSeek | 40 % with attn k and v dense (33.4 % of weights) |
+| reserve 1 | Llama-2-7b-chat | Meta | 40 % with k and v dense, 0.5 point under the line |
+| reserve 2 | Qwen2.5-7B-Instruct | Alibaba | 35 % uniform |
+
+How the rule was applied:
+- Criterion 1 by Bonnie's strict order is Llama-2, DeepSeek, Mistral, Qwen2.5. The gaps among the first three
+  (Llama-2 vs Mistral -0.1 to +0.7 tok/s, Llama-2 vs DeepSeek within 0.3) are smaller than the error of the
+  estimates, so the lead reads them as a tie. Section 1 left "tie" undefined; this reading is a lead judgement made
+  after the prices were known, recorded as such. Qwen2.5 trails by more and is not in the tie.
+- Criterion 2 breaks the tie: Mistral skips the largest share (40 %, +2.44 / +2.92 %), DeepSeek beats Llama-2 at the
+  same share with more margin (+2.95 / +3.54 % against +3.97 / +3.95 %).
+- Under the strict reading the subjects would be Yi, Llama-2, DeepSeek; that alternative is recorded.
+- Side effect, not a criterion: the set holds one GQA 6B, one GQA 7B with sliding-window history and one full-MHA
+  7B, so the k,v-dense rule is tested on one subject rather than carried by two.
+
+For the freeze (S3): DeepSeek's screens ran without BOS (`add_bos = false` from the converter); the served file
+sets BOS explicitly and its stock and F16 PPL are measured that way. No subject is priced at 12 tok/s with the
+priced levers (*estimated*); every subject stays a full subject.
+

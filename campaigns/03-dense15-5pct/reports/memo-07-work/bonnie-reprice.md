@@ -291,7 +291,77 @@ Tom to state, with no run: which layout K1 at TR 128 reads, and whether the row 
 | 5 | the type that fits C (Q3_K_M or a mixed file), if the 3.4 step is not held | B4 | Yi | 5.6 (7.4 with a 1.5 x kernel); a floor, not a route to 12 |
 | 6 | **Z3** C6 unit skip; **Z4** GPU compute lane; **Z5** up rule; **Z6** head screen | U2 and U3; R69 Rule D; U4; none | as Ebony's section 5 | as she priced; Z3 at my u (0.10): about half of hers |
 
-## 7. Not done, and where I may be wrong
+## 7. Addendum 2026-11-22: slots 2 and 3 after the owner's exclusion of ChatGLM3
+
+Trigger: the owner excluded ChatGLM3-6B (2026-11-22); Yi-1.5-6B is subject 1 (lead). New *host* input:
+`tom-split.md` section 5 (`6e90fb7`). With the attention k and v inputs dense, Llama-2-7b and DeepSeek-LLM-7B hold
+40 % on every other input at both `-b 512` and `-ub 1`: Llama-2 +3.97 / +3.95 % (0.5 point under the line),
+DeepSeek +2.95 / +3.54 %. That skips 33.4 % of the block's weights (k and v are 16.6 % of the body). Mistral
+(0.40) and Qwen2.5 (0.35) are plain uniform frontiers (memo-02).
+
+Conventions (agreed, `ebony-compute.md` section 8): c 40.4 GB/s = 71.8 G weights/s on X1 + 2 A78; fourth core
+x 1.15 on compute, priced at R69's own four-core read rate (pre-registered 27 GB/s, 21 to 35), not the column's
+r; O 8 ms; printed = 0.95 x steady. Band as in section 1 (k 2.2 with O 12, to k 1.55 with O 6). k and v keep the
+stock 4x4 layout at k = 1; every other matrix uses the K1 layout, one layout per tensor, so the resident set is the
+stock size (Tom, `tom-split.md` section 4). All tok/s *estimated*; frontiers *host*. Script:
+`bonnie_reprice.py`, last block.
+
+| rank | model | rule (host frontier) | share of body skipped | stock r 19 / 24 / 35 | levers r 19 | levers r 24 | levers r 35 | 4 cores at r4 27 / 35 |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Llama-2-7b-chat | 0.40, k and v dense | 33.4 % | 4.6 / 5.8 / 8.3 | 6.2 to 6.5 | 7.4 to 8.1 | 8.0 to 10.2 | 8.4 to 9.1 / 8.4 to 11.5 |
+| 2 | deepseek-llm-7b-chat | 0.40, k and v dense | 33.4 % | 4.6 / 5.8 / 8.2 | 6.1 to 6.3 | 7.5 to 7.9 | 8.0 to 10.4 | 8.4 to 8.8 / 8.6 to 11.2 |
+| 3 | Mistral-7B-Instruct-v0.3 | 0.40 uniform | 40.0 % | 4.3 / 5.4 / 7.7 | 6.3 to 6.6 | 6.7 to 8.2 | 7.5 to 9.7 | 7.6 to 9.2 / 7.6 to 11.0 |
+| 4 | Qwen2.5-7B-Instruct | 0.35 uniform | 35.0 % | 4.2 / 5.3 / 7.6 | 5.6 to 5.8 | 6.4 to 7.3 | 7.3 to 9.0 | 7.2 to 8.2 / 7.3 to 10.3 |
+
+Ranking key: sum of both band ends at r 19, 24 and 35.
+
+- **Order by criterion 1: Llama-2-7b, DeepSeek-LLM-7B, Mistral-7B-v0.3, Qwen2.5-7B.** Keeping k and v dense
+  lowers compute at a high kernel cost (they run at k = 1). That is why the two full-attention models lead at r 24
+  and r 35 with fewer skipped weights than Mistral.
+- **The margins are small.**
+  - Llama-2 against Mistral: −0.1 at r 19; +0.7 / −0.1 at r 24 (low / high end); +0.5 / +0.5 at r 35.
+  - Llama-2 against DeepSeek: within 0.3 everywhere.
+  - Both gaps are smaller than the error of these estimates (c, r, k are all R69 centres). Whether that counts as
+    a tie, which passes to criterion 2, is the lead's call.
+  - If it is a tie, criterion 2 favours Mistral: 40 % of its weights skipped at +2.44 / +2.92 %, against 33.4 % at
+    +3.97 / +3.95 % for Llama-2 (thin margin) and +2.95 / +3.54 % for DeepSeek.
+- **Slots by the strict order:** subject 2 Llama-2-7b-chat (Meta), subject 3 DeepSeek-LLM-7B-chat (DeepSeek);
+  reserves Mistral-7B-Instruct-v0.3, then Qwen2.5-7B-Instruct. With Yi (01.AI) that is three families, and all
+  four candidates are of different families from each other and from Yi.
+- **If the lead reads Llama-2 against Mistral as a tie:** criterion 2 puts Mistral in slot 2 or 3, and the choice
+  between Llama-2 and DeepSeek for the other slot goes to DeepSeek on criterion 2 (more margin at the same share).
+  Criterion 3 (head 3 % against 9 %) would favour Llama-2.
+- **Flags.**
+  - DeepSeek was screened without BOS (the converter wrote `add_bos_token = false`, Tom section 5.1 of
+    tom-screens.md). The served file must decide this, and its budget is measured that way.
+  - Llama-2 is gated (manual approval; the laptop's login already has it).
+  - Llama-2's 40 % cell is 0.5 point under the line, so a full-set run may move it to 35 % (29.2 % skipped).
+    Priced at 35 %, Llama-2 prints 6.0 to 6.2 / 7.0 to 7.7 / 8.0 to 9.6 at r 19 / 24 / 35: under Mistral at r 19,
+    level with it at r 35 (*estimated*, one grid step).
+
+**What 12 printed needs** (71.2 ms after O 8; s and the k, v rule as above):
+
+| model | k max, 3 cores | k max, 4 cores (x 1.15) | r min GB/s at s | Q4_0 GB | R69 step | P(step held) |
+|---|---|---|---|---|---|---|
+| Llama-2-7b-chat | 1.21 | 1.44 | 37.5 | 3.75 | 4.2 | 0.12 |
+| deepseek-llm-7b-chat | 1.21 | 1.47 | 38.6 | 3.76 | 4.2 | 0.12 |
+| Mistral-7B-Instruct-v0.3 | 1.19 | 1.37 | 37.1 | 4.04 | 4.2 | 0.12 |
+| Qwen2.5-7B-Instruct | 1.08 | 1.26 | 41.8 | 4.12 | 4.2 | 0.12 |
+
+- **No candidate for slots 2 and 3 reaches 12 with a priced lever.** Each needs r ≥ 37 on three cores, outside
+  R69's pre-registered 80 % band (19 to 30), and a kernel at or under k 1.2 (three cores) or 1.26 to 1.47 (four
+  cores at x 1.15). K1's host floor is 1.53.
+- **On four cores the read rate is R69's four-core cell, so the top is byte-bound:** at r4 27 the four print
+  7.2 to 9.2, and at r4 35 the tops of their bands are 10.3 to 11.5. Llama-2 at r4 35 and k 1.55 (11.5) is the nearest cell to 12.
+- **Residency is as before:** every one of the four needs the 4.2 GB step (P 0.12, pre-registered).
+- **For Yi (subject 1), the section 3 row stands with the new four-core convention.** At x 1.15 k may be up to 1.69
+  on four cores, and at r4 35 the top of its band is 13.3. Its frontier moved to 42 % (plain; +2.63 / +3.95 % at `-b 512` / `-ub 1`, *host*,
+  `tom-split.md` section 2), which nearly closes its "s needed at k 1.55" gap on three cores: it needs 0.43 and has
+  0.42.
+
+Requested: Ebony checks this section (a short note in her file).
+
+## 8. Not done, and where I may be wrong
 
 - No run of mine: every *host* number is Tom's. I first read his logs while he was still running; the values
   used here equal his final file (`a6f6b36`).
