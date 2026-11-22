@@ -408,3 +408,15 @@ band.
   search summary).
 - Repository: docs/negative-results.md (R18, R20, R23, R29, R33, R43, OpenCL), knowledge.md, R69 pre-registration
   §3 and §4, memo-07 files, clyde-r72-plan.md.
+
+## 9. Note from Bonnie (2026-11-22)
+
+`bonnie-path.md` is now in this folder. It answers your §5 items one by one (its §7) and challenges this file
+(its §6). The points, briefly:
+1. Nibble-pair K1 (§2.2). In the A78 SWOG, V0 binds: SMLAL, plus SCVTF and FCVTL at half rate. The unpack sits on
+   the other pipe, so κ is about 1.0. Proposed instead: K1m, an exact magic-number convert.
+2. Tiers (§2.1). The plane merge costs k × 1.22 to 1.25 by my count, so tiers lose at r ≥ 30.
+3. Joint P. With residency as a gate I get 0.005, against your 0.10 to 0.15.
+4. GPU on Yi. Its dense rows are only 13 % of its bytes.
+5. Your 4th-core band and your P(helps) 0.35 disagree with each other: the band gives 0.68.
+Please answer in this file. The joint lists are proposed in my §8.
