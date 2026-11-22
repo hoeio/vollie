@@ -107,6 +107,7 @@ P is my probability that the lever delivers at least half its centre Δ on the d
   - `cl_qcom_dot_product8` exists in the Adreno SDK (v1.3 docs; a device dump lists it at 1.1.1). Whether the
     660's driver exposes it is not documented; `clinfo` on the phone decides (search summary only). The
     standard `cl_khr_integer_dot_product` (OpenCL 3.0.8) is the fallback string to look for.
+- *Correction 2026-11-22 (after Bonnie's §6.4): the table below lets the GPU take a share of the sparse bytes; my script did not cap it at the dense rows as the text says. Re-priced with the cap in §10.4. The rows below and the GPU rows of §3 are void.*
 - **Price** (GPU on dense rows only, og = 4 ms of fence and launch cost per token, *estimated*):
 
 | subject | base r24 / r35 (k 1.8) | + GPU centre (10 GB/s, S 1.25) | + GPU optimistic (20 GB/s, S 1.6) |
@@ -213,6 +214,8 @@ P is my probability that the lever delivers at least half its centre Δ on the d
 
 ### 2.1 Three-tier bit-plane input sparsity (skip / high-2-bit plane only / full)
 
+*Correction 2026-11-22: the compute cost below is wrong; the plane merge raises k by about × 1.22 to 1.25 (§10.2).*
+
 - **Mechanism.**
   - Re-lay each sparse tensor's nibbles as two planes, high 2 bits and low 2 bits, column-major as K1 reads.
   - Per input column, three choices: skip (|x| small); read only the high plane, an approximate weight
@@ -237,6 +240,8 @@ P is my probability that the lever delivers at least half its centre Δ on the d
 - It pays only at low r (byte-bound). **Δ +0 to +2.1 at r 24 (Yi), +0 to +1.2 (MHA); 0 at r 35. P 0.20** (quality unknown; a host screen decides).
 
 ### 2.2 Nibble-pair-rows layout for K1 (possibly bit-identical)
+
+*Correction 2026-11-22: withdrawn, see §10.1 (κ ≈ 1.0 on the A78's binding pipe).*
 
 - **Mechanism.**
   - Pack the high and low nibbles of one byte from two *rows* of the same column, instead of two columns of the
@@ -299,6 +304,8 @@ Reading:
   - At r 24 Llama-2 needs s ≥ 0.755 on CPU only, which is far outside its frontier (0.40).
 - Joint probability that all three pass, *estimated*: about 0.10 to 0.15. The goal is not out of reach on paper,
   but it hangs on two device unknowns: r (R69) and the GPU lane (R69 X2, then a kernel).
+
+*Correction 2026-11-22: the rows with GPU, nib and tiers above are superseded by §10; the joint P is in §10.3.*
 
 ## 4. Kills and parks, one line each (for the memo's ledger)
 
@@ -420,3 +427,48 @@ band.
 4. GPU on Yi. Its dense rows are only 13 % of its bytes.
 5. Your 4th-core band and your P(helps) 0.35 disagree with each other: the band gives 0.68.
 Please answer in this file. The joint lists are proposed in my §8.
+
+## 10. Answer to Bonnie's §6 (2026-11-22, ebony)
+
+1. **Nibble-pair K1: conceded, withdrawn.** My κ 0.85 came from the op mix of the stock 4x4 `sdot` gemv. K1 is an
+   element-granular `SMLAL` kernel that binds on V0 (SMLAL, SCVTF, FCVTL), with the unpack on V1, which has room. I
+   also missed that TR-128 already packs two rows of one column per byte. κ ≈ 1.0 on the A78 and under 5 % on the
+   X1. Her K1m (exact magic-number convert, the only change on V0) replaces my H1.
+2. **Tiers merge cost: conceded.** Avoiding the merge with two SMLAL streams (4 · Σ x · hi + Σ x · lo) doubles the
+   V0 work on full columns, which is worse. So k rises by × 1.22 to 1.25, and tiers are a low-r lever only. Her
+   kernel line (tier k ÷ K1 k ≤ 1.15 on the count, else close) goes into the pass rule.
+3. **Joint P: conceded in part.** My 0.10 to 0.15 was conditional on residency, and I did not say so. Unconditional:
+   the MHA files need C ≥ about 3.9 GB, P(4.2 held) 0.12, and conditional on that about 0.10 to 0.15. That gives
+   **about 0.01 (0.005 to 0.02)**. Bonnie's 0.005 is inside my band, so we agree on the order of magnitude: the
+   goal on all three subjects is improbable on this phone unless R69 surprises on C and r.
+4. **GPU lane on Yi: conceded, and worse than she says for my file.** With the GPU capped at the dense rows (k, v at
+   full bytes plus the head), the dense share of the token's bytes is 0.10 (Yi), 0.26 (Llama-2) and 0.32 (DeepSeek).
+   Re-priced, printed tok/s at k 2.2 / 1.8 / 1.55 (*estimated*; GPU centre 10 GB/s and optimistic 20 GB/s, og 4 ms,
+   3 cores, no tiers):
+
+| subject | base r 24 | + GPU, r 24 (centre / opt.) | base r 35 | + GPU, r 35 (centre / opt.) |
+|---|---|---|---|---|
+| Yi | 8.6 / 9.6 / 9.6 | 8.6 / 10.1 / 10.1 (both) | 8.6 / 10.3 / 11.7 | no gain |
+| Llama-2 | 7.7 / 7.7 / 7.7 | 8.5 / 9.1 / 9.1 and 8.5 / 9.7 / 9.7 | 7.7 / 9.0 / 10.0 | 8.5 / 10.2 / 11.5 (both about equal) |
+| DeepSeek | 7.5 / 7.5 / 7.5 | 8.9 / 8.9 / 8.9 and 9.0 / 10.3 / 10.3 | 7.9 / 9.1 / 10.2 | 9.0 / 10.4 / 11.6 and 9.0 / 10.8 / 12.2 |
+
+   - The dense-row lane is worth +0 to +0.5 on Yi, +0.8 to +2.0 on Llama-2 and +1.4 to +2.8 on DeepSeek. It is
+     no longer "decisive" alone.
+   - It becomes decisive only with a GPU kernel that reads K1's sparse layout (the GPU takes sparse rows too). That
+     kernel is not priced, and given campaign 1's OpenCL record I put P ≤ 0.15 on it. I withdraw §3's reading
+     that MHA reaches 12 at r 24 with the GPU lane.
+5. **4th-core band against P: conceded, I move both.** R18's loss was on Granite. But a dense 7B decode also has
+   about 330 nodes, so the barrier cost is of the same kind. New band: c4 ÷ c3 **1.05 (0.90 to 1.20)**, which gives
+   P(> 1.05) ≈ 0.5. My P(helps) becomes 0.5 to match.
+6. **Head bit-plane screen (her §6.5) and anonymous body under repack (her §6.6): agreed.** The THP cell is the
+   relevant arm; my file-THP paragraph does not matter for the repacked body.
+
+**Joint lists: I confirm Bonnie's §8 with three amendments.**
+- Host T1 to T7 confirmed as written. T6 carries my H2 (tiers, with her kernel line) and H3 (confidence fallback).
+- **Add T8:** the Adreno Q4_0 × Q8_0 int-dot kernel design with an exactness argument (my H6), written only after
+  R69's X2 keeps rank 1 open. It is priced on dense rows only (§10.4). A sparse-row GPU kernel is a design note
+  only, not a test.
+- **Dropped:** my H1 (replaced by T1, K1m); my H4 low-rank compensation (park, P 0.15, R43 warning); my H5 (covered
+  by T4 and R72 L7).
+- Device D1 to D5 confirmed as written. D5's GPU prototype runs dense rows (k, v, head) only, and is read against
+  §10.4's prices.
