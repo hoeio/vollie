@@ -1,0 +1,113 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+index 7fcb218..dce3193 100644
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -73,8 +73,9 @@ android {
+         jniLibs {
+             useLegacyPackaging true
+             excludes += ['lib/x86_64/**', 'lib/x86/**', 'lib/armeabi-v7a/**']
+-            // Kit r27 (memo-28 §2.5): no OpenCL backend or OpenCL compiler helper in the CPU-only research kit.
+-            excludes += ['**/libggml-opencl.so', '**/libvollie_clc.so']
++            // Kit r27 (memo-28 §2.5): no OpenCL backend in the CPU-only research kit. Kit r34 (R74): the OpenCL compiler helper
++            // libvollie_clc.so ships again (the x3 probe compiles upstream's kernels in it); the backend module stays out.
++            excludes += ['**/libggml-opencl.so']
+         }
+     }
+ 
+diff --git a/lib/research.dart b/lib/research.dart
+index 3148151..605045d 100644
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -46,8 +46,8 @@ typedef RunSpec = ({String id, String model, String proto, String group, String
+ /// power saving and thermal status), T-D's smaps match by inode, the session label (deep-sleeping list) and the power-save
+ /// state read at the start, and T-A's cap probe ([capProbe], no model).
+ extension Research on Assistant {
+-  static const kit = 'r33';
+-  static const app = '1.33.0+33';
++  static const kit = 'r34';
++  static const app = '1.34.0+34';
+ 
+   /// r28: the owner's label for the session, chosen on the start screen before the kit can start (memo-31 §7: session A
+   /// with Samsung's deep-sleeping list, session B without). Recorded in the report and in every cap probe.
+@@ -890,7 +890,12 @@ extension Research on Assistant {
+   /// set only around the native calls. The report is saved after every block (and marked with the block about to run),
+   /// so a kill keeps the blocks before it: "Save c3 probe to Downloads" then exports that partial report.
+   static const c3ProbeKey = 'c3_probe_report';
+-  static const c3Blocks = ['a', 'l1', 'l4', 'l23', 'l5', 'l6', 'l7', 'x2', 'anon34', 'anon42'];
++  ///
++  /// Kit r34 (R74, owner 2026-11-22: the GPU measurement is allowed as an exception to the device hold; patches/llama.cpp-c3/0005):
++  /// the GPU lane only, blocks x3b (upstream's Adreno Q4_0 gemv compiled by libvollie_clc.so in a child process, loaded, identity),
++  /// x3g (GPU alone, round trip, one layer per subject), x3c (CPU + GPU ABBA, row split), x3r (residency with 0.9 GB of GPU
++  /// buffers; last, a low-memory kill may end the app there). The r32/r33 blocks are not run by this kit.
++  static const c3Blocks = ['x3b', 'x3g', 'x3c', 'x3r'];
+   /// r32: the cool-down gate of the c3 probe waits up to 180 s (R69: the 90 s gate timed out before p2 and x1); the
+   /// timeout and the limit are recorded per block.
+   static const c3GateWait = Duration(seconds: 180);
+@@ -939,10 +944,10 @@ extension Research on Assistant {
+           'battery_c_start': b0.tempC, 'plugged_start': b0.plugged, 'model_unloaded': unloaded,
+           'kernel_release': DeviceProfile.unameRelease(), 'probe_dir': dir,
+           'free_start': st['internalFree'],
+-          'design': 'campaign 3 R72 (memo-08-work/clyde-r72-plan.md; bands bonnie-path.md 10.4, ebony-paths.md 12): blocks '
+-              '${Research.c3Blocks.join(' ')}; r16 gate before each block; probe cells 0.5 s warm-up + 1.0 or 1.5 s measured '
+-              '(anchors and x2 as R69: 1 s + 2 s), then warm until every used policy reads its scaling_max_freq (at most 4 s more, '
+-              'ramp_s / ramp_ok per cell); gate up to 180 s; anon arms 20 passes or 45 s; report saved after every block',
++          'design': 'campaign 3 R74 x3 GPU probe (memo-09-work/tom-host.md 1.5, tom-r34-build.md): blocks '
++              '${Research.c3Blocks.join(' ')}; r16 gate before each block (up to 180 s); GPU cells 0.5 s warm-up + 1.0 s measured, '
++              'CPU and together cells 0.5 s + 1.5 s, warm-up extended until the used CPU policies and the GPU read their max clock '
++              '(at most 2 s more); residency 15 s of passes; report saved before and after every block',
+           'blocks': blocks,
+         };
+     Future<void> save(Map<String, Object?> r) async {
+diff --git a/lib/settings_screen.dart b/lib/settings_screen.dart
+index 864c993..df0f98b 100644
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -411,7 +411,7 @@ class _PerformanceCard extends StatelessWidget {
+           builder: (_, v, __) => OutlinedButton.icon(
+             onPressed: busy || optimizing || v == null ? null : assistant.capProbe,
+             icon: const Icon(Icons.speed_rounded),
+-            label: const Text('Run cap probe r33 (6 min, no model)'),
++            label: const Text('Run cap probe r34 (6 min, no model)'),
+           ),
+         ),
+       if (!assistant.researching && assistant.capProbeReport != null)
+@@ -434,7 +434,7 @@ class _PerformanceCard extends StatelessWidget {
+           builder: (_, v, __) => OutlinedButton.icon(
+             onPressed: busy || optimizing || v == null ? null : assistant.c3Probe,
+             icon: const Icon(Icons.memory_rounded),
+-            label: const Text('Run c3 probe r33 (R72: 20 to 40 min, no model needed)'),
++            label: const Text('Run c3 probe r34 (GPU)'),
+           ),
+         ),
+       if (!assistant.researching && assistant.c3ProbeReport != null)
+@@ -462,7 +462,7 @@ class _PerformanceCard extends StatelessWidget {
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.downloadKitModels,
+                 icon: const Icon(Icons.download_rounded),
+-                label: Text('Download kit r33 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
++                label: Text('Download kit r34 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
+                     '(${(assistant.kitMissingBytes / 1e9).toStringAsFixed(1)} GB, Wi-Fi)'),
+               ),
+       if (assistant.kitModelReady)
+@@ -477,7 +477,7 @@ class _PerformanceCard extends StatelessWidget {
+                 builder: (_, v, __) => OutlinedButton.icon(
+                   onPressed: busy || optimizing || v == null ? null : assistant.researchRun,
+                   icon: const Icon(Icons.science_rounded),
+-                  label: Text(v == null ? 'Run research kit r33: choose the session label first' : 'Run research kit r33 (R68 run list, ~50-110 min)'),
++                  label: Text(v == null ? 'Run research kit r34: choose the session label first' : 'Run research kit r34 (R68 run list, ~50-110 min)'),
+                 ),
+               ),
+       if (assistant.kitModelReady && !assistant.researching)
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 7604be9..2c959ff 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@ name: vollie
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.33.0+33
++version: 1.34.0+34
+ 
+ environment:
+   sdk: ^3.10.7

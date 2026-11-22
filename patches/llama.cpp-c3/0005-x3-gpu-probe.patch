@@ -1,0 +1,1438 @@
+diff --git a/src/llama-vollie-probe.cpp b/src/llama-vollie-probe.cpp
+index a883ed1..2198080 100644
+--- a/src/llama-vollie-probe.cpp
++++ b/src/llama-vollie-probe.cpp
+@@ -31,6 +31,7 @@
+ //   x2      also retries with "-cl-opt-disable" (x2r lines) and prints the device's extension and driver strings
+ // Still off unless VOLLIE_PROBE is set; nothing outside this file calls it. The ggml cells set VOLLIE_POOL=1 and
+ // VOLLIE_CPUMASK for their own duration only (restored after) and restore the calling thread's affinity.
++// 0005-x3-gpu-probe (kit r34, R74): blocks x3b, x3g, x3c, x3r, the GPU lane probe with upstream's Adreno Q4_0 gemv (see r34 below).
+ #if defined(VOLLIE_PROBE_STUB)
+ #include <cstddef>
+ extern "C" int llama_vollie_probe(const char *, const char *, char *, size_t) { return -1; }
+@@ -64,6 +65,11 @@ extern "C" int llama_vollie_probe(const char *, const char *, char *, size_t) {
+ #include <climits>
+ #include <ctime>
+ #include <memory>
++#include <cmath>
++#include <dirent.h>
++#include <signal.h>
++#include <spawn.h>
++#include <sys/wait.h>
+ #include "ggml.h"
+ #include "ggml-alloc.h"
+ #include "ggml-backend.h"
+@@ -1423,6 +1429,1396 @@ void anchors(Out & o) {
+ 
+ } // namespace r32
+ 
++// ======== 0005 (kit r34, R74): the x3 blocks, the GPU lane probe (campaign 3 memo-09-work/tom-host.md §1.5, memo-09-gap.md
++// §10.7 and §10.10 T3; build notes memo-09-work/tom-r34-build.md). Upstream's Adreno Q4_0 decode gemv (ggml-opencl at
++// 620d2225c: kernels/gemv_noshuffle_q4_0_f32.cl and gemv_noshuffle_q4_0_f32_spec.cl, embedded verbatim below) is compiled in a
++// child process by campaign 1's libvollie_clc.so (tool/clc.c) with upstream's options, loaded as a binary, and fed weights laid
++// out on the CPU exactly as upstream's set_tensor converts them (noshuffle nibbles; q and d transposed as 16-bit words).
++//   x3b  src (sha256), build (child exit or -signal, the -cl-opt-disable retry, the compiler log), load (binary, build, kernel,
++//        work-group info) and identity lines (one gemv per kernel and shape against a float64 reference)
++//   x3g  GPU alone: 4 shapes hot and cold (512 MB ring) and the general kernel on 11008 x 4096 cold; dispatch round trip per
++//        launch; one layer per subject (Yi-1.5-6B, Llama-2-7B, DeepSeek-7B) over a 4-layer ring, finish per layer and per launch
++//   x3c  CPU (ggml Q4_0 gemv, 604 MB cold, 4-7) and GPU (11008 x 4096, 512 MB ring) alone and together, ABBA; row split of one
++//        11008 x 4096 matrix at GPU share 0.25 / 0.35 / 0.50 (CPU rows on 4-7 through ggml, GPU rows by the general kernel),
++//        against the CPU alone, ABBA
++//   x3r  residency: 0.9 GB of GPU buffers held and read by the GPU while 3 A78 read a 2.6 GB anonymous arena
++// Every block starts with cond lines (devfreq nodes, THP, kgsl) read once. Each timed arm prints the CPU policies' clock range
++// against their scaling / hardware max, the kgsl GPU clock range, thermal headroom (AThermal) and per-thread fields (thr, the
++// l1-l4 format: cpu:cpu_over_wall:niv:nv:off/chk@other) of every thread pinned to one cpu of 4-7, read from /proc/self/task, so
++// ggml's own workers are covered. The GPU is fed from a thread pinned to 0-3. Files in dir: x3-<kern>.cl / .bin / .log / .opts.
++// Still off unless VOLLIE_PROBE is set; nothing outside this file calls it.
++namespace r34 {
++using namespace r32;
++
++// ---- upstream kernel sources, verbatim (sha256 printed by x3b; host check against the files at 620d2225c)
++const char * const SRC_GENERAL = R"x3cl(#pragma OPENCL EXTENSION cl_khr_fp16 : enable
++#pragma OPENCL EXTENSION cl_khr_subgroups : enable
++
++#ifdef cl_qcom_reqd_sub_group_size
++#pragma OPENCL EXTENSION cl_qcom_reqd_sub_group_size : enable
++#define ADRENO_GPU 1
++#define REQD_SUBGROUP_SIZE_64 __attribute__((qcom_reqd_sub_group_size("half")))
++#endif
++
++// A6X compiler incorrectly constant-folds get_local_size() results;
++// force runtime materialization via a no-op ALU round-trip.
++#ifdef GGML_CL_A6X_CONSTFOLD_FIX
++#define MATERIALIZE_WG(x) do { (x) *= 2u; if ((x) > 1u) (x) /= 2u; } while(0)
++#else
++#define MATERIALIZE_WG(x)
++#endif
++
++// assume
++#define QK4_0 32
++#define N_SIMDGROUP 4
++
++#define dequantizeBlockAccum_ns_sgbroadcast_1_hi(total_sums, bits4, scale, y) \
++    float shared_y; \
++    shared_y = sub_group_broadcast(y.s0, 0); \
++    total_sums.s0 += ((bits4.s0 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s1 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s1, 0); \
++    total_sums.s0 += (((bits4.s0 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s1 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s2, 0); \
++    total_sums.s0 += (((bits4.s0 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s1 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s3, 0); \
++    total_sums.s0 += (((bits4.s0 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s1 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s4, 0); \
++    total_sums.s0 += ((bits4.s2 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s3 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s5, 0); \
++    total_sums.s0 += (((bits4.s2 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s3 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s6, 0); \
++    total_sums.s0 += (((bits4.s2 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s3 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s7, 0); \
++    total_sums.s0 += (((bits4.s2 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s3 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s0, 1); \
++    total_sums.s0 += ((bits4.s4 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s5 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s1, 1); \
++    total_sums.s0 += (((bits4.s4 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s5 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s2, 1); \
++    total_sums.s0 += (((bits4.s4 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s5 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s3, 1); \
++    total_sums.s0 += (((bits4.s4 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s5 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s4, 1); \
++    total_sums.s0 += ((bits4.s6 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s7 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s5, 1); \
++    total_sums.s0 += (((bits4.s6 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s7 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s6, 1); \
++    total_sums.s0 += (((bits4.s6 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s7 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s7, 1); \
++    total_sums.s0 += (((bits4.s6 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s7 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++
++
++#define dequantizeBlockAccum_ns_sgbroadcast_1_lo(total_sums, bits4, scale, y) \
++    shared_y = sub_group_broadcast(y.s0, 2); \
++    total_sums.s0 += ((bits4.s0 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s1 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s1, 2); \
++    total_sums.s0 += (((bits4.s0 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s1 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s2, 2); \
++    total_sums.s0 += (((bits4.s0 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s1 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s3, 2); \
++    total_sums.s0 += (((bits4.s0 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s1 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s4, 2); \
++    total_sums.s0 += ((bits4.s2 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s3 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s5, 2); \
++    total_sums.s0 += (((bits4.s2 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s3 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s6, 2); \
++    total_sums.s0 += (((bits4.s2 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s3 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s7, 2); \
++    total_sums.s0 += (((bits4.s2 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s3 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s0, 3); \
++    total_sums.s0 += ((bits4.s4 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s5 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s1, 3); \
++    total_sums.s0 += (((bits4.s4 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s5 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s2, 3); \
++    total_sums.s0 += (((bits4.s4 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s5 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s3, 3); \
++    total_sums.s0 += (((bits4.s4 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s5 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s4, 3); \
++    total_sums.s0 += ((bits4.s6 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s7 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s5, 3); \
++    total_sums.s0 += (((bits4.s6 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s7 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s6, 3); \
++    total_sums.s0 += (((bits4.s6 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s7 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s7, 3); \
++    total_sums.s0 += (((bits4.s6 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s7 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++
++
++#define dequantizeBlockAccum_ns_sgbroadcast_8_hi(total_sums, bits4, scale, y) \
++    float8 shared_y; \
++    shared_y = sub_group_broadcast(y, 0); \
++    total_sums.s0 += ((bits4.s0 & 0x000F) - 8) * scale.s0 * shared_y.s0; \
++    total_sums.s0 += (((bits4.s0 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s1; \
++    total_sums.s0 += (((bits4.s0 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s2; \
++    total_sums.s0 += (((bits4.s0 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s3; \
++    total_sums.s0 += ((bits4.s2 & 0x000F) - 8) * scale.s0 * shared_y.s4; \
++    total_sums.s0 += (((bits4.s2 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s5; \
++    total_sums.s0 += (((bits4.s2 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s6; \
++    total_sums.s0 += (((bits4.s2 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s7; \
++    total_sums.s1 += ((bits4.s1 & 0x000F) - 8) * scale.s1 * shared_y.s0; \
++    total_sums.s1 += (((bits4.s1 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s1; \
++    total_sums.s1 += (((bits4.s1 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s2; \
++    total_sums.s1 += (((bits4.s1 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s3; \
++    total_sums.s1 += ((bits4.s3 & 0x000F) - 8) * scale.s1 * shared_y.s4; \
++    total_sums.s1 += (((bits4.s3 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s5; \
++    total_sums.s1 += (((bits4.s3 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s6; \
++    total_sums.s1 += (((bits4.s3 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s7; \
++    shared_y = sub_group_broadcast(y, 1); \
++    total_sums.s0 += ((bits4.s4 & 0x000F) - 8) * scale.s0 * shared_y.s0; \
++    total_sums.s0 += (((bits4.s4 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s1; \
++    total_sums.s0 += (((bits4.s4 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s2; \
++    total_sums.s0 += (((bits4.s4 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s3; \
++    total_sums.s0 += ((bits4.s6 & 0x000F) - 8) * scale.s0 * shared_y.s4; \
++    total_sums.s0 += (((bits4.s6 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s5; \
++    total_sums.s0 += (((bits4.s6 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s6; \
++    total_sums.s0 += (((bits4.s6 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s7; \
++    total_sums.s1 += ((bits4.s5 & 0x000F) - 8) * scale.s1 * shared_y.s0; \
++    total_sums.s1 += (((bits4.s5 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s1; \
++    total_sums.s1 += (((bits4.s5 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s2; \
++    total_sums.s1 += (((bits4.s5 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s3; \
++    total_sums.s1 += ((bits4.s7 & 0x000F) - 8) * scale.s1 * shared_y.s4; \
++    total_sums.s1 += (((bits4.s7 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s5; \
++    total_sums.s1 += (((bits4.s7 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s6; \
++    total_sums.s1 += (((bits4.s7 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s7; \
++
++
++#define dequantizeBlockAccum_ns_sgbroadcast_8_lo(total_sums, bits4, scale, y) \
++    shared_y = sub_group_broadcast(y, 2); \
++    total_sums.s0 += ((bits4.s0 & 0x000F) - 8) * scale.s0 * shared_y.s0; \
++    total_sums.s0 += (((bits4.s0 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s1; \
++    total_sums.s0 += (((bits4.s0 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s2; \
++    total_sums.s0 += (((bits4.s0 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s3; \
++    total_sums.s0 += ((bits4.s2 & 0x000F) - 8) * scale.s0 * shared_y.s4; \
++    total_sums.s0 += (((bits4.s2 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s5; \
++    total_sums.s0 += (((bits4.s2 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s6; \
++    total_sums.s0 += (((bits4.s2 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s7; \
++    total_sums.s1 += ((bits4.s1 & 0x000F) - 8) * scale.s1 * shared_y.s0; \
++    total_sums.s1 += (((bits4.s1 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s1; \
++    total_sums.s1 += (((bits4.s1 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s2; \
++    total_sums.s1 += (((bits4.s1 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s3; \
++    total_sums.s1 += ((bits4.s3 & 0x000F) - 8) * scale.s1 * shared_y.s4; \
++    total_sums.s1 += (((bits4.s3 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s5; \
++    total_sums.s1 += (((bits4.s3 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s6; \
++    total_sums.s1 += (((bits4.s3 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s7; \
++    shared_y = sub_group_broadcast(y, 3); \
++    total_sums.s0 += ((bits4.s4 & 0x000F) - 8) * scale.s0 * shared_y.s0; \
++    total_sums.s0 += (((bits4.s4 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s1; \
++    total_sums.s0 += (((bits4.s4 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s2; \
++    total_sums.s0 += (((bits4.s4 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s3; \
++    total_sums.s0 += ((bits4.s6 & 0x000F) - 8) * scale.s0 * shared_y.s4; \
++    total_sums.s0 += (((bits4.s6 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s5; \
++    total_sums.s0 += (((bits4.s6 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s6; \
++    total_sums.s0 += (((bits4.s6 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s7; \
++    total_sums.s1 += ((bits4.s5 & 0x000F) - 8) * scale.s1 * shared_y.s0; \
++    total_sums.s1 += (((bits4.s5 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s1; \
++    total_sums.s1 += (((bits4.s5 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s2; \
++    total_sums.s1 += (((bits4.s5 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s3; \
++    total_sums.s1 += ((bits4.s7 & 0x000F) - 8) * scale.s1 * shared_y.s4; \
++    total_sums.s1 += (((bits4.s7 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s5; \
++    total_sums.s1 += (((bits4.s7 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s6; \
++    total_sums.s1 += (((bits4.s7 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s7; \
++
++#ifdef ADRENO_GPU
++REQD_SUBGROUP_SIZE_64
++#endif
++__kernel void kernel_gemv_noshuffle_q4_0_f32(
++        __read_only  image1d_buffer_t src0_q,  // quantized A
++        global half2  * src0_d,  // A scales
++        __read_only  image1d_buffer_t src1,    // B
++        ulong offset1,            // offset to B (0)
++        global float * dst,     // C
++        ulong offsetd,            // offset to C (0)
++        int ne00,               // K
++        int ne01,               // M
++        int ne02,               // 1
++        int ne10,               // K
++        int ne12,               // 1
++        int ne0,                // M
++        int ne1,                // N
++        int r2,                 // 1
++        int r3)
++{
++    uint groupId = get_local_id(1);
++    uint gid     = get_global_id(0);
++    ushort slid    = get_sub_group_local_id();
++
++    uint K = ne00;
++    uint M = ne01;
++
++    uint LINE_STRIDE_A = M / 2;
++    // Keep tail lanes active for subgroup ops, but read a valid weight row.
++    uint gid_s = min(gid, LINE_STRIDE_A - 1);
++    uint BLOCK_STRIDE_A = N_SIMDGROUP * M;
++
++    __private uint4     regA;
++    __private half2     regS;
++    __private float8    regB;
++
++    __private float2 totalSum = (float2)(0.0f);
++
++    // loop along K in block granularity, skip 4 blocks every iter
++    for (uint k = groupId; k < (K / QK4_0); k += N_SIMDGROUP) {
++        regS = src0_d[gid_s + k * LINE_STRIDE_A]; // each fiber loads scale of two rows
++        // first 4 fibers in each wave load 8 B values to its private scope
++        if (slid < 4) {
++            regB.s0123 = read_imagef(src1, (slid * 2 + k * 8));
++            regB.s4567 = read_imagef(src1, (1 + slid * 2 + k * 8));
++        }
++
++        // load half weights for two blocks in consecutive rows
++        regA.s0 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 0)).x;
++        regA.s1 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 1)).x;
++        regA.s2 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 2)).x;
++        regA.s3 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 3)).x;
++#ifdef VECTOR_SUB_GROUP_BROADCAST
++        dequantizeBlockAccum_ns_sgbroadcast_8_hi(totalSum, as_ushort8(regA), regS, regB);
++#else
++        dequantizeBlockAccum_ns_sgbroadcast_1_hi(totalSum, as_ushort8(regA), regS, regB);
++#endif // VECTOR_SUB_GROUP_BROADCAST
++
++        regA.s0 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 4)).x;
++        regA.s1 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 5)).x;
++        regA.s2 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 6)).x;
++        regA.s3 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 7)).x;
++#ifdef VECTOR_SUB_GROUP_BROADCAST
++        dequantizeBlockAccum_ns_sgbroadcast_8_lo(totalSum, as_ushort8(regA), regS, regB);
++#else
++        dequantizeBlockAccum_ns_sgbroadcast_1_lo(totalSum, as_ushort8(regA), regS, regB);
++#endif // VECTOR_SUB_GROUP_BROADCAST
++    }
++
++    // reduction in local memory, assumes #wave=4
++    __local float2 reduceLM[SIMDGROUP_WIDTH * 3];
++    if (groupId == 1) reduceLM[SIMDGROUP_WIDTH * 0 + slid] = totalSum;
++    if (groupId == 2) reduceLM[SIMDGROUP_WIDTH * 1 + slid] = totalSum;
++    if (groupId == 3) reduceLM[SIMDGROUP_WIDTH * 2 + slid] = totalSum;
++    barrier(CLK_LOCAL_MEM_FENCE);
++    if (groupId == 0) totalSum += reduceLM[SIMDGROUP_WIDTH * 0 + slid];
++    if (groupId == 0) totalSum += reduceLM[SIMDGROUP_WIDTH * 1 + slid];
++    if (groupId == 0) totalSum += reduceLM[SIMDGROUP_WIDTH * 2 + slid];
++
++    // 2 outputs per fiber in wave 0
++    if (groupId == 0) {
++        dst = (global float*)((global char*)dst + offsetd);
++        // Guard the two output rows. The x-grid is padded to CEIL_DIV(ne01/2,64)*64,
++        // so when ne01 is not a multiple of 128 the tail row-pairs run past row ne01
++        // and would overrun dst into the adjacent tensor. No-op / byte-identical when
++        // ne01 % 128 == 0 (M/2 already a multiple of 64 -> no padding).
++        if (gid * 2 + 0 < M) dst[gid * 2 + 0] = totalSum.s0;
++        if (gid * 2 + 1 < M) dst[gid * 2 + 1] = totalSum.s1;
++    }
++
++}
++
++// Multi-column (N in [2..4]) variant of the q4_0 decode GEMV, for the speculative
++// / MTP verify batch (n_cols = 2..4 = drafted + bonus positions). Routes the small-
++// batch verify OFF the transposed-GEMM dead-zone (gemm_noshuffle_q4_0) onto the
++// efficient GEMV path. Each K-block's weights (regA hi+lo) are loaded ONCE and
++// reused across the n_cols activation columns. Per-column accumulation is
++// independent and identical to n_cols standalone GEMVs. n_cols==3 is byte-identical
++// to the original mc3 (col3 disabled, slots 6/7 stay zero). Kept the _mc3 name.
++#ifdef VECTOR_SUB_GROUP_BROADCAST
++#define MC_DQ_HI dequantizeBlockAccum_ns_sgbroadcast_8_hi
++#define MC_DQ_LO dequantizeBlockAccum_ns_sgbroadcast_8_lo
++#else
++#define MC_DQ_HI dequantizeBlockAccum_ns_sgbroadcast_1_hi
++#define MC_DQ_LO dequantizeBlockAccum_ns_sgbroadcast_1_lo
++#endif
++// One column c: load this column's activation (own brace scope so the macros'
++// `shared_y` decl is re-scoped), then dequant (hi+lo) against the shared weights.
++#define MC_COL_Q40(ts, c) \
++    { if (slid < 4) { regB.s0123 = read_imagef(src1, (c)*COL_STRIDE     + slid*2 + k*8); \
++                      regB.s4567 = read_imagef(src1, (c)*COL_STRIDE + 1 + slid*2 + k*8); } \
++      MC_DQ_HI(ts, as_ushort8(regA_hi), regS, regB); \
++      MC_DQ_LO(ts, as_ushort8(regA_lo), regS, regB); }
++
++#ifdef ADRENO_GPU
++REQD_SUBGROUP_SIZE_64
++#endif
++__kernel void kernel_gemv_noshuffle_q4_0_f32_mc3(
++        __read_only  image1d_buffer_t src0_q,  // quantized A
++        global half2  * src0_d,                // A scales
++        __read_only  image1d_buffer_t src1,    // B (n_cols columns, col-major image)
++        global float * dst,                    // C (column-major [M x n_cols])
++        ulong offsetd,
++        int ne00,                              // K
++        int ne01,                              // M
++        int n_cols)                            // N (2..4)
++{
++    uint groupId = get_local_id(1);
++    uint gid     = get_global_id(0);
++    ushort slid  = get_sub_group_local_id();
++
++    uint K = ne00;
++    uint M = ne01;
++
++    uint LINE_STRIDE_A  = M / 2;
++    // Keep tail lanes active for subgroup ops, but read a valid weight row.
++    uint gid_s = min(gid, LINE_STRIDE_A - 1);
++    // BLOCK_STRIDE_A is the LAYOUT stride between consecutive K-blocks = 4 uints
++    // per q4_0 block * M (set by the trans4_ns convert). The "4" is uints/block, NOT
++    // the subgroup count — keep it fixed so the K-split count (nsg) can vary.
++    uint BLOCK_STRIDE_A = N_SIMDGROUP * M;   // = 4 * M (N_SIMDGROUP is the #define 4)
++    uint COL_STRIDE     = K / 4;   // float4 pixels per activation column
++    uint nsg            = get_local_size(1);  // runtime K-split (4 default, 8 small-M)
++    MATERIALIZE_WG(nsg);
++
++    __private uint4  regA_hi, regA_lo;
++    __private half2  regS;
++    __private float8 regB;
++
++    __private float2 ts0 = (float2)(0.0f);
++    __private float2 ts1 = (float2)(0.0f);
++    __private float2 ts2 = (float2)(0.0f);
++    __private float2 ts3 = (float2)(0.0f);
++
++    for (uint k = groupId; k < (K / QK4_0); k += nsg) {
++        regS = src0_d[gid_s + k * LINE_STRIDE_A];
++
++        // weights loaded ONCE, reused across the columns
++        regA_hi.s0 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 0)).x;
++        regA_hi.s1 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 1)).x;
++        regA_hi.s2 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 2)).x;
++        regA_hi.s3 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 3)).x;
++        regA_lo.s0 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 4)).x;
++        regA_lo.s1 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 5)).x;
++        regA_lo.s2 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 6)).x;
++        regA_lo.s3 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 7)).x;
++
++        MC_COL_Q40(ts0, 0);
++        MC_COL_Q40(ts1, 1);
++        if (n_cols > 2) MC_COL_Q40(ts2, 2);
++        if (n_cols > 3) MC_COL_Q40(ts3, 3);
++    }
++
++    // cross-subgroup reduce over nsg subgroups: pack the (up to 4) columns' float2
++    // into a float8. Generalized to runtime nsg (4 default, 8 for small-M). Each
++    // subgroup writes its partial; subgroup 0 sums the rest into its own acc. At
++    // nsg==4 this is byte-identical to the original (sums subgroups 1,2,3 in order).
++    __local float8 reduceLM[SIMDGROUP_WIDTH * 8];
++    float8 acc = (float8)(ts0.s0, ts0.s1, ts1.s0, ts1.s1, ts2.s0, ts2.s1, ts3.s0, ts3.s1);
++    reduceLM[groupId * SIMDGROUP_WIDTH + slid] = acc;
++
++    barrier(CLK_LOCAL_MEM_FENCE);
++
++    if (groupId == 0) {
++        for (uint g = 1; g < nsg; g++) {
++            acc += reduceLM[g * SIMDGROUP_WIDTH + slid];
++        }
++        dst = (global float*)((global char*)dst + offsetd);
++        // dst is column-major [M rows x n_cols cols]: (row, col) at col*M + row
++        if (gid < LINE_STRIDE_A) {
++            vstore2((float2)(acc.s0, acc.s1), 0, &(dst[0 * M + gid * 2]));
++            vstore2((float2)(acc.s2, acc.s3), 0, &(dst[1 * M + gid * 2]));
++            if (n_cols > 2) vstore2((float2)(acc.s4, acc.s5), 0, &(dst[2 * M + gid * 2]));
++            if (n_cols > 3) vstore2((float2)(acc.s6, acc.s7), 0, &(dst[3 * M + gid * 2]));
++        }
++    }
++}
++#undef MC_COL_Q40
++#undef MC_DQ_HI
++#undef MC_DQ_LO
++)x3cl";
++const char * const SRC_SPEC = R"x3cl(#pragma OPENCL EXTENSION cl_khr_fp16 : enable
++#pragma OPENCL EXTENSION cl_khr_subgroups : enable
++
++#ifdef cl_qcom_reqd_sub_group_size
++#pragma OPENCL EXTENSION cl_qcom_reqd_sub_group_size : enable
++#define ADRENO_GPU 1
++#define REQD_SUBGROUP_SIZE_64 __attribute__((qcom_reqd_sub_group_size("half")))
++#endif
++
++// assume
++#define QK4_0 32
++#define N_SIMDGROUP 4
++
++#define dequantizeBlockAccum_ns_sgbroadcast_1_hi(total_sums, bits4, scale, y) \
++    float shared_y; \
++    shared_y = sub_group_broadcast(y.s0, 0); \
++    total_sums.s0 += ((bits4.s0 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s1 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s1, 0); \
++    total_sums.s0 += (((bits4.s0 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s1 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s2, 0); \
++    total_sums.s0 += (((bits4.s0 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s1 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s3, 0); \
++    total_sums.s0 += (((bits4.s0 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s1 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s4, 0); \
++    total_sums.s0 += ((bits4.s2 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s3 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s5, 0); \
++    total_sums.s0 += (((bits4.s2 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s3 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s6, 0); \
++    total_sums.s0 += (((bits4.s2 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s3 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s7, 0); \
++    total_sums.s0 += (((bits4.s2 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s3 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s0, 1); \
++    total_sums.s0 += ((bits4.s4 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s5 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s1, 1); \
++    total_sums.s0 += (((bits4.s4 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s5 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s2, 1); \
++    total_sums.s0 += (((bits4.s4 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s5 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s3, 1); \
++    total_sums.s0 += (((bits4.s4 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s5 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s4, 1); \
++    total_sums.s0 += ((bits4.s6 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s7 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s5, 1); \
++    total_sums.s0 += (((bits4.s6 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s7 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s6, 1); \
++    total_sums.s0 += (((bits4.s6 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s7 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s7, 1); \
++    total_sums.s0 += (((bits4.s6 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s7 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++
++
++#define dequantizeBlockAccum_ns_sgbroadcast_1_lo(total_sums, bits4, scale, y) \
++    shared_y = sub_group_broadcast(y.s0, 2); \
++    total_sums.s0 += ((bits4.s0 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s1 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s1, 2); \
++    total_sums.s0 += (((bits4.s0 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s1 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s2, 2); \
++    total_sums.s0 += (((bits4.s0 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s1 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s3, 2); \
++    total_sums.s0 += (((bits4.s0 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s1 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s4, 2); \
++    total_sums.s0 += ((bits4.s2 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s3 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s5, 2); \
++    total_sums.s0 += (((bits4.s2 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s3 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s6, 2); \
++    total_sums.s0 += (((bits4.s2 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s3 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s7, 2); \
++    total_sums.s0 += (((bits4.s2 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s3 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s0, 3); \
++    total_sums.s0 += ((bits4.s4 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s5 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s1, 3); \
++    total_sums.s0 += (((bits4.s4 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s5 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s2, 3); \
++    total_sums.s0 += (((bits4.s4 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s5 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s3, 3); \
++    total_sums.s0 += (((bits4.s4 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s5 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s4, 3); \
++    total_sums.s0 += ((bits4.s6 & 0x000F) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += ((bits4.s7 & 0x000F) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s5, 3); \
++    total_sums.s0 += (((bits4.s6 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s7 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s6, 3); \
++    total_sums.s0 += (((bits4.s6 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s7 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y; \
++    shared_y = sub_group_broadcast(y.s7, 3); \
++    total_sums.s0 += (((bits4.s6 & 0xF000) >> 12) - 8) * scale.s0 * shared_y; \
++    total_sums.s1 += (((bits4.s7 & 0xF000) >> 12) - 8) * scale.s1 * shared_y; \
++
++
++#define dequantizeBlockAccum_ns_sgbroadcast_8_hi(total_sums, bits4, scale, y) \
++    float8 shared_y; \
++    shared_y = sub_group_broadcast(y, 0); \
++    total_sums.s0 += ((bits4.s0 & 0x000F) - 8) * scale.s0 * shared_y.s0; \
++    total_sums.s0 += (((bits4.s0 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s1; \
++    total_sums.s0 += (((bits4.s0 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s2; \
++    total_sums.s0 += (((bits4.s0 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s3; \
++    total_sums.s0 += ((bits4.s2 & 0x000F) - 8) * scale.s0 * shared_y.s4; \
++    total_sums.s0 += (((bits4.s2 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s5; \
++    total_sums.s0 += (((bits4.s2 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s6; \
++    total_sums.s0 += (((bits4.s2 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s7; \
++    total_sums.s1 += ((bits4.s1 & 0x000F) - 8) * scale.s1 * shared_y.s0; \
++    total_sums.s1 += (((bits4.s1 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s1; \
++    total_sums.s1 += (((bits4.s1 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s2; \
++    total_sums.s1 += (((bits4.s1 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s3; \
++    total_sums.s1 += ((bits4.s3 & 0x000F) - 8) * scale.s1 * shared_y.s4; \
++    total_sums.s1 += (((bits4.s3 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s5; \
++    total_sums.s1 += (((bits4.s3 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s6; \
++    total_sums.s1 += (((bits4.s3 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s7; \
++    shared_y = sub_group_broadcast(y, 1); \
++    total_sums.s0 += ((bits4.s4 & 0x000F) - 8) * scale.s0 * shared_y.s0; \
++    total_sums.s0 += (((bits4.s4 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s1; \
++    total_sums.s0 += (((bits4.s4 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s2; \
++    total_sums.s0 += (((bits4.s4 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s3; \
++    total_sums.s0 += ((bits4.s6 & 0x000F) - 8) * scale.s0 * shared_y.s4; \
++    total_sums.s0 += (((bits4.s6 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s5; \
++    total_sums.s0 += (((bits4.s6 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s6; \
++    total_sums.s0 += (((bits4.s6 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s7; \
++    total_sums.s1 += ((bits4.s5 & 0x000F) - 8) * scale.s1 * shared_y.s0; \
++    total_sums.s1 += (((bits4.s5 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s1; \
++    total_sums.s1 += (((bits4.s5 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s2; \
++    total_sums.s1 += (((bits4.s5 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s3; \
++    total_sums.s1 += ((bits4.s7 & 0x000F) - 8) * scale.s1 * shared_y.s4; \
++    total_sums.s1 += (((bits4.s7 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s5; \
++    total_sums.s1 += (((bits4.s7 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s6; \
++    total_sums.s1 += (((bits4.s7 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s7; \
++
++
++#define dequantizeBlockAccum_ns_sgbroadcast_8_lo(total_sums, bits4, scale, y) \
++    shared_y = sub_group_broadcast(y, 2); \
++    total_sums.s0 += ((bits4.s0 & 0x000F) - 8) * scale.s0 * shared_y.s0; \
++    total_sums.s0 += (((bits4.s0 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s1; \
++    total_sums.s0 += (((bits4.s0 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s2; \
++    total_sums.s0 += (((bits4.s0 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s3; \
++    total_sums.s0 += ((bits4.s2 & 0x000F) - 8) * scale.s0 * shared_y.s4; \
++    total_sums.s0 += (((bits4.s2 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s5; \
++    total_sums.s0 += (((bits4.s2 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s6; \
++    total_sums.s0 += (((bits4.s2 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s7; \
++    total_sums.s1 += ((bits4.s1 & 0x000F) - 8) * scale.s1 * shared_y.s0; \
++    total_sums.s1 += (((bits4.s1 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s1; \
++    total_sums.s1 += (((bits4.s1 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s2; \
++    total_sums.s1 += (((bits4.s1 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s3; \
++    total_sums.s1 += ((bits4.s3 & 0x000F) - 8) * scale.s1 * shared_y.s4; \
++    total_sums.s1 += (((bits4.s3 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s5; \
++    total_sums.s1 += (((bits4.s3 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s6; \
++    total_sums.s1 += (((bits4.s3 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s7; \
++    shared_y = sub_group_broadcast(y, 3); \
++    total_sums.s0 += ((bits4.s4 & 0x000F) - 8) * scale.s0 * shared_y.s0; \
++    total_sums.s0 += (((bits4.s4 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s1; \
++    total_sums.s0 += (((bits4.s4 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s2; \
++    total_sums.s0 += (((bits4.s4 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s3; \
++    total_sums.s0 += ((bits4.s6 & 0x000F) - 8) * scale.s0 * shared_y.s4; \
++    total_sums.s0 += (((bits4.s6 & 0x00F0) >> 4) - 8) * scale.s0 * shared_y.s5; \
++    total_sums.s0 += (((bits4.s6 & 0x0F00) >> 8) - 8) * scale.s0 * shared_y.s6; \
++    total_sums.s0 += (((bits4.s6 & 0xF000) >> 12) - 8) * scale.s0 * shared_y.s7; \
++    total_sums.s1 += ((bits4.s5 & 0x000F) - 8) * scale.s1 * shared_y.s0; \
++    total_sums.s1 += (((bits4.s5 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s1; \
++    total_sums.s1 += (((bits4.s5 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s2; \
++    total_sums.s1 += (((bits4.s5 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s3; \
++    total_sums.s1 += ((bits4.s7 & 0x000F) - 8) * scale.s1 * shared_y.s4; \
++    total_sums.s1 += (((bits4.s7 & 0x00F0) >> 4) - 8) * scale.s1 * shared_y.s5; \
++    total_sums.s1 += (((bits4.s7 & 0x0F00) >> 8) - 8) * scale.s1 * shared_y.s6; \
++    total_sums.s1 += (((bits4.s7 & 0xF000) >> 12) - 8) * scale.s1 * shared_y.s7; \
++
++#ifdef ADRENO_GPU
++REQD_SUBGROUP_SIZE_64
++#endif
++__kernel void kernel_gemv_noshuffle_q4_0_f32(
++        __read_only  image1d_buffer_t src0_q,  // quantized A
++        global half2  * src0_d,  // A scales
++        __read_only  image1d_buffer_t src1,    // B
++        ulong offset1,            // offset to B (0)
++        global float * dst,     // C
++        ulong offsetd,            // offset to C (0)
++        uint K,               // K
++        int ne01,               // M
++        int ne02,               // 1
++        int ne10,               // K
++        int ne12,               // 1
++        int ne0,                // M
++        int ne1,                // N
++        int r2,                 // 1
++        int r3)
++{
++    uint groupId = get_local_id(1);
++    uint gid     = get_global_id(0);
++    // Keep tail lanes active for subgroup ops, but read a valid weight row.
++    uint gid_s = min(gid, (uint)LINE_STRIDE_A - 1u);
++    ushort slid    = get_sub_group_local_id();
++
++    __private uint4     regA;
++    __private half2     regS;
++    __private float8    regB;
++
++    __private float2 totalSum = (float2)(0.0f);
++
++    // loop along K in block granularity, skip 4 blocks every iter
++    for (uint k = groupId; k < (K / QK4_0); k += N_SIMDGROUP) {
++        regS = src0_d[gid_s + k * LINE_STRIDE_A]; // each fiber loads scale of two rows
++        // first 4 fibers in each wave load 8 B values to its private scope
++        if (slid < 4) {
++            regB.s0123 = read_imagef(src1, (slid * 2 + k * 8));
++            regB.s4567 = read_imagef(src1, (1 + slid * 2 + k * 8));
++        }
++
++        // load half weights for two blocks in consecutive rows
++        regA.s0 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 0)).x;
++        regA.s1 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 1)).x;
++        regA.s2 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 2)).x;
++        regA.s3 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 3)).x;
++#ifdef VECTOR_SUB_GROUP_BROADCAST
++        dequantizeBlockAccum_ns_sgbroadcast_8_hi(totalSum, as_ushort8(regA), regS, regB);
++#else
++        dequantizeBlockAccum_ns_sgbroadcast_1_hi(totalSum, as_ushort8(regA), regS, regB);
++#endif // VECTOR_SUB_GROUP_BROADCAST
++
++        regA.s0 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 4)).x;
++        regA.s1 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 5)).x;
++        regA.s2 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 6)).x;
++        regA.s3 = read_imageui(src0_q, (gid_s + k * BLOCK_STRIDE_A + LINE_STRIDE_A * 7)).x;
++#ifdef VECTOR_SUB_GROUP_BROADCAST
++        dequantizeBlockAccum_ns_sgbroadcast_8_lo(totalSum, as_ushort8(regA), regS, regB);
++#else
++        dequantizeBlockAccum_ns_sgbroadcast_1_lo(totalSum, as_ushort8(regA), regS, regB);
++#endif // VECTOR_SUB_GROUP_BROADCAST
++    }
++
++    // reduction in local memory, assumes #wave=4
++    __local float2 reduceLM[SIMDGROUP_WIDTH * 3];
++    if (groupId == 1) reduceLM[SIMDGROUP_WIDTH * 0 + slid] = totalSum;
++    if (groupId == 2) reduceLM[SIMDGROUP_WIDTH * 1 + slid] = totalSum;
++    if (groupId == 3) reduceLM[SIMDGROUP_WIDTH * 2 + slid] = totalSum;
++    barrier(CLK_LOCAL_MEM_FENCE);
++    if (groupId == 0) totalSum += reduceLM[SIMDGROUP_WIDTH * 0 + slid];
++    if (groupId == 0) totalSum += reduceLM[SIMDGROUP_WIDTH * 1 + slid];
++    if (groupId == 0) totalSum += reduceLM[SIMDGROUP_WIDTH * 2 + slid];
++
++    // 2 outputs per fiber in wave 0
++    if (groupId == 0) {
++        dst = (global float*)((global char*)dst + offsetd);
++        // Guard the two output rows against the padded x-grid tail overrunning dst.
++        // The current shape specializations are all ne01 % 128 == 0 (no padding), so
++        // this is a no-op / byte-identical today; keep it in lockstep with the base kernel.
++        if (gid * 2 + 0 < ne01) dst[gid * 2 + 0] = totalSum.s0;
++        if (gid * 2 + 1 < ne01) dst[gid * 2 + 1] = totalSum.s1;
++    }
++
++}
++)x3cl";
++
++std::string sha256(const std::string & m) {
++    static const uint32_t k[64] = {
++        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
++        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
++        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
++        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
++        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
++        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2 };
++    uint32_t h[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 };
++    std::string s = m; const uint64_t bits = (uint64_t) m.size() * 8; s += (char) 0x80;
++    while (s.size() % 64 != 56) s += (char) 0;
++    for (int i = 7; i >= 0; i--) s += (char)(bits >> (i * 8));
++    auto rr = [](uint32_t x, int n) { return (x >> n) | (x << (32 - n)); };
++    for (size_t c = 0; c < s.size(); c += 64) {
++        uint32_t w[64];
++        for (int i = 0; i < 16; i++) w[i] = (uint32_t)(uint8_t) s[c + 4 * i] << 24 | (uint32_t)(uint8_t) s[c + 4 * i + 1] << 16 | (uint32_t)(uint8_t) s[c + 4 * i + 2] << 8 | (uint8_t) s[c + 4 * i + 3];
++        for (int i = 16; i < 64; i++) w[i] = w[i - 16] + (rr(w[i - 15], 7) ^ rr(w[i - 15], 18) ^ (w[i - 15] >> 3)) + w[i - 7] + (rr(w[i - 2], 17) ^ rr(w[i - 2], 19) ^ (w[i - 2] >> 10));
++        uint32_t a = h[0], b = h[1], cc = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
++        for (int i = 0; i < 64; i++) {
++            const uint32_t t1 = hh + (rr(e, 6) ^ rr(e, 11) ^ rr(e, 25)) + ((e & f) ^ (~e & g)) + k[i] + w[i], t2 = (rr(a, 2) ^ rr(a, 13) ^ rr(a, 22)) + ((a & b) ^ (a & cc) ^ (b & cc));
++            hh = g; g = f; f = e; e = d + t1; d = cc; cc = b; b = a; a = t1 + t2;
++        }
++        h[0] += a; h[1] += b; h[2] += cc; h[3] += d; h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
++    }
++    char o[65]; for (int i = 0; i < 8; i++) snprintf(o + 8 * i, 9, "%08x", h[i]);
++    return o;
++}
++std::string slurp(const std::string & p) { FILE * f = fopen(p.c_str(), "rb"); if (!f) return ""; std::string s; char b[65536]; size_t n; while ((n = fread(b, 1, sizeof b, f)) > 0) s.append(b, n); fclose(f); return s; }
++bool spit(const std::string & p, const std::string & s) { FILE * f = fopen(p.c_str(), "wb"); if (!f) return false; const bool ok = fwrite(s.data(), 1, s.size(), f) == s.size(); return fclose(f) == 0 && ok; }
++std::string san(const std::string & s, size_t cap, char sp = ',') {   // one token: whitespace -> sp, line breaks -> '|', cut at cap
++    std::string r;
++    for (char c : s) { if (r.size() >= cap) { r += "..."; break; } r += c == '\n' ? '|' : (c == ' ' || c == '\t' || c == '\r') ? sp : c; }
++    while (!r.empty() && (r.back() == '|' || r.back() == sp)) r.pop_back();
++    return r.empty() ? "empty" : r;
++}
++
++// ---- OpenCL: X2's loader plus the calls the upstream kernel needs (all OpenCL 1.2 or older)
++struct ImgFmt { cl_uint order, type; };
++struct ImgDesc { cl_uint type; size_t w, h, d, arr, rowp, slicep; cl_uint mips, samples; H buffer; };
++struct CL3 : CL {
++    H (*CreateImage)(H, cl_bitfield, const ImgFmt *, const ImgDesc *, void *, cl_int *) = nullptr;
++    H (*CreateProgramWithBinary)(H, cl_uint, const H *, const size_t *, const unsigned char **, cl_int *, cl_int *) = nullptr;
++    cl_int (*GetProgramBuildInfo)(H, H, cl_uint, size_t, void *, size_t *) = nullptr;
++    cl_int (*GetKernelWorkGroupInfo)(H, H, cl_uint, size_t, void *, size_t *) = nullptr;
++    cl_int (*GetEventProfilingInfo)(H, cl_uint, size_t, void *, size_t *) = nullptr;
++    cl_int (*ReleaseEvent)(H) = nullptr;
++    cl_int (*EnqueueReadBuffer)(H, H, cl_uint, size_t, size_t, void *, cl_uint, const H *, H *) = nullptr;
++    bool load3() {
++        if (!load()) return false;
++#define S(f) if (!(*(void **) &f = dlsym(lib, "cl" #f))) return false
++        S(CreateImage); S(CreateProgramWithBinary); S(GetProgramBuildInfo); S(GetKernelWorkGroupInfo); S(GetEventProfilingInfo); S(ReleaseEvent); S(EnqueueReadBuffer);
++#undef S
++        return true;
++    }
++};
++#if defined(VOLLIE_X3_HOST_TEST)   // host functional test only (Linux + a CPU OpenCL); never set in a kit build
++const cl_bitfield DEVTYPE = 0xFFFFFFFF;
++#else
++const cl_bitfield DEVTYPE = 1 << 2;   // CL_DEVICE_TYPE_GPU
++#endif
++struct Gpu {
++    CL3 cl; H dev = nullptr, ctx = nullptr, q = nullptr, qp = nullptr;   // q: plain in-order queue (as upstream), qp: with profiling
++    std::string name, ver, cver, drv, cstd, err; uint64_t max_alloc = 0, gmem = 0; size_t img_max = 0; bool a6x = false, vsgb = false; int e031 = -1;
++    std::string str(cl_uint p) { std::vector<char> v(8192, 0); cl.GetDeviceInfo(dev, p, v.size() - 1, v.data(), nullptr); return v.data(); }
++    bool init() {
++        if (!cl.load3()) { err = "no_opencl"; return false; }
++        H plat = nullptr; cl_uint np = 0; cl_int e = 0;
++        if (cl.GetPlatformIDs(1, &plat, &np) || !np || cl.GetDeviceIDs(plat, DEVTYPE, 1, &dev, nullptr)) { err = "no_gpu"; return false; }
++        name = str(0x102B); ver = str(0x102F); cver = str(0x103D); drv = str(0x102D);
++        cl.GetDeviceInfo(dev, 0x1010, sizeof max_alloc, &max_alloc, nullptr); cl.GetDeviceInfo(dev, 0x101F, sizeof gmem, &gmem, nullptr);
++        cl.GetDeviceInfo(dev, 0x1040, sizeof img_max, &img_max, nullptr);
++        // as upstream: -cl-std from CL_DEVICE_OPENCL_C_VERSION ("OpenCL C 2.0 Adreno(TM) 660" -> CL2.0)
++        int ma = 0, mi = 0; if (sscanf(cver.c_str(), "OpenCL C %d.%d", &ma, &mi) == 2) cstd = "CL" + std::to_string(ma) + "." + std::to_string(mi);
++        // as upstream's get_adreno_gpu_gen (device version, then name) and has_vector_subgroup_broadcast (E031 >= 47)
++        for (const std::string & s : { ver, name }) {
++            for (const char * id : { "610", "612", "613", "615", "616", "618", "619", "620", "623", "630", "640", "642", "643", "644", "650", "660", "663", "680", "685", "690" })
++                if (s.find(id) != std::string::npos) a6x = true;
++            if (a6x) break;
++        }
++        const size_t p = drv.find("E031."); if (p != std::string::npos) e031 = atoi(drv.c_str() + p + 5);
++        vsgb = e031 >= 47;
++        ctx = cl.CreateContext(nullptr, 1, &dev, nullptr, nullptr, &e); if (!ctx) { err = "context_" + std::to_string(e); return false; }
++        q = cl.CreateCommandQueue(ctx, dev, 0, &e); qp = cl.CreateCommandQueue(ctx, dev, 1 << 1 /*PROFILING*/, &e);
++        if (!q || !qp) { err = "queue_" + std::to_string(e); return false; }
++        return true;
++    }
++    ~Gpu() { if (qp) cl.ReleaseCommandQueue(qp); if (q) cl.ReleaseCommandQueue(q); if (ctx) cl.ReleaseContext(ctx); }
++};
++
++// ---- the four programs upstream builds for the Q4_0 decode gemv (load_cl_kernels, "gemv_noshuffle_general" and "gemv_noshuffle")
++struct Kern { const char * id; bool spec; int M, kin; const char * defs; };
++const Kern KERNS[4] = { { "general", false, 0, 0, "" }, { "s4096_1_4096", true, 4096, 4096, " -DLINE_STRIDE_A=2048  -DBLOCK_STRIDE_A=16384 " },
++                        { "s4096_1_11008", true, 4096, 11008, " -DLINE_STRIDE_A=2048  -DBLOCK_STRIDE_A=16384 " },
++                        { "s11008_1_4096", true, 11008, 4096, " -DLINE_STRIDE_A=5504  -DBLOCK_STRIDE_A=44032 " } };
++std::string kopts(const Gpu & g, const Kern & k) {   // the option strings of ggml-opencl.cpp, byte for byte
++    std::string o = "-cl-std=" + g.cstd + " -cl-mad-enable " + k.defs + " -DSIMDGROUP_WIDTH=64";
++    if (g.vsgb) o += " -DVECTOR_SUB_GROUP_BROADCAST ";
++    if (!k.spec && g.a6x) o += " -DGGML_CL_A6X_CONSTFOLD_FIX";
++    return o;
++}
++#if defined(VOLLIE_X3_HOST_TEST)
++// host functional test only (PoCL: 64-lane subgroups like the Adreno's "half" size, but no cl_khr_fp16): the scales are read with
++// vload_half2 into float2 instead of half2; every other line of the kernel is as shipped. Never compiled into a kit.
++std::string host_nofp16(std::string s) {
++    auto rep = [&](const std::string & a, const std::string & b) { for (size_t i; (i = s.find(a)) != std::string::npos;) s.replace(i, a.size(), b); };
++    rep("global half2  * src0_d", "global half * src0_d"); rep("__private half2     regS;", "__private float2 regS;"); rep("__private half2  regS;", "__private float2 regS;");
++    rep("regS = src0_d[gid_s + k * LINE_STRIDE_A];", "regS = vload_half2(gid_s + k * LINE_STRIDE_A, src0_d);");
++    return s;
++}
++#endif
++std::string self_dir() { Dl_info i; if (dladdr((void *) &self_dir, &i) && i.dli_fname) { std::string p = i.dli_fname; return p.substr(0, p.rfind('/') + 1); } return ""; }
++struct Child { int rc = 0; double s = 0; std::string log; };
++// campaign 1's compiler process (tool/clc.c): exit 0 built, 3 built only with -cl-opt-disable, 1 failed, 2 setup; here also
++// -<signal> (the compiler crashed), -1001 timed out (120 s), -1000 could not start
++Child run_clc(const std::string & exe, const std::string & src, const std::string & bin, const std::string & opts, const std::string & logp) {
++    Child c; remove(bin.c_str());
++    posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa);
++    posix_spawn_file_actions_addopen(&fa, 2, logp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
++    posix_spawn_file_actions_adddup2(&fa, 2, 1);
++    std::vector<std::string> args = { exe, src, bin, opts }; std::vector<char *> argv; for (auto & x : args) argv.push_back(&x[0]); argv.push_back(nullptr);
++    std::vector<std::string> env;
++#if defined(__ANDROID__)
++    env.push_back("LD_LIBRARY_PATH=/vendor/lib64:/system/lib64");   // as campaign 1's opencl-compile-retry.patch
++#else
++    for (const char * k : { "PATH", "HOME", "LD_LIBRARY_PATH", "OCL_ICD_VENDORS", "OCL_ICD_FILENAMES", "RUSTICL_ENABLE" }) if (getenv(k)) env.push_back(std::string(k) + "=" + getenv(k));
++#endif
++    std::vector<char *> envp; for (auto & x : env) envp.push_back(&x[0]); envp.push_back(nullptr);
++    const auto t0 = clk::now(); pid_t pid = 0; int st = 0;
++    const int sp = posix_spawn(&pid, exe.c_str(), &fa, nullptr, argv.data(), envp.data());
++    posix_spawn_file_actions_destroy(&fa);
++    if (sp != 0) { c.rc = -1000; c.log = "posix_spawn errno " + std::to_string(sp); return c; }
++    bool to = false;
++    while (waitpid(pid, &st, WNOHANG) == 0) {
++        if (secs(t0, clk::now()) > 120) { kill(pid, SIGKILL); waitpid(pid, &st, 0); to = true; break; }
++        usleep(20000);
++    }
++    c.s = secs(t0, clk::now());
++    c.rc = to ? -1001 : WIFSIGNALED(st) ? -WTERMSIG(st) : WIFEXITED(st) ? WEXITSTATUS(st) : -1002;
++    c.log = slurp(logp);
++    return c;
++}
++struct Prog { H prg = nullptr, k = nullptr; std::string how = "none"; };
++void release(Gpu & g, Prog & p) { if (p.k) g.cl.ReleaseKernel(p.k); if (p.prg) g.cl.ReleaseProgram(p.prg); p.k = p.prg = nullptr; }
++// fresh (x3b): compile in the child, retrying with -cl-opt-disable when the child did not get to clc's own retry (crash, timeout);
++// otherwise load the binary x3b left in dir (compile if there is none). Then the binary is built and the kernel created in-process.
++Prog get_prog(Gpu & g, Out & o, const std::string & dir, const Kern & kn, bool fresh) {
++    const std::string base = dir + "/x3-" + kn.id, src = base + ".cl", bin = base + ".bin", lg = base + ".log", oo = base + ".opts";
++    const std::string opts = kopts(g, kn); std::string used = slurp(oo); Prog p;
++    if (fresh || used.empty() || slurp(bin).empty()) {
++        const std::string exe = self_dir() + "libvollie_clc.so";
++        used.clear(); remove(oo.c_str());
++        std::string text = kn.spec ? SRC_SPEC : SRC_GENERAL;
++#if defined(VOLLIE_X3_HOST_TEST)
++        text = host_nofp16(text);
++#endif
++        if (!spit(src, text)) { o.line("x3 build kern=%s rc=-1003 how=fail s=0 reason=write_src", kn.id); return p; }
++        if (access(exe.c_str(), X_OK) != 0) { o.line("x3 build kern=%s rc=-1000 how=fail s=0 reason=no_clc errno=%d", kn.id, errno); return p; }
++        double tot = 0; int rc = 0;
++        for (int t = 1; t <= 2; t++) {
++            const std::string op = t == 1 ? opts : opts + " -cl-opt-disable";
++            const Child c = run_clc(exe, src, bin, op, lg); tot += c.s; rc = c.rc;
++            o.line("x3 build kern=%s try=%d rc=%d s=%.2f opts=%s bin_bytes=%zu log_bytes=%zu", kn.id, t, c.rc, c.s, san(op, 400).c_str(), slurp(bin).size(), c.log.size());
++            if (!c.log.empty()) o.line("x3 buildlog kern=%s try=%d text=%s", kn.id, t, san(c.log, 4000, '_').c_str());
++            if (c.rc == 0) { p.how = t == 1 ? "opt" : "noopt"; used = op; break; }
++            if (c.rc == 3) { p.how = "noopt"; used = op + " -cl-opt-disable"; break; }
++            if (c.rc == 1 || c.rc == 2 || c.rc == -1000) { p.how = "fail"; break; }   // clc already tried -cl-opt-disable, or cannot run at all
++            p.how = "fail";
++        }
++        o.line("x3 build kern=%s rc=%d how=%s s=%.2f", kn.id, rc, p.how.c_str(), tot);
++        if (p.how == "fail") return p;
++        spit(oo, used);
++    } else p.how = "cached";
++    const std::string b = slurp(bin); const unsigned char * bp = (const unsigned char *) b.data(); const size_t bl = b.size();
++    cl_int bs = 0, ce = 0, be = -9999, ke = -9999;
++    p.prg = bl ? g.cl.CreateProgramWithBinary(g.ctx, 1, &g.dev, &bl, &bp, &bs, &ce) : nullptr;
++    if (p.prg) be = g.cl.BuildProgram(p.prg, 1, &g.dev, used.c_str(), nullptr, nullptr);
++    std::string blog;
++    if (p.prg) { size_t n = 0; g.cl.GetProgramBuildInfo(p.prg, g.dev, 0x1183, 0, nullptr, &n); if (n > 1) { blog.assign(n, 0); g.cl.GetProgramBuildInfo(p.prg, g.dev, 0x1183, n, &blog[0], nullptr); blog.resize(strlen(blog.c_str())); } }
++    if (p.prg && be == 0) p.k = g.cl.CreateKernel(p.prg, "kernel_gemv_noshuffle_q4_0_f32", &ke);
++    size_t wg = 0, wm = 0; uint64_t lm = 0, pm = 0;
++    if (p.k) { g.cl.GetKernelWorkGroupInfo(p.k, g.dev, 0x11B0, sizeof wg, &wg, nullptr); g.cl.GetKernelWorkGroupInfo(p.k, g.dev, 0x11B3, sizeof wm, &wm, nullptr);
++               g.cl.GetKernelWorkGroupInfo(p.k, g.dev, 0x11B2, sizeof lm, &lm, nullptr); g.cl.GetKernelWorkGroupInfo(p.k, g.dev, 0x11B4, sizeof pm, &pm, nullptr); }
++    const bool ok = p.k && wg >= 256;   // the dispatch is a 64 x 4 work-group
++    o.line("x3 load kern=%s how=%s bin_bytes=%zu create_err=%d bin_status=%d build_err=%d kernel_err=%d wg_max=%zu wg_mult=%zu local_mem=%llu private_mem=%llu ok=%d",
++           kn.id, p.how.c_str(), bl, ce, bs, be, ke, wg, wm, (unsigned long long) lm, (unsigned long long) pm, ok ? 1 : 0);
++    if (!blog.empty()) o.line("x3 loadlog kern=%s text=%s", kn.id, san(blog, 2000, '_').c_str());
++    if (!ok) release(g, p);
++    return p;
++}
++
++// ---- weights: random Q4_0 blocks (finite fp16 scales) converted on the CPU as upstream does on the GPU:
++// kernel_convert_block_q4_0_noshuffle (byte j = elements 2j, 2j+1 low nibbles; byte j+8 = elements 16+2j, 17+2j), then
++// transpose_2d_as_16b of q ([M][K/4] ushorts -> [K/4][M]) and of d ([M][K/32] halves -> [K/32][M])
++struct HMat { int M = 0, kin = 0; std::vector<bq4> w; std::vector<uint16_t> q, d; size_t bytes() const { return 2 * (q.size() + d.size()); } };
++void make_hmat(HMat & h, int M, int kin) {
++    const int nb = kin / QK; h.M = M; h.kin = kin; h.w.resize((size_t) M * nb); h.q.assign((size_t) kin / 4 * M, 0); h.d.assign((size_t) nb * M, 0);
++    for (auto & b : h.w) { b.d = (__fp16)((0.002f + 0.02f * (rnd() & 1023) / 1023.f) * ((rnd() & 1) ? 1.f : -1.f)); fill(b.qs, 16); }
++    for (int i = 0; i < M; i++) for (int b = 0; b < nb; b++) {
++        const bq4 & blk = h.w[(size_t) i * nb + b]; uint8_t q8[16];
++        for (int j = 0; j < 8; j++) { const uint8_t x0 = blk.qs[2 * j], x1 = blk.qs[2 * j + 1]; q8[j] = (uint8_t)((x0 & 0x0F) | ((x1 & 0x0F) << 4)); q8[j + 8] = (uint8_t)(((x0 & 0xF0) >> 4) | (x1 & 0xF0)); }
++        uint16_t dd; memcpy(&dd, &blk.d, 2); h.d[(size_t) b * M + i] = dd;
++        for (int j = 0; j < 8; j++) h.q[(size_t)(b * 8 + j) * M + i] = (uint16_t)(q8[2 * j] | q8[2 * j + 1] << 8);
++    }
++}
++std::vector<double> refdot(const HMat & h, const std::vector<float> & x) {   // the plain Q4_0 dot in float64
++    const int nb = h.kin / QK; std::vector<double> y(h.M);
++    for (int i = 0; i < h.M; i++) {
++        double s = 0;
++        for (int b = 0; b < nb; b++) {
++            const bq4 & blk = h.w[(size_t) i * nb + b]; double t = 0;
++            for (int e = 0; e < 16; e++) t += ((blk.qs[e] & 15) - 8) * (double) x[b * 32 + e] + ((blk.qs[e] >> 4) - 8) * (double) x[b * 32 + e + 16];
++            s += (double)(float) blk.d * t;
++        }
++        y[i] = s;
++    }
++    return y;
++}
++struct GMat { H q = nullptr, d = nullptr, img = nullptr; int M = 0, kin = 0; double bytes = 0; };
++void release(Gpu & g, GMat & m) { if (m.img) g.cl.ReleaseMemObject(m.img); if (m.q) g.cl.ReleaseMemObject(m.q); if (m.d) g.cl.ReleaseMemObject(m.d); m.img = m.q = m.d = nullptr; }
++cl_int up(Gpu & g, GMat & m, const HMat & h) {   // q as a READ_ONLY buffer wrapped as IMAGE1D_BUFFER CL_R / CL_UNSIGNED_INT32, d as half2 buffer
++    cl_int e = 0; m.M = h.M; m.kin = h.kin; m.bytes = (double) h.bytes();
++    m.q = g.cl.CreateBuffer(g.ctx, (1 << 2) | (1 << 5), h.q.size() * 2, const_cast<uint16_t *>(h.q.data()), &e); if (!m.q) return e ? e : -1;
++    m.d = g.cl.CreateBuffer(g.ctx, (1 << 2) | (1 << 5), h.d.size() * 2, const_cast<uint16_t *>(h.d.data()), &e); if (!m.d) return e ? e : -1;
++    ImgFmt f{ 0x10B0, 0x10DC }; ImgDesc ds{}; ds.type = 0x10F6; ds.w = (size_t) h.M * h.kin / 8; ds.buffer = m.q;
++    m.img = g.cl.CreateImage(g.ctx, 1 << 2, &f, &ds, nullptr, &e); return m.img ? 0 : (e ? e : -1);
++}
++struct XIn { H b = nullptr, img = nullptr; std::vector<float> x; int kin = 0; };
++cl_int mkx(Gpu & g, XIn & xi, int kin) {   // activations f32 as IMAGE1D_BUFFER CL_RGBA / CL_FLOAT (width K/4), as upstream
++    cl_int e = 0; xi.kin = kin; xi.x = rand_f(kin);
++    xi.b = g.cl.CreateBuffer(g.ctx, (1 << 2) | (1 << 5), (size_t) kin * 4, xi.x.data(), &e); if (!xi.b) return e ? e : -1;
++    ImgFmt f{ 0x10B5, 0x10DE }; ImgDesc ds{}; ds.type = 0x10F6; ds.w = (size_t) kin / 4; ds.buffer = xi.b;
++    xi.img = g.cl.CreateImage(g.ctx, 1 << 2, &f, &ds, nullptr, &e); return xi.img ? 0 : (e ? e : -1);
++}
++// one gemv, upstream's arguments and sizes (ggml_cl_mul_mat_q4_0_f32_adreno, ne1 == 1): global {CEIL(M/2, 64) * 64, 4, 1}, local {64, 4, 1}
++cl_int launch(Gpu & g, H k, const GMat & m, const XIn & x, H dst, H q, H * ev) {
++    const uint64_t z = 0; const int kk = m.kin, mm = m.M, one = 1; cl_int e = 0;
++    e |= g.cl.SetKernelArg(k, 0, sizeof(H), &m.img); e |= g.cl.SetKernelArg(k, 1, sizeof(H), &m.d); e |= g.cl.SetKernelArg(k, 2, sizeof(H), &x.img);
++    e |= g.cl.SetKernelArg(k, 3, 8, &z); e |= g.cl.SetKernelArg(k, 4, sizeof(H), &dst); e |= g.cl.SetKernelArg(k, 5, 8, &z);
++    e |= g.cl.SetKernelArg(k, 6, 4, &kk); e |= g.cl.SetKernelArg(k, 7, 4, &mm); e |= g.cl.SetKernelArg(k, 8, 4, &one); e |= g.cl.SetKernelArg(k, 9, 4, &kk);
++    e |= g.cl.SetKernelArg(k, 10, 4, &one); e |= g.cl.SetKernelArg(k, 11, 4, &mm); e |= g.cl.SetKernelArg(k, 12, 4, &one); e |= g.cl.SetKernelArg(k, 13, 4, &one);
++    e |= g.cl.SetKernelArg(k, 14, 4, &one);
++    if (e) return e;
++    const size_t gws[3] = { (size_t)((mm / 2 + 63) / 64) * 64, 4, 1 }, lws[3] = { 64, 4, 1 };
++    return g.cl.EnqueueNDRangeKernel(q, k, 3, nullptr, gws, lws, 0, nullptr, ev);
++}
++double evs(Gpu & g, H ev, cl_uint a = 0x1282, cl_uint b = 0x1283) {   // seconds between two profiling points (default START -> END)
++    uint64_t t0 = 0, t1 = 0; g.cl.GetEventProfilingInfo(ev, a, 8, &t0, nullptr); g.cl.GetEventProfilingInfo(ev, b, 8, &t1, nullptr); return t1 >= t0 ? (t1 - t0) * 1e-9 : -1;
++}
++struct Kset { Prog p[4]; Prog * pick(int M, int kin, bool general, const char ** id) {   // upstream's choice by shape; the general kernel if the special one is missing
++    for (int i = 1; i < 4 && !general; i++) if (KERNS[i].M == M && KERNS[i].kin == kin && p[i].k) { *id = KERNS[i].id; return &p[i]; }
++    *id = "general"; return p[0].k ? &p[0] : nullptr; } };
++
++// ---- conditions and clocks
++long rd1(const char * path, int & err) { FILE * f = fopen(path, "r"); if (!f) { err = errno; return -1; } long v = -1; if (fscanf(f, "%ld", &v) != 1) v = -1; fclose(f); return v; }
++const char * KG = "/sys/class/kgsl/kgsl-3d0/";
++std::string kg(const char * f) { return rdl((std::string(KG) + f).c_str()); }
++long gpu_mhz(const char * f) { int e = 0; const long v = rd1((std::string(KG) + f).c_str(), e); return v > 0 ? v / 1000000 : -1; }
++bool gpu_at_max() { const long c = gpu_mhz("gpuclk"), m = gpu_mhz("max_gpuclk"); return c < 0 || m < 0 || c >= m; }
++struct GClk { long lo = LONG_MAX, hi = LONG_MIN; int n = 0, e = 0;
++    void sample() { const long v = rd1((std::string(KG) + "gpuclk").c_str(), e); if (v > 0) { lo = std::min(lo, v / 1000000); hi = std::max(hi, v / 1000000); n++; } }
++    std::string str() const { if (!n) return "e" + std::to_string(e); char b[64]; snprintf(b, sizeof b, "%ld..%ld,n=%d", lo, hi, n); return b; } };
++struct Therm {   // AThermal_getThermalHeadroom (NDK, API 31) through dlopen; "na" where it is missing, "nan" when rate-limited
++    void * mgr = nullptr; float (*get)(void *, int) = nullptr; void (*rel)(void *) = nullptr;
++    Therm() { if (void * l = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL)) { auto acq = (void * (*)()) dlsym(l, "AThermal_acquireManager");
++              *(void **) &get = dlsym(l, "AThermal_getThermalHeadroom"); *(void **) &rel = dlsym(l, "AThermal_releaseManager"); if (acq && get) mgr = acq(); } }
++    ~Therm() { if (mgr && rel) rel(mgr); }
++    std::string hr() { if (!mgr) return "na"; char b[24]; snprintf(b, sizeof b, "%.3f", get(mgr, 0)); return b; } };
++std::string maxstr() {   // policy p: scaling_max / cpuinfo_max (MHz), the parser's max_mhz format
++    std::string s; for (int p : { 0, 4, 7 }) { char b[48]; snprintf(b, sizeof b, "%sp%d:%ld/%ld", s.empty() ? "" : ",", p, maxkhz(p, "scaling_max_freq") / 1000, maxkhz(p, "cpuinfo_max_freq") / 1000); s += b; }
++    return s;
++}
++void cond(Out & o) {
++    o.line("x3 cond thp_enabled=%s thp_defrag=%s", rdl("/sys/kernel/mm/transparent_hugepage/enabled").c_str(), rdl("/sys/kernel/mm/transparent_hugepage/defrag").c_str());
++    DIR * d = opendir("/sys/class/devfreq");
++    if (!d) o.line("x3 cond devfreq=none errno=%d", errno);
++    else {
++        int n = 0;
++        while (dirent * e = readdir(d)) {
++            if (e->d_name[0] == '.') continue;
++            const std::string b = std::string("/sys/class/devfreq/") + e->d_name + "/"; n++;
++            o.line("x3 cond devfreq=%s cur=%s min=%s max=%s gov=%s avail=%s", e->d_name, rdl((b + "cur_freq").c_str()).c_str(), rdl((b + "min_freq").c_str()).c_str(),
++                   rdl((b + "max_freq").c_str()).c_str(), rdl((b + "governor").c_str()).c_str(), rdl((b + "available_frequencies").c_str()).c_str());
++        }
++        closedir(d);
++        if (!n) o.line("x3 cond devfreq=none n=0");
++    }
++    o.line("x3 cond kgsl gpuclk=%s max_gpuclk=%s devfreq_cur=%s devfreq_max=%s gov=%s busy=%s thermal_pwrlevel=%s max_mhz=%s", kg("gpuclk").c_str(), kg("max_gpuclk").c_str(),
++           kg("devfreq/cur_freq").c_str(), kg("devfreq/max_freq").c_str(), kg("devfreq/governor").c_str(), kg("gpu_busy_percentage").c_str(), kg("thermal_pwrlevel").c_str(), maxstr().c_str());
++}
++
++// ---- per-thread fields of the threads pinned to one cpu of 4-7 (the probe's and ggml's workers), from /proc/self/task:
++// cpu time over wall, involuntary and voluntary switches, and the cpu the thread last ran on, sampled every 50 ms
++struct TMon {
++    struct T { int tid = 0, cpu = -1, other = -1; long chk = 0, off = 0, iv0 = 0, iv1 = 0, v0 = 0, v1 = 0; double c0 = 0, c1 = 0; };
++    std::vector<T> ts; clk::time_point w0, w1;
++    static bool stat(int tid, double & cs, int & pr) {
++        char p[64]; snprintf(p, sizeof p, "/proc/self/task/%d/stat", tid); FILE * f = fopen(p, "r"); if (!f) return false;
++        char b[1024]; const size_t n = fread(b, 1, sizeof b - 1, f); fclose(f); b[n] = 0;
++        char * s = strrchr(b, ')'); if (!s) return false;
++        int fld = 2; unsigned long ut = 0, st = 0; pr = -1; char * sv = nullptr;
++        for (char * t = strtok_r(s + 1, " ", &sv); t; t = strtok_r(nullptr, " ", &sv)) {
++            fld++;
++            if (fld == 14) ut = strtoul(t, nullptr, 10); else if (fld == 15) st = strtoul(t, nullptr, 10); else if (fld == 39) { pr = atoi(t); break; }
++        }
++        cs = (ut + st) / (double) sysconf(_SC_CLK_TCK); return pr >= 0;
++    }
++    static void sw(int tid, long & iv, long & v) { char p[64]; snprintf(p, sizeof p, "/proc/self/task/%d/status", tid); iv = kv(p, "nonvoluntary_ctxt_switches"); v = kv(p, "voluntary_ctxt_switches"); }
++    void start() {
++        ts.clear();
++#if defined(__linux__)
++        if (DIR * d = opendir("/proc/self/task")) {
++            while (dirent * e = readdir(d)) {
++                const int tid = atoi(e->d_name); if (tid <= 0) continue;
++                cpu_set_t m; CPU_ZERO(&m); if (sched_getaffinity(tid, sizeof m, &m) || CPU_COUNT(&m) != 1) continue;
++                T t; t.tid = tid; for (int c = 4; c < 8; c++) if (CPU_ISSET(c, &m)) t.cpu = c;
++                int pr; if (t.cpu < 0 || !stat(tid, t.c0, pr)) continue;
++                sw(tid, t.iv0, t.v0); ts.push_back(t);
++            }
++            closedir(d);
++        }
++#endif
++        w0 = clk::now();
++    }
++    void sample() { for (auto & t : ts) { double c; int pr; if (stat(t.tid, c, pr)) { t.chk++; if (pr != t.cpu) { t.off++; t.other = pr; } } } }
++    void stop() { w1 = clk::now(); for (auto & t : ts) { int pr; if (!stat(t.tid, t.c1, pr)) t.c1 = t.c0; sw(t.tid, t.iv1, t.v1); } }
++    std::string thr() const {   // threads that ran at least 5 % of the window (idle pool workers of other cells are left out)
++        const double w = secs(w0, w1); std::string s;
++        for (auto & t : ts) {
++            const double cw = w > 0 ? (t.c1 - t.c0) / w : -1; if (cw < 0.05) continue;
++            char b[96]; snprintf(b, sizeof b, "%s%d:%.3f:%ld:%ld:%ld/%ld@%d", s.empty() ? "" : ",", t.cpu, cw, t.iv1 - t.iv0, t.v1 - t.v0, t.off, t.chk, t.other); s += b;
++        }
++        return s.empty() ? "none" : s;
++    }
++};
++
++// ---- one timed arm: CPU work on the calling thread (pinned to set[0]; ggml's pool takes the rest of the set) and / or GPU
++// batches from a feeder thread pinned to 0-3; a controller thread on 0-3 runs the warm-up (warm s, then until the set's
++// policies and the GPU read their max clock, at most 2 s more), the measured window and the sampling
++struct Arm { std::function<double()> cpu, gpu; std::vector<int> set; double warm = 0.5, meas = 1.5; };
++struct ARes { double cpu_b = 0, cpu_s = 0, gpu_b = 0, gpu_s = 0, ramp_s = 0, fcw = -1; long cpu_n = 0, gpu_n = 0; int ramp_ok = 0; unsigned fmask = 0;
++              Mhz mz; GClk gc; TMon tm; std::string hr, m0, m1;
++              double cgbs() const { return cpu_s > 0 ? cpu_b / cpu_s / 1e9 : 0; } double ggbs() const { return gpu_s > 0 ? gpu_b / gpu_s / 1e9 : 0; } };
++ARes run_arm(const Arm & a, Therm & th) {
++    ARes r; std::atomic<int> ph{0}; Aff aff;
++    std::thread feeder;
++    if (a.gpu) feeder = std::thread([&] {
++        pin_cpus({ 0, 1, 2, 3 });
++        while (ph.load() == 0) a.gpu();
++        const double c0 = tcpu(); const auto t0 = clk::now();
++        while (ph.load() == 1) { r.gpu_b += a.gpu(); r.gpu_n++; const int w = where(); if (w >= 0 && w < 32) r.fmask |= 1u << w; }
++        r.gpu_s = secs(t0, clk::now()); r.fcw = r.gpu_s > 0 ? (tcpu() - c0) / r.gpu_s : -1;
++    });
++    std::thread ctl([&] {
++        pin_cpus({ 0, 1, 2, 3 }); r.m0 = mhz(); const auto t0 = clk::now();
++        auto ready = [&] { return (a.set.empty() || !a.cpu || at_max(a.set)) && (!a.gpu || gpu_at_max()); };
++        sleep_s(a.warm);
++        while (!ready() && secs(t0, clk::now()) < a.warm + 2.0) sleep_s(0.05);
++        r.ramp_s = secs(t0, clk::now()); r.ramp_ok = ready();
++        r.tm.start(); ph = 1; const auto m0 = clk::now();
++        while (secs(m0, clk::now()) < a.meas) { r.mz.sample(); r.gc.sample(); r.tm.sample(); sleep_s(0.05); }
++        ph = 2; r.tm.stop(); r.m1 = mhz();
++    });
++    if (a.cpu) {
++        pin(a.set[0]);
++        while (ph.load() == 0) a.cpu();
++        const auto t0 = clk::now();
++        while (ph.load() == 1) { r.cpu_b += a.cpu(); r.cpu_n++; }
++        r.cpu_s = secs(t0, clk::now());
++    }
++    ctl.join(); if (feeder.joinable()) feeder.join();
++    r.hr = th.hr();
++    return r;
++}
++std::string astr(const ARes & r) {
++    char b[700]; snprintf(b, sizeof b, "thr=%s feeder=%.3f:%x mhz=%s->%s mhz_range=%s max_mhz=%s gpu_mhz=%s gpu_max_mhz=%ld gpu_busy=%s hr=%s ramp_s=%.2f ramp_ok=%d",
++                          r.tm.thr().c_str(), r.fcw, r.fmask, r.m0.c_str(), r.m1.c_str(), r.mz.str().c_str(), maxstr().c_str(), r.gc.str().c_str(), gpu_mhz("max_gpuclk"),
++                          kg("gpu_busy_percentage").c_str(), r.hr.c_str(), r.ramp_s, r.ramp_ok);
++    return b;
++}
++struct Ring { std::vector<GMat> m; size_t i = 0; cl_int err = 0; double bytes = 0; };
++cl_int mkring(Gpu & g, Ring & r, const HMat & h, int n) { r.m.resize(n); for (auto & m : r.m) { const cl_int e = up(g, m, h); if (e) return e; r.bytes += m.bytes; } return 0; }
++void release(Gpu & g, Ring & r) { for (auto & m : r.m) release(g, m); r.m.clear(); r.bytes = 0; }
++double batch(Gpu & g, H k, Ring & r, const XIn & x, H dst, int n = 8) {   // n gemvs over the ring on the plain queue, then clFinish
++    double b = 0;
++    for (int j = 0; j < n; j++) { GMat & m = r.m[r.i]; r.i = (r.i + 1) % r.m.size(); const cl_int e = launch(g, k, m, x, dst, g.q, nullptr); if (e && !r.err) r.err = e; b += m.bytes; }
++    const cl_int e = g.cl.Finish(g.q); if (e && !r.err) r.err = e;
++    return b;
++}
++void devpass(Gpu & g, H k, Ring & r, const XIn & x, H dst, double s, double & dev_gbs, double & dev_us) {   // the same walk on the profiling queue
++    double b = 0, t = 0; long n = 0; const auto t0 = clk::now();
++    while (secs(t0, clk::now()) < s) {
++        H ev[8] = {};
++        for (int j = 0; j < 8; j++) { GMat & m = r.m[r.i]; r.i = (r.i + 1) % r.m.size(); if (launch(g, k, m, x, dst, g.qp, &ev[j])) ev[j] = nullptr; b += m.bytes; }
++        g.cl.Finish(g.qp);
++        for (H e : ev) if (e) { t += evs(g, e); n++; g.cl.ReleaseEvent(e); }
++    }
++    dev_gbs = t > 0 ? b / t / 1e9 : -1; dev_us = n ? t / n * 1e6 : -1;
++}
++
++// ---- x3b: identity, one gemv per kernel and shape against the float64 reference; max_rel_err = max |gpu - ref| / rms(ref)
++// (a functional check: the kernel forms (q - 8) * scale in half, so it is not exact; pass < 1e-2)
++void identity(Gpu & g, Out & o, Kset & ks, int M, int kin, bool general, const XIn & x, H dst) {
++    const char * id = "general"; Prog * p = ks.pick(M, kin, general, &id);
++    if (!p) { o.line("x3 identity kern=%s m=%d k=%d ok=0 reason=no_kernel", id, M, kin); return; }
++    HMat h; make_hmat(h, M, kin); GMat m; cl_int e = up(g, m, h);
++    std::vector<float> y(M, NAN);
++    if (!e) e = launch(g, p->k, m, x, dst, g.q, nullptr);
++    if (!e) e = g.cl.Finish(g.q);
++    if (!e) e = g.cl.EnqueueReadBuffer(g.q, dst, 1, 0, (size_t) M * 4, y.data(), 0, nullptr, nullptr);
++    release(g, m);
++    const std::vector<double> r = refdot(h, x.x); double rms = 0; for (double v : r) rms += v * v; rms = std::sqrt(rms / M);
++    double mr = 0, ma = 0; int bad = 0, nf = 0;
++    for (int i = 0; i < M; i++) {
++        if (!std::isfinite(y[i])) { nf++; bad++; continue; }
++        const double a = std::fabs(y[i] - r[i]); ma = std::max(ma, a); mr = std::max(mr, a / rms); if (a > 1e-2 * rms) bad++;
++    }
++    o.line("x3 identity kern=%s m=%d k=%d err=%d max_rel_err=%.3e max_abs=%.3e rms_ref=%.3e rows_bad=%d nonfinite=%d ok=%d", id, M, kin, e, mr, ma, rms, bad, nf,
++           !e && mr < 1e-2 && !bad ? 1 : 0);
++}
++
++// ---- x3g
++void alone(Gpu & g, Out & o, Therm & th, Kset & ks, const HMat & h, bool general, bool cold, const XIn & x, H dst) {
++    const char * id = "general"; Prog * p = ks.pick(h.M, h.kin, general, &id);
++    const char * rg = cold ? "cold" : "hot";
++    if (!p) { o.line("x3 alone kern=%s m=%d k=%d regime=%s ok=0 reason=no_kernel", id, h.M, h.kin, rg); return; }
++    const int n = cold ? (int) std::ceil((512.0 * 1048576) / h.bytes()) : 1;
++    Ring r; cl_int e = mkring(g, r, h, n);
++    if (e) { o.line("x3 alone kern=%s m=%d k=%d regime=%s copies=%d ok=0 err=%d reason=alloc", id, h.M, h.kin, rg, n, e); release(g, r); return; }
++    Arm a; a.gpu = [&] { return batch(g, p->k, r, x, dst); }; a.warm = 0.5; a.meas = 1.0;
++    const ARes s = run_arm(a, th);
++    double dg = -1, du = -1; devpass(g, p->k, r, x, dst, 0.3, dg, du);
++    const double gem = s.gpu_b / h.bytes();
++    o.line("x3 alone kern=%s m=%d k=%d regime=%s copies=%d mb=%.1f gemvs=%.0f secs=%.3f gbs=%.2f gw_per_s=%.3f us_per_gemv=%.1f dev_gbs=%.2f dev_us=%.1f err=%d %s",
++           id, h.M, h.kin, rg, n, r.bytes / 1048576.0, gem, s.gpu_s, s.ggbs(), gem * h.M * h.kin / s.gpu_s / 1e9, s.gpu_s / gem * 1e6, dg, du, r.err, astr(s).c_str());
++    release(g, r);
++}
++void roundtrip(Gpu & g, Out & o, Kset & ks, int M, int kin, const XIn & x, H dst) {   // launch + clFinish per call, from a thread on 0-3
++    const char * id = "general"; Prog * p = ks.pick(M, kin, false, &id);
++    if (!p) { o.line("x3 rt kern=%s m=%d k=%d ok=0 reason=no_kernel", id, M, kin); return; }
++    HMat h; make_hmat(h, M, kin); GMat m; const cl_int e = up(g, m, h);
++    if (e) { o.line("x3 rt kern=%s m=%d k=%d ok=0 err=%d", id, M, kin, e); release(g, m); return; }
++    Aff aff; pin_cpus({ 0, 1, 2, 3 });
++    std::vector<double> w; const auto t0 = clk::now(); cl_int le = 0;
++    while (secs(t0, clk::now()) < 0.8) {
++        const auto a = clk::now(); const cl_int x1 = launch(g, p->k, m, x, dst, g.q, nullptr); const cl_int x2 = g.cl.Finish(g.q);
++        if ((x1 || x2) && !le) le = x1 ? x1 : x2;
++        if (secs(t0, a) > 0.2) w.push_back(secs(a, clk::now()) * 1e6);
++    }
++    double dv = 0, q2s = 0, s2e = 0; int n = 0;
++    for (int i = 0; i < 100; i++) {
++        H ev = nullptr; if (launch(g, p->k, m, x, dst, g.qp, &ev) || !ev) continue;
++        g.cl.Finish(g.qp); dv += evs(g, ev); q2s += evs(g, ev, 0x1280, 0x1282); s2e += evs(g, ev, 0x1281, 0x1282); n++; g.cl.ReleaseEvent(ev);
++    }
++    release(g, m);
++    std::sort(w.begin(), w.end()); double mean = 0; for (double v : w) mean += v; mean = w.empty() ? -1 : mean / w.size();
++    const double p50 = w.empty() ? -1 : w[w.size() / 2], p90 = w.empty() ? -1 : w[w.size() * 9 / 10];
++    o.line("x3 rt kern=%s m=%d k=%d calls=%zu wall_us=%.1f p50_us=%.1f p90_us=%.1f dev_us=%.1f ovh_us=%.1f queued_to_start_us=%.1f submit_to_start_us=%.1f err=%d gpu_mhz=%ld",
++           id, M, kin, w.size(), mean, p50, p90, n ? dv / n * 1e6 : -1, n ? mean - dv / n * 1e6 : -1, n ? q2s / n * 1e6 : -1, n ? s2e / n * 1e6 : -1, le, gpu_mhz("gpuclk"));
++}
++struct LMat { const char * name; int M, kin, hi; };   // hi: index of the host matrix
++void layer(Gpu & g, Out & o, Therm & th, Kset & ks, const Subj & sj, HMat * hm, const XIn & x4, const XIn & x11, H dst) {
++    // hm: 0 = 4096 x 4096, 1 = 512 x 4096, 2 = 11008 x 4096, 3 = 4096 x 11008 (rows x inputs)
++    const int kvh = sj.kv == 512 ? 1 : 0;
++    const LMat L[7] = { { "q", 4096, 4096, 0 }, { "k", sj.kv, 4096, kvh }, { "v", sj.kv, 4096, kvh }, { "o", 4096, 4096, 0 },
++                        { "gate", 11008, 4096, 2 }, { "up", 11008, 4096, 2 }, { "down", 4096, 11008, 3 } };
++    const int NL = 4; std::vector<GMat> m(NL * 7); std::vector<Prog *> pk(7); std::string ids; double lb = 0; cl_int e = 0;
++    for (int j = 0; j < 7; j++) { const char * id; pk[j] = ks.pick(L[j].M, L[j].kin, false, &id); ids += std::string(j ? "," : "") + L[j].name + ":" + id; lb += hm[L[j].hi].bytes();
++                                  if (!pk[j]) e = -2; }
++    for (int i = 0; i < NL * 7 && !e; i++) e = up(g, m[i], hm[L[i % 7].hi]);
++    if (e) { o.line("x3 layer subj=%s ok=0 err=%d kerns=%s", sj.name, e, ids.c_str()); for (auto & x : m) release(g, x); return; }
++    size_t li = 0; cl_int le = 0;
++    auto one = [&](bool each) {   // one layer: the 7 gemvs in graph order, clFinish once (sync1) or after each launch (sync7)
++        for (int j = 0; j < 7; j++) { const cl_int x1 = launch(g, pk[j]->k, m[li * 7 + j], L[j].kin == 4096 ? x4 : x11, dst, g.q, nullptr); if (x1 && !le) le = x1; if (each) g.cl.Finish(g.q); }
++        if (!each) g.cl.Finish(g.q);
++        li = (li + 1) % NL; return lb;
++    };
++    double ms[2] = { 0, 0 };
++    for (int each = 0; each < 2; each++) {
++        Arm a; a.gpu = [&] { return one(each); }; a.warm = 0.5; a.meas = 1.0;
++        const ARes s = run_arm(a, th); const double nl = s.gpu_b / lb; ms[each] = s.gpu_s * 1e3 / nl;
++        o.line("x3 layer subj=%s mode=%s layers_in_ring=%d layer_mb=%.1f layers=%.0f ms_per_layer=%.3f body_ms=%.2f n_layer=%d gbs=%.2f err=%d kerns=%s %s", sj.name,
++               each ? "sync7" : "sync1", NL, lb / 1048576.0, nl, ms[each], ms[each] * sj.layers, sj.layers, s.ggbs(), le, ids.c_str(), astr(s).c_str());
++    }
++    double dev = 0; int n = 0;   // one profiled sweep of the ring: device time per layer
++    for (int l = 0; l < NL; l++) {
++        H ev[7] = {};
++        for (int j = 0; j < 7; j++) if (launch(g, pk[j]->k, m[l * 7 + j], L[j].kin == 4096 ? x4 : x11, dst, g.qp, &ev[j])) ev[j] = nullptr;
++        g.cl.Finish(g.qp);
++        for (H x : ev) if (x) { dev += evs(g, x); g.cl.ReleaseEvent(x); }
++        n++;
++    }
++    const double dms = dev * 1e3 / n;
++    o.line("x3 layersum subj=%s ms_sync1=%.3f ms_sync7=%.3f dev_ms=%.3f rt_us_per_dispatch=%.1f ovh_us_per_dispatch=%.1f body_ms_sync1=%.2f body_ms_dev=%.2f",
++           sj.name, ms[0], ms[1], dms, (ms[1] - ms[0]) * 1e3 / 7, (ms[0] - dms) * 1e3 / 7, ms[0] * sj.layers, dms * sj.layers);
++    for (auto & x : m) release(g, x);
++}
++
++// ---- x3c: CPU rings through ggml (the buffer type llama picks: the repacked Q4_0), one graph per matrix
++struct CRing { ggml_context * cw = nullptr, * cx = nullptr; ggml_backend_buffer_t bw = nullptr, bx = nullptr; std::vector<ggml_cgraph *> gf; std::string buft; double bytes = 0;
++               ~CRing() { if (bw) ggml_backend_buffer_free(bw); if (bx) ggml_backend_buffer_free(bx); if (cw) ggml_free(cw); if (cx) ggml_free(cx); } };
++bool make_cring(GB & g, CRing & s, int kin, int R, int n, const std::vector<uint8_t> & tq, int tr) {
++    ggml_init_params ip{ ggml_tensor_overhead() * (n + 2), nullptr, true }; s.cw = ggml_init(ip);
++    ggml_init_params ix{ ggml_tensor_overhead() * (2 * n + 2) + n * ggml_graph_overhead_custom(8, false), nullptr, true }; s.cx = ggml_init(ix);
++    std::vector<ggml_tensor *> w(n); for (auto & p : w) p = ggml_new_tensor_2d(s.cw, GGML_TYPE_Q4_0, kin, R);
++    ggml_backend_buffer_type_t bt = g.pick(GGML_TYPE_Q4_0, kin, R); s.buft = ggml_backend_buft_name(bt);
++    if (!(s.bw = ggml_backend_alloc_ctx_tensors_from_buft(s.cw, bt))) return false;
++    ggml_tensor * x = ggml_new_tensor_2d(s.cx, GGML_TYPE_F32, kin, 1);
++    for (auto * p : w) { ggml_cgraph * gf = ggml_new_graph_custom(s.cx, 8, false); ggml_build_forward_expand(gf, ggml_mul_mat(s.cx, p, x)); s.gf.push_back(gf); }
++    if (!(s.bx = ggml_backend_alloc_ctx_tensors_from_buft(s.cx, g.bufts.back()))) return false;
++    const size_t rb = ggml_row_size(GGML_TYPE_Q4_0, kin); std::vector<uint8_t> h((size_t) R * rb);
++    for (int r = 0; r < R; r++) memcpy(h.data() + (size_t) r * rb, tq.data() + (size_t)(r % tr) * rb, rb);
++    for (auto * p : w) ggml_backend_tensor_set(p, h.data(), 0, h.size());
++    std::vector<float> xf = rand_f(kin); ggml_backend_tensor_set(x, xf.data(), 0, 4 * (size_t) kin);
++    s.bytes = (double) h.size();
++    return true;
++}
++std::string cpumask(const std::vector<int> & set) { std::string m; for (size_t i = 0; i < set.size(); i++) { char b[24]; snprintf(b, sizeof b, "%s%llx", i ? "," : "", 1ull << set[i]); m += b; } return m; }
++void together(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4, H dst) {
++    GB gb; if (!gb.init()) { o.line("x3 tog error=no_cpu_backend"); return; }
++    const std::vector<int> set = { 4, 5, 6, 7 };
++    WSet ws; if (!make_wset(gb, ws, GGML_TYPE_Q4_0, 4096, 4096, 64, templ(GGML_TYPE_Q4_0, 4096, 64), 64)) { o.line("x3 tog error=cpu_alloc"); return; }
++    const char * id = "general"; Prog * p = ks.pick(11008, 4096, false, &id);
++    if (!p) { o.line("x3 tog ok=0 reason=no_kernel"); return; }
++    HMat h; make_hmat(h, 11008, 4096); Ring r; const cl_int e = mkring(g, r, h, (int) std::ceil((512.0 * 1048576) / h.bytes()));
++    if (e) { o.line("x3 tog ok=0 err=%d reason=gpu_alloc", e); release(g, r); return; }
++    o.line("x3 tog setup cpu=ggml_q4_0 cpu_buft=%s cpu_mb=%.0f gpu_kern=%s gpu_m=11008 gpu_k=4096 gpu_copies=%zu gpu_mb=%.0f set=4,5,6,7 feeder=0-3 backend=%s", ws.buft.c_str(),
++           ws.bytes / 1048576.0, id, r.m.size(), r.bytes / 1048576.0, gb.desc().c_str());
++    EnvSet e1("VOLLIE_POOL", "1"), e2("VOLLIE_CPUMASK", cpumask(set));
++    if (gb.set_nt) gb.set_nt(gb.be, (int) set.size());
++    const char * arms[3] = { "cpu", "gpu", "both" }; const int order[6] = { 0, 1, 2, 2, 1, 0 }; double cs[3] = { 0, 0, 0 }, gs[3] = { 0, 0, 0 };
++    for (int k = 0; k < 6; k++) {
++        const int arm = order[k]; Arm a; a.set = set; a.warm = 0.5; a.meas = 1.5;
++        if (arm != 1) a.cpu = [&] { ggml_backend_graph_compute(gb.be, ws.gf); return (double) ws.bytes; };
++        if (arm != 0) a.gpu = [&] { return batch(g, p->k, r, x4, dst); };
++        const ARes s = run_arm(a, th); cs[arm] += s.cgbs() / 2; gs[arm] += s.ggbs() / 2;
++        o.line("x3 tog pos=%d arm=%s set=4,5,6,7 cpu_gbs=%.2f gpu_gbs=%.2f sum_gbs=%.2f cpu_calls=%ld gpu_batches=%ld err=%d %s", k, arms[arm], s.cgbs(), s.ggbs(), s.cgbs() + s.ggbs(),
++               s.cpu_n, s.gpu_n, r.err, astr(s).c_str());
++    }
++    o.line("x3 togsum cpu_alone_gbs=%.2f gpu_alone_gbs=%.2f both_cpu_gbs=%.2f both_gpu_gbs=%.2f sum_gbs=%.2f sum_vs_cpu_alone=%.3f cpu_loss_gbs=%.2f gpu_loss_gbs=%.2f",
++           cs[0], gs[1], cs[2], gs[2], cs[2] + gs[2], cs[0] > 0 ? (cs[2] + gs[2]) / cs[0] : -1, cs[0] - cs[2], gs[1] - gs[2]);
++    release(g, r);
++}
++void split(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4, H dst) {
++    GB gb; if (!gb.init()) { o.line("x3 split error=no_cpu_backend"); return; }
++    if (!ks.p[0].k) { o.line("x3 split ok=0 reason=no_kernel"); return; }
++    const std::vector<int> set = { 4, 5, 6, 7 }; const int M = 11008, NR = 8; const double shares[3] = { 0.25, 0.35, 0.50 };
++    const std::vector<uint8_t> tq = templ(GGML_TYPE_Q4_0, 4096, 64);
++    CRing full; if (!make_cring(gb, full, 4096, M, NR, tq, 64)) { o.line("x3 split error=cpu_alloc"); return; }
++    std::unique_ptr<CRing> cr[3]; Ring gr[3]; int gm[3];
++    for (int i = 0; i < 3; i++) {
++        gm[i] = (int) std::lround(shares[i] * M / 128) * 128; cr[i].reset(new CRing);
++        if (!make_cring(gb, *cr[i], 4096, M - gm[i], NR, tq, 64)) { o.line("x3 split error=cpu_alloc share=%.2f", shares[i]); return; }
++        HMat h; make_hmat(h, gm[i], 4096); const cl_int e = mkring(g, gr[i], h, NR);
++        if (e) { o.line("x3 split ok=0 err=%d reason=gpu_alloc share=%.2f", e, shares[i]); for (auto & r : gr) release(g, r); return; }
++    }
++    o.line("x3 split setup m=11008 k=4096 copies=%d cpu_buft=%s gpu_kern=general set=4,5,6,7 feeder=0-3 sync=per_matrix", NR, full.buft.c_str());
++    EnvSet e1("VOLLIE_POOL", "1"), e2("VOLLIE_CPUMASK", cpumask(set));
++    if (gb.set_nt) gb.set_nt(gb.be, (int) set.size());
++    // the GPU side: a feeder on 0-3 that waits (spinning) for the next matrix index, launches, finishes and reports back
++    std::atomic<long> go{0}, done{0}; std::atomic<int> stop{0}, cur{-1}; std::atomic<double> gpu_s{0}; double fcw = -1; unsigned fm = 0; std::atomic<int> ferr{0};
++    std::thread feeder([&] {
++        pin_cpus({ 0, 1, 2, 3 }); long seen = 0; const double c0 = tcpu(); const auto t0 = clk::now();
++        while (!stop.load()) {
++            const long q = go.load(); if (q == seen) continue;
++            seen = q; const int s = cur.load(); const auto a = clk::now();
++            Ring & r = gr[s]; GMat & m = r.m[q % NR];
++            const cl_int x1 = launch(g, ks.p[0].k, m, x4, dst, g.q, nullptr), x2 = g.cl.Finish(g.q); if ((x1 || x2) && !ferr.load()) ferr = x1 ? x1 : x2;
++            gpu_s = gpu_s.load() + secs(a, clk::now()); const int w = where(); if (w >= 0 && w < 32) fm |= 1u << w;
++            done = q;
++        }
++        fcw = (tcpu() - c0) / secs(t0, clk::now());
++    });
++    const int order[8] = { -1, 0, 1, 2, 2, 1, 0, -1 }; double tsum[4] = { 0, 0, 0, 0 };
++    for (int k = 0; k < 8; k++) {
++        const int sh = order[k]; long idx = 0; double cpu_s = 0, wait_s = 0; double g0 = gpu_s.load();
++        Arm a; a.set = set; a.warm = 0.5; a.meas = 1.5;
++        if (sh < 0) a.cpu = [&] { ggml_backend_graph_compute(gb.be, full.gf[idx++ % NR]); return full.bytes; };
++        else a.cpu = [&] {
++            const long q = ++idx; cur = sh; go = q;   // the GPU takes its rows of matrix q, the CPU computes the rest
++            const auto a0 = clk::now(); ggml_backend_graph_compute(gb.be, cr[sh]->gf[q % NR]); const auto a1 = clk::now();
++            while (done.load() != q) {}
++            cpu_s += secs(a0, a1); wait_s += secs(a1, clk::now());
++            return full.bytes;
++        };
++        idx = 0; cpu_s = wait_s = 0; g0 = gpu_s.load();
++        const ARes s = run_arm(a, th);
++        const long n = s.cpu_n; const double ms = n ? s.cpu_s * 1e3 / n : -1; tsum[sh + 1] += ms / 2;
++        // cpu_ms / wait_ms / gpu_ms are means over every matrix of the arm (warm-up included); ms_per_mat is the measured window
++        o.line("x3 split pos=%d share=%.2f gpu_rows=%d cpu_rows=%d mats=%ld ms_per_mat=%.3f cpu_ms=%.3f wait_ms=%.3f gpu_ms=%.3f gbs=%.2f err=%d %s", k, sh < 0 ? 0.0 : shares[sh],
++               sh < 0 ? 0 : gm[sh], sh < 0 ? M : M - gm[sh], n, ms, idx && sh >= 0 ? cpu_s * 1e3 / idx : -1, idx && sh >= 0 ? wait_s * 1e3 / idx : -1, idx && sh >= 0 ? (gpu_s.load() - g0) * 1e3 / idx : -1, s.cgbs(), ferr.load(), astr(s).c_str());
++    }
++    stop = 1; feeder.join();
++    for (int i = 0; i < 3; i++)
++        o.line("x3 splitsum share=%.2f gpu_rows=%d t_split_ms=%.3f t_cpu_alone_ms=%.3f ratio=%.3f feeder_cpu_over_wall=%.3f feeder_cpus=%x", shares[i], gm[i], tsum[i + 1], tsum[0],
++               tsum[0] > 0 ? tsum[i + 1] / tsum[0] : -1, fcw, fm);
++    for (auto & r : gr) release(g, r);
++}
++
++// ---- x3r: residency with the lane's GPU buffers allocated (memo-09-gap §10.7): 0.9 GB on the GPU, read by it throughout,
++// while 3 A78 (4-6) read a 2.6 GB anonymous arena (the CPU's share of a 3.4 GB body) for 15 s (at most 200 passes); anon34's
++// counters per pass, and a sum line over the read phase
++void res(Gpu & g, Out & o, Kset & ks, const XIn & x4, H dst) {
++    auto mem = [&](const char * st) {
++        o.line("x3 res stage=%s memavail_kb=%ld cached_kb=%ld swapfree_kb=%ld vmrss_kb=%ld rssanon_kb=%ld vmswap_kb=%ld kgsl_page_alloc=%s", st, kv("/proc/meminfo", "MemAvailable"),
++               kv("/proc/meminfo", "Cached"), kv("/proc/meminfo", "SwapFree"), kv("/proc/self/status", "VmRSS"), kv("/proc/self/status", "RssAnon"), kv("/proc/self/status", "VmSwap"),
++               rdl("/sys/class/kgsl/kgsl/page_alloc").c_str());
++    };
++    mem("before");
++    const char * id = "general"; Prog * p = ks.pick(11008, 4096, false, &id);
++    if (!p) { o.line("x3 res ok=0 reason=no_kernel"); return; }
++    HMat h; make_hmat(h, 11008, 4096); Ring r; const int n = (int) std::lround(0.9e9 / h.bytes()); const auto t0 = clk::now();
++    const cl_int e = mkring(g, r, h, n); for (size_t i = 0; i < r.m.size() && !e; i += 8) batch(g, p->k, r, x4, dst);   // one pass so every buffer is resident
++    o.line("x3 res stage=gpu_alloc kern=%s copies=%d gpu_mb=%.0f alloc_s=%.2f err=%d", id, n, r.bytes / 1048576.0, secs(t0, clk::now()), e ? e : r.err);
++    mem("gpu_alloc");
++    if (e) { release(g, r); return; }
++    const double gb = 2.6; const size_t an = (size_t)(gb * 1e9) & ~(size_t) 4095;
++    uint8_t * m = (uint8_t *) mmap(nullptr, an, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    if (m == MAP_FAILED) { o.line("x3 res ok=0 reason=mmap errno=%d", errno); release(g, r); return; }
++    const auto set = cores("4-6"); long f0 = majflt(); auto a0 = clk::now();
++    { std::vector<std::thread> th;
++      for (int i = 0; i < 3; i++) th.emplace_back([&, i] {
++          pin(set[i]); uint64_t s = 0x9e3779b97f4a7c15ull * (i + 1); uint64_t * q = (uint64_t *)(m + i * (an / 3)); const size_t c = (an / 3) / 8;
++          for (size_t k = 0; k < c; k++) { s ^= s << 13; s ^= s >> 7; s ^= s << 17; q[k] = s; }
++      });
++      for (auto & t : th) t.join(); }
++    o.line("x3 res stage=anon_fill anon_gb=%.1f fill_s=%.1f majflt=%ld", gb, secs(a0, clk::now()), majflt() - f0);
++    mem("anon_fill");
++    std::atomic<int> stop{0}; std::atomic<double> gbytes{0};
++    std::thread feeder([&] { pin_cpus({ 0, 1, 2, 3 }); while (!stop.load()) gbytes = gbytes.load() + batch(g, p->k, r, x4, dst); });
++    const auto p0 = clk::now(); const long mf0 = majflt(); const double gb0 = gbytes.load(); std::vector<double> rates; int pass = 0;
++    for (; pass < 200 && secs(p0, clk::now()) < 15; pass++) {
++        const long g0 = majflt(); rusage r0; getrusage(RUSAGE_SELF, &r0); const double b0 = gbytes.load(); const auto s0 = clk::now(); std::vector<std::thread> th;
++        for (int i = 0; i < 3; i++) th.emplace_back([&, i] {
++            pin(set[i]); const uint8_t * q = m + i * (an / 3); uint64x2_t acc = vdupq_n_u64(0);
++            for (size_t k = 0; k + 64 <= an / 3; k += 64) acc = vaddq_u64(acc, vaddq_u64(vld1q_u64((const uint64_t *)(q + k)), vld1q_u64((const uint64_t *)(q + k + 32))));
++            volatile uint64_t sink = vgetq_lane_u64(acc, 0); (void) sink;
++        });
++        for (auto & t : th) t.join();
++        const double sec = secs(s0, clk::now()); rusage r1; getrusage(RUSAGE_SELF, &r1); rates.push_back(an / sec / 1e9);
++        o.line("x3 res pass=%d s=%.3f gbs=%.2f gpu_gbs=%.2f majflt=%ld minflt=%ld memavail=%ld cached=%ld swapfree=%ld vmswap=%ld vmrss=%ld mhz=%s gpu_mhz=%ld", pass, sec,
++               an / sec / 1e9, (gbytes.load() - b0) / sec / 1e9, majflt() - g0, r1.ru_minflt - r0.ru_minflt, kv("/proc/meminfo", "MemAvailable"), kv("/proc/meminfo", "Cached"),
++               kv("/proc/meminfo", "SwapFree"), kv("/proc/self/status", "VmSwap"), kv("/proc/self/status", "VmRSS"), mhz().c_str(), gpu_mhz("gpuclk"));
++    }
++    const double ps = secs(p0, clk::now()); stop = 1; feeder.join();
++    std::sort(rates.begin(), rates.end());
++    o.line("x3 res sum passes=%d secs=%.1f cpu_gbs_median=%.2f cpu_gbs_min=%.2f gpu_gbs=%.2f majflt=%ld", pass, ps, rates.empty() ? -1 : rates[rates.size() / 2],
++           rates.empty() ? -1 : rates[0], (gbytes.load() - gb0) / ps / 1e9, majflt() - mf0);
++    mem("after");
++    munmap(m, an); release(g, r);
++    hdr(o);
++    o.line("x3 res done err=%d", r.err);
++}
++
++void x3(Out & o, const char * blk, const char * dir) {
++    cond(o);
++    Gpu g; if (!g.init()) { o.line("x3 error=%s", g.err.c_str()); return; }
++    const std::string exe = self_dir() + "libvollie_clc.so";
++    o.line("x3 info device=%s version=%s c_version=%s driver=%s cstd=%s a6x=%d vsgb=%d e031=%d max_alloc_mb=%llu img_max_texels=%zu global_mb=%llu clc=%s clc_x=%d",
++           san(g.name, 200).c_str(), san(g.ver, 200).c_str(), san(g.cver, 200).c_str(), san(g.drv, 600).c_str(), g.cstd.c_str(), g.a6x, g.vsgb, g.e031,
++           (unsigned long long)(g.max_alloc >> 20), g.img_max, (unsigned long long)(g.gmem >> 20), san(exe, 300).c_str(), access(exe.c_str(), X_OK) == 0 ? 1 : 0);
++    const bool fresh = !strcmp(blk, "x3b");
++    if (fresh) {
++        o.line("x3 src file=gemv_noshuffle_q4_0_f32.cl bytes=%zu sha256=%s", strlen(SRC_GENERAL), sha256(SRC_GENERAL).c_str());
++        o.line("x3 src file=gemv_noshuffle_q4_0_f32_spec.cl bytes=%zu sha256=%s", strlen(SRC_SPEC), sha256(SRC_SPEC).c_str());
++    }
++    Kset ks; for (int i = 0; i < 4; i++) ks.p[i] = get_prog(g, o, dir, KERNS[i], fresh);
++    Therm th; XIn x4, x11; cl_int e = mkx(g, x4, 4096); if (!e) e = mkx(g, x11, 11008);
++    H dst = g.cl.CreateBuffer(g.ctx, 1, (size_t) 11008 * 4, nullptr, &e);
++    if (e || !dst) o.line("x3 error=io_alloc err=%d", e);
++    else if (fresh) {
++        identity(g, o, ks, 512, 4096, true, x4, dst);      // Yi's k, v
++        identity(g, o, ks, 2816, 4096, true, x4, dst);     // a split share of gate / up (0.25 of 11008, rounded to 128)
++        identity(g, o, ks, 11008, 4096, true, x4, dst);    // the general kernel on the largest shape
++        identity(g, o, ks, 4096, 4096, false, x4, dst);
++        identity(g, o, ks, 4096, 11008, false, x11, dst);
++        identity(g, o, ks, 11008, 4096, false, x4, dst);
++    } else if (!strcmp(blk, "x3g")) {
++        HMat hm[4]; make_hmat(hm[0], 4096, 4096); make_hmat(hm[1], 512, 4096); make_hmat(hm[2], 11008, 4096); make_hmat(hm[3], 4096, 11008);
++        for (int i : { 1, 0, 3, 2 }) for (bool cold : { false, true }) alone(g, o, th, ks, hm[i], false, cold, hm[i].kin == 4096 ? x4 : x11, dst);
++        alone(g, o, th, ks, hm[2], true, true, x4, dst);   // the general kernel where upstream uses the special one
++        roundtrip(g, o, ks, 512, 4096, x4, dst); roundtrip(g, o, ks, 1024, 4096, x4, dst); roundtrip(g, o, ks, 2816, 4096, x4, dst); roundtrip(g, o, ks, 4096, 4096, x4, dst);
++        for (const Subj & s : SUBJ) layer(g, o, th, ks, s, hm, x4, x11, dst);
++    } else if (!strcmp(blk, "x3c")) {
++        together(g, o, th, ks, x4, dst);
++        split(g, o, th, ks, x4, dst);
++    } else res(g, o, ks, x4, dst);
++    if (dst) g.cl.ReleaseMemObject(dst);
++    for (XIn * x : { &x4, &x11 }) { if (x->img) g.cl.ReleaseMemObject(x->img); if (x->b) g.cl.ReleaseMemObject(x->b); }
++    for (auto & p : ks.p) release(g, p);
++}
++
++} // namespace r34
++
+ } // namespace
+ 
+ extern "C" int llama_vollie_probe(const char * block, const char * dir, char * out, size_t cap);
+@@ -1431,7 +2827,7 @@ extern "C" int llama_vollie_probe(const char * block, const char * dir, char * o
+     if (!on || !*on || !strcmp(on, "0") || !out || cap < 2) return -1;
+     out[0] = 0; Out o{out, cap};
+     auto t0 = clk::now();
+-    static const char * const known[] = { "hdr", "p2", "p2d", "x1", "x2", "p1", "a", "l1", "l4", "l23", "l5", "l6", "l7", "anon34", "anon42" };
++    static const char * const known[] = { "hdr", "p2", "p2d", "x1", "x2", "p1", "a", "l1", "l4", "l23", "l5", "l6", "l7", "anon34", "anon42", "x3b", "x3g", "x3c", "x3r" };
+     bool ok = false; for (const char * k : known) ok |= !strcmp(block, k);
+     if (!ok) return -2;
+     hdr(o);
+@@ -1449,6 +2845,7 @@ extern "C" int llama_vollie_probe(const char * block, const char * dir, char * o
+     else if (!strcmp(block, "p2d")) d2(o);
+     else if (!strcmp(block, "x1")) x1(o);
+     else if (!strcmp(block, "x2")) x2(o);
++    else if (block[0] == 'x' && block[1] == '3') r34::x3(o, block, dir ? dir : ".");
+     else p1(o, dir ? dir : ".");
+     o.line("%s end s=%.1f", block, secs(t0, clk::now()));
+     return (int) o.n;

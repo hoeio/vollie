@@ -82,3 +82,17 @@ It is not written yet, for three reasons:
   kit needs a URL and a sha256 per file.
 - The lab's Qwen2.5 Q4_0 is a two-part split. `KitModel` takes one file.
 - D1 runs only if R69 holds 3.4 GB.
+
+## 0004-kit-r34-probe.patch
+
+Kit r34 (version 1.34.0+34, versionCode 34), applied after 0003; installs over r33 (same package and debug key) and keeps
+r33's fixes (static isolate helpers, per-block error capture, report saved before and after every block). The button "Run c3
+probe r34 (GPU)" runs the R74 blocks x3b, x3g, x3c, x3r (`patches/llama.cpp-c3/0005`), each after the r16 gate (up to 180 s);
+no model is needed. `libvollie_clc.so` (campaign 1's `tool/clc.c`, unchanged) is packaged again: the gradle exclude keeps only
+`libggml-opencl.so` out. File name `vollie-c3probe-r34-<time>.json`.
+
+Build: the libraries are libllama.so built from the series with c3 0001, 0002, 0003, 0005 (0004 left out) and the CPU module
+unzipped from the r33 APK, given as `LIBS_FROM=<dir>`; the c3 series dir passed to the script holds those four patches. Then
+`LIBS_FROM=<dir> APP_SERIES="$(cd patches/app-c2 && ls 00[01][0-9]-kit-r[12][0-9].patch | sed 's#^#patches/app-c2/#' | tr '\n' ' ')patches/app-c3"
+sh tools/c2_build_kit.sh lab/llama.cpp-c3r34 lab/app-c3 patches/llama.cpp patches/llama.cpp-c1-olmoe <dir with c3 0001 0002 0003 0005>`,
+then the APK is copied to a plain name without '+'. Details: `campaigns/03-dense15-5pct/reports/memo-09-work/tom-r34-build.md`.

@@ -83,3 +83,26 @@ placement only (same nth, chunking and kernels). Design and checks: `campaigns/0
 Checked (*host*, Llama-2-7B Q4_0, `llama-perplexity -c 512`, running values): identical to the series without 0004 at
 `-b 512` and `-ub 32` (4 chunks) and `-ub 1` (2 chunks), knob unset and set, on macOS (guard compiled out) and on arm64
 Linux (Docker, guard running). Compiles for Android with 0 warnings in `ggml-cpu.c`. Not run on the phone.
+
+## 0005-x3-gpu-probe.patch: kit r34 x3 blocks for R74, the GPU lane probe (no numerics change)
+
+Changes only `src/llama-vollie-probe.cpp` (on 0003; it does not touch 0004's file and applies with or without 0004). Still
+off unless `VOLLIE_PROBE` is set, and nothing outside the file calls it. Design: `campaigns/03-dense15-5pct/reports/memo-09-work/tom-host.md`
+§1.5; build notes, checks and limits: `memo-09-work/tom-r34-build.md`. Kit r34 is built from 0001, 0002, 0003 and 0005
+(0004 is not in it).
+
+| block | what it runs |
+|---|---|
+| every x3 block | `x3 cond` lines first (THP mode, every `/sys/class/devfreq` node, the kgsl clock), then `x3 info` (device, driver, `-cl-std`, A6x, E031) |
+| `x3b` | upstream's `gemv_noshuffle_q4_0_f32.cl` and `_spec.cl` (embedded verbatim, sha256 printed) compiled by `libvollie_clc.so` in a child process with upstream's option strings (general; specialised 4096x4096, 4096x11008, 11008x4096), a `-cl-opt-disable` retry when the child crashed or timed out, the compiler log; the binary loaded in-process (create / build / kernel error codes, work-group limits); identity against a float64 reference on six kernel-shape pairs |
+| `x3g` | GPU alone, hot and cold (512 MB ring), 4 shapes plus the general kernel on 11008x4096: GB/s, G weights/s, device GB/s; launch + finish round trip at 512, 1024, 2816 and 4096 rows; one layer per subject (Yi, Llama-2, DeepSeek) over a 4-layer ring, finish per layer and per launch |
+| `x3c` | ggml Q4_0 gemv on 4-7 (cold, 604 MB) and the GPU (11008x4096 cold) alone and together, ABBA, the GPU fed from a thread on 0-3; row split of 11008x4096 at GPU share 0.25 / 0.35 / 0.50 against the CPU alone, ABBA |
+| `x3r` | 0.9 GB of GPU buffers held and read by the GPU while 3 A78 read a 2.6 GB anonymous arena for 15 s, with faults, MemAvailable, swap and RSS per pass |
+
+Timed arms print the CPU policies' clock range against scaling and hardware max, the kgsl GPU clock range, thermal
+headroom (AThermal) and per-thread `thr` fields of every thread pinned to one cpu of 4-7 (from `/proc/self/task`, so ggml's
+workers get the parser's M / U / P / C labels). Checked (*host*): with the knob unset the probe returns -1; the Android
+build of libllama recompiles only `llama-vollie-probe.cpp.o` (559 of 560 objects byte-identical to the 0003 build), and the
+CPU module ships byte-identical from kit r33. All four blocks ran on arm64 Linux (Docker) against PoCL as a functional
+test; identity passed on all six pairs there with a host-only scale shim (`VOLLIE_X3_HOST_TEST`, never set in a kit).
+Parser: `tools/c3_probe_parse.py` (`--selftest`).
