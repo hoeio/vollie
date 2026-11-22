@@ -46,8 +46,8 @@ Recorded, not voids: deep-sleeping list **on**; `model_unloaded=olmoe-Mi.gguf`; 
   - all five L3 cells that include cpu 7 (`7`, `7,4,5`, `4,5,6,7`), so the cpu-7 thread gives 3.95 G weights/s, which
     is a small-core rate (A78 threads: 20.5);
   - L2 `read` and `q4x4` on `7,4,5` and `4,5,6,7` (cpu_ok 2/3 and 3/4);
-  - 65 of 84 L1 cells on cpu 7 (all `4096` cells and the `11008 hot` group). The 17 `11008 cold` cells on cpu 7 that
-    did run on the X1 (cpu_ok 1/1, X1 at 2,841) are the only clean X1 L1 cells.
+  - 67 of 84 L1 cells on cpu 7: all `4096` cells, the `11008 hot` group, and the first four `11008 cold` cells. The
+    other 17 `11008 cold` cells on cpu 7 ran on the X1 (cpu_ok 1/1, X1 at 2,841) and are the only clean X1 L1 cells.
   - In L4 the X1 thread came onto cpu 7 from arm pos 1 of `4,5,6,7` onward and stayed for that set.
   - Also off-core: one A78 thread in the first stock arm (pos 0) on `4,5,6` for Llama-2 and DeepSeek, and the
     `stock_before` cell of the L1 `11008 hot` group on cpu 4 (its drift reads 0.199, so that group's k values are not
@@ -58,7 +58,7 @@ Recorded, not voids: deep-sleeping list **on**; `model_unloaded=olmoe-Mi.gguf`; 
 - **Clocks.** `ramp_ok=1` means each used policy reached its *current* `scaling_max_freq`, not the hardware maximum.
   - 191 of 408 cells are `ramp_ok=1` with `scaling_max_freq` at the hardware maximum (A78 2,419, X1 2,841 MHz).
   - The L4 arms ran with the cap lowered: 54 of 63 L4 cells read `max_mhz` p4 at 1,555 to 2,150 of 2,419 (Llama-2 and
-    DeepSeek at 1,555 throughout; Yi at 2,419 on `4,5,6`, 2,150 on `7,4,5`, 1,555 to 1,785 on `4,5,6,7`).
+    DeepSeek at 1,555 throughout; Yi at 2,419 on `4,5,6`, 2,419 then 2,150 on `7,4,5`, 1,555 to 1,785 on `4,5,6,7`).
   - All L1 cells on cpu 4 ran with the A78 at 2,419 (`ramp_ok=1`, 83 of 84).
   - L7, L6 (A78 sets) and L5 4-thread cells are mostly at full caps.
 - **ggml cells:** `cpu0_off_calls` 0 in every L4 and L2 ggml cell; non-zero in some L5 single-thread cells (for example
@@ -196,8 +196,8 @@ median majflt per pass ≤ 50, and the `done` line.
 - Limits:
   - The app's own memory is not inside the arm, so 3.4 GB held is an upper bound for Yi's repacked body.
   - The arms ran about 3 s of passes each, far shorter than a decode run.
-  - anon42 missed by 0.92 GB/s. Its slow passes coincide with zram swap-free rising by 0.4 GB, as the system moved
-    other memory into zram.
+  - anon42 missed by 0.92 GB/s. Its slow passes (13 to 17) coincide with zram swap free rising by 0.44 GB. That means
+    swapped pages of other processes were being released, perhaps by kills (not measured).
 
 ## 7. GPU lane (descriptive; no decision)
 
@@ -223,8 +223,9 @@ median majflt per pass ≤ 50, and the `done` line.
   | Llama-2 | 6.212 / 6.545 / 6.472 | 4.436 / 4.659 / 4.620 |
   | DeepSeek | 6.217 / 6.297 / 6.285 | 4.138 / 4.689 / 4.639 |
 
-  In that subset, t_rule ÷ t_stock on 4-7 is 1.07 to 1.13 on all three subjects. Under the L4 rule's thresholds this
-  pattern would read "kill" on every set. That is descriptive and not the verdict.
+  In that subset, t_rule ÷ t_stock (K1 or K1m) is 1.04 to 1.13 on 4-7 and 1.01 to 1.11 on 4-6, on all three subjects.
+  Under the L4 thresholds this would read "kill" on both sets that have `ramp_ok=1` arms (`7,4,5` has none). That
+  is descriptive and not the verdict.
 - L3, L2 on sets with cpu 7: `ramp_ok=0`. The ggml L2 cells are `ramp_ok=1`.
 - L5, L6 and L7 scored cells: `ramp_ok=1`, except L6 on `7,4,5` (`ramp_ok=0`).
 
@@ -262,3 +263,80 @@ median majflt per pass ≤ 50, and the `done` line.
    at 4-7). It calibrates the K0 arithmetic against a real token rate before more levers are priced.
 4. **Owner:** the goal stays at 12 tok/s on all three. On present numbers, P(all three) is far below the 0.05 to 0.15
    prior (lead's judgement; Bonnie and Ebony's reading is below).
+
+## 11. Joint reading: Bonnie and Ebony (2026-11-22; `claude-fable-5-2`, independent, merged by the lead)
+
+Every number here is *estimated* unless marked *device*. The lead re-checked the arithmetic of the key figures.
+
+**Agreed by both:**
+- On the CPU alone the path is closed for all three subjects. Stock ggml already runs at 25.8 to 26.1 GB/s
+  (*device*) against r 29.9, so the body is memory-bound. K1 saves bytes but runs at 0.54 to 0.58 of r.
+- Removing the clock caps and fixing X1 placement is worth at most −16 to −19 ms per subject (Bonnie's upper bound).
+  Every gap stays above +40 ms.
+- **A perfect GPU lane on stock bytes also misses.** All body bytes at the 46.5 GB/s read sum give 11.3 / 10.5 / 10.0
+  tok/s (Yi / Llama-2 / DeepSeek). Reaching 12 needs a near-perfect GPU Q4_0 kernel and a byte cut together.
+- Bonnie's full stack (GPU ceiling + C5 gate rows + C7 head screen + O 5.2) reaches 12.9 / 11.4 / 11.4. Adding C6 at
+  its centre brings the MHA pair to about 12.0 / 11.9, with no margin.
+  - The stack needs a GPU kernel about 13× faster than the probe's 1.88 GB/s, plus unbuilt numerics rules.
+  - GPU buffers press on Yi's 0.04 GB anonymous margin.
+- **P(all three at 12):** Bonnie about 0.001, Ebony ≤ 0.01 (judgements; memo-08 had 0.005 to 0.01). P(Yi alone)
+  about 0.02 to 0.03.
+
+**GPU lane facts** (Ebony; web, read 2026-11-22):
+- llama.cpp's OpenCL backend has an Adreno Q4_0 gemv (`gemv_noshuffle_q4_0_f32.cl`: subgroups, half-precision
+  scales).
+- Its docs verify only Adreno 7xx/8xx/X-series and say A6x phones are "likely not supported" because of old drivers.
+- PR #30176 fixes A6x kernel builds. PR #26476 reports MUL_MAT 919/919 on Adreno 642L with compiler E031.38. Our
+  phone reports E031.38.01.08 (*device*), so a build is plausible but unproven.
+- No public Adreno 6xx decode number was found.
+- Ebony's price for a real kernel on the 660 is g about 5 GB/s (3 to 10), with about 0.36 GB/s of CPU loss per GPU
+  GB/s (from R72's read cell). That gives a sum of 1.11 to 1.21 × CPU alone, or +0.6 to +1.2 tok/s on Yi.
+  P(sum ≥ 1.15×) is about 0.25.
+- Such a lane is a numerics change (fp16).
+
+**Band misses, the model lessons** (Bonnie; no band moved):
+- The A78 is not issue-bound on K1, so pipe-floor pricing is dropped and the host ratio becomes the prior (L1m, L1m4,
+  L1x).
+- Cold k is not below hot k (L1 cold).
+- L3's 1.456 is exactly (3 × 20.5 + 3.95) ÷ (2 × 20.5 + 3.95), a placement miss.
+- Only kernels with k ≤ about 1.15 turn saved bytes into time (L4).
+- Q6_K is not dearer than Q4_0 when hot, so C7 saves bytes only (L5).
+- Graph sync is about 0.2 ms per token on pinned A78s; the 1.36 ms on `7,4,5` is a placement effect (L6).
+- Reads are bus-bound: r4 ≈ r3 (L2).
+
+**X1 placement** (Ebony):
+- msm `core_ctl` isolates idle CPUs. An unverified hypothesis: when a thread's whole mask {7} is isolated, the
+  fallback widens it. That fits threads on cpus 0 to 3 for whole cells, and the X1 arriving only under 4-thread load.
+- Nothing was found specific to the Flip 3 kernel.
+- Proposed per-thread label in place of CPU ÷ wall:
+  - *misplaced*: on-core samples < 0.9, or the affinity read-back differs;
+  - *under-clocked*: below 0.9 of the hardware maximum;
+  - *pre-empted*: high involuntary switches, or CPU ÷ wall < 0.9;
+  - *compute*: none of the above.
+  - Cross-check each thread's weights/s against its cluster's reference.
+
+**Ebony's challenge to §10, accepted by the lead:**
+- R73 as a standalone placement round is over-priced. The adopted set 4-7 had the X1 on-core from arm pos 1, and the
+  ggml cells give 4-7 ÷ 4-6 about 0.82 without the confound.
+- Placement logging goes into the decode kit. The first real decode comes first, on two subjects (two-model rule).
+
+### Lead's revised next-round proposal (replaces the order of §10)
+
+1. **S3 freeze, then R73: first real stock decode on Yi-1.5-6B and Llama-2-7B** (DeepSeek too if the kit time allows).
+   - Setup: 4 threads on 4-7, kit r16 protocol, ABBA by model.
+   - Logging: affinity read-back, per-token `sched_getcpu`, per-policy cur / `scaling_max_freq` against the hardware
+     maximum, and thermal zones, with Ebony's four-way label.
+   - Pass rule (draft): the median tok/s is within ±10 % of the K0 stock estimate (6.90 / 6.21; ggml body + head + 8 ms).
+     If it falls outside, K0 is rebuilt before any lever is priced.
+   - Needs from the owner: the laptop freeze of the three served files (memo-06 §6, DeepSeek with BOS).
+2. **GPU probe with the upstream Adreno Q4_0 gemv**, alone and beside ggml on 4-7, at subject shapes.
+   - Kill (draft): a build failure on E031.38.01.08, or g < 7 GB/s, or a sum < 1.15 × the CPU alone. Any of these closes
+     the GPU lane, and with it the last measured route above r.
+3. **Host only, in parallel (Tom):**
+   - C5 gate-row and C6 frontiers on Yi and Llama-2 (Bonnie's U4 and U2);
+   - the placement guard (re-pin on mismatch, warm-up), env-gated and bit-identical;
+   - the Y1 file-backed body for Llama-2 and DeepSeek, which is required because anon42 was not held.
+4. **Owner, now:** with every lever priced so far, including a perfect GPU lane on stock bytes, no subject reaches 12
+   tok/s (best 11.3, Yi, *estimated*). Only a stack of unbuilt numerics rules on top of a near-perfect GPU kernel
+   touches 12, with no margin. The goal stays at 12, and the lead reports it as out of reach by priced levers. The
+   rounds above are there to confirm or overturn that with *device* numbers.
