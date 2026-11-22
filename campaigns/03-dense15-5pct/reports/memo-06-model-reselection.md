@@ -463,3 +463,12 @@ Tom's header inventory (4). All tok/s below are *estimated*; no candidate is scr
 - Mistral-7B-Instruct-v0.3 and Qwen2.5-7B-Instruct leave the subject set (ranks 11 and 16). Their memo-02/05
   host results stay as cross-model evidence for levers.
 
+**Owner decision, 2026-11-22:** "ChatGLM3 is excluded. The three models come first." ChatGLM3-6B leaves the pool
+(stock PPL 33.0 unexplained, research-only licence). Lead's consequence: the provisional table above is superseded.
+- Subject 1: **Yi-1.5-6B-Chat** (rank 1 with measured s 0.40 to 0.42; firm).
+- Subjects 2 and 3: chosen by criterion 1 from Mistral-7B-Instruct-v0.3 (s 0.40), Qwen2.5-7B-Instruct (s 0.35),
+  Llama-2-7b-chat and DeepSeek-LLM-7B-chat, re-priced with the k,v-dense frontiers (memo-07-work/tom-split.md:
+  both pass 30 % with attn k and v dense, *host*). Without that rule the order is Mistral, Qwen2.5 (Bonnie,
+  memo-07-work/bonnie-reprice.md); Ebony's hypothesis-A price puts Llama-2 close to them. Tom finishes the k,v-dense
+  35/40/45 % cells, Bonnie re-prices, and the lead then fixes slots 2 and 3 and two reserves here.
+
