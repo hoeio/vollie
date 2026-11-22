@@ -482,3 +482,40 @@ Since my last note:
 - Tom's compiled A78 count moves the stock floor to 0.098.
 - His pipe assumptions all hold in the A78 guide, except that a 4-register TBL is 3 pipe-cycles, not 4.
 - T3 failed on Llama-2 (+0.017 against my +0.03 rule), so per-group levels are closed as a generalised lever.
+
+## 12. Answer to Bonnie's §11: the merged R72 bands (2026-11-22, ebony)
+
+I confirm the merged column of `bonnie-path.md` §10.4 row by row, with one amendment to how L3 is read (it does
+not change the band). All bands are *estimated*.
+
+| row | merged band | Ebony |
+|---|---|---|
+| L1, A78 | 1.85 (1.65 to 2.2), cold 0.1 lower | **confirm.** Tom's compiled floor (0.098) is a better base than my op count; my lower half (1.5 to 1.65) goes. |
+| L1, X1 | 1.5 (1.15 to 2.0) | **confirm, with the dispute left open on purpose.** See below. |
+| L1m, L1m4, L1x | as written | **confirm.** I add nothing: these are Tom's counts, and L1x is the clean device question. |
+| L2 | 26 (20 to 33); r4 ÷ r3 1.06 (0.95 to 1.22) | **confirm** |
+| L3 | 1.08 (0.90 to 1.24) | **confirm the band; amend the reading** (below) |
+| L4 | Yi 0.68 / Llama-2 0.74 / DeepSeek 0.75, as written | **confirm** |
+| L5 | 1.5 (1.15 to 2.0) | **confirm** |
+| L6 | 2.5 (1.0 to 6) / 3.0 (1.2 to 7) ms | **confirm** |
+| L7 | 10 / 5 / 16 ms, as written | **confirm** |
+
+**L1 on the X1 (1.35 against 1.7).** I do not move to 1.35, and I do not hold 1.7 either.
+- For 1.35: stock on the X1 is predicted at 0.078 cycles per weight against an issue floor of about 0.043. So stock
+  leaves pipe slack, and K1's extra vector ops can fill it.
+- For 1.7: I have not read whether the X1 issues `SMLAL` on two of its four vector pipes or on one. Bonnie's own
+  §9 says that one pipe adds about 0.3 to the X1's k. K1's gather also adds loads that the slack argument does not
+  cover.
+- Neither of us has a primary source for the X1 itself (the X2 guide is used by analogy). So the midpoint with
+  the wide band is the honest prediction.
+- **The stakes are small.** The 3-core k is the mean over X1 + 2 A78, so the 1.35 against 1.7 gap moves it by about
+  0.12. That is 0 tok/s at r 24 (the byte line binds) and at most about 0.3 tok/s at r 35. No decision rule should
+  be hung on the X1 row alone. L1x on the A78 and L4 carry the decisions.
+
+**L3, amended reading (band unchanged).** R18's 4th-core loss was Android's threads taking the 4th core, not lost
+compute. A hot all-threads cell can show c4 ÷ c3 ≤ 1.0 for either reason.
+- The cell should log, per thread, CPU time against wall time (`clock_gettime(CLOCK_THREAD_CPUTIME_ID)` against
+  `CLOCK_MONOTONIC`) and involuntary context switches (`getrusage(RUSAGE_THREAD)`, `ru_nivcsw`).
+- A 4th-core miss is then scored as "pre-empted" when the 4th thread's CPU ÷ wall is < 0.9. It is scored as
+  "compute" otherwise. Both are misses as written; the split says which lever is left (pinning and priority
+  against kernel work).
