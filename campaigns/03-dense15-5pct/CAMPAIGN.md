@@ -60,6 +60,18 @@ Lead's notes:
 - The runtime refuses a table whose model sha does not match.
 - Every pre-registration lists the table's sha256 next to the model's.
 - A new table is a new artifact and needs its own PPL check at `-b 512` and `-ub 1`.
+
+*Owner decision 2026-11-22 (trained guess heads).* Owner: "3번은 허용합니다. 모델마다 헤드를 학습해서 진행하세요." (Lever M of
+memo-09: a small next-token guess head, trained on a host, used only to propose tokens for exact lookahead.) Lead's reading:
+
+- A head is a sidecar artifact like the tables above: one per served model, trained by a committed, model-generic
+  script from the served model and a fixed, named training text; it records the served file's sha256 and its own; the
+  runtime refuses a head whose model sha does not match, and decodes normally without one.
+- The head only proposes; the model verifies. Greedy output must stay identical, checked on the fixed prompt set and
+  the official prompt. It changes no numerics of the served model, so it spends no PPL budget; the identity check is
+  greedy-token identity, not perplexity.
+- Every pre-registration lists the head's sha256 next to the model's. Training data and its licence are named in the
+  head's header. A model swap needs a new head (memo-09; owner told 2026-11-22).
 - The served model file itself stays unchanged.
 
 ### "Dense 7B-class" (lead's definition, accepted by the owner)
