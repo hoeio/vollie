@@ -1,0 +1,159 @@
+diff --git a/lib/research.dart b/lib/research.dart
+index 10a8827..3148151 100644
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -46,8 +46,8 @@ typedef RunSpec = ({String id, String model, String proto, String group, String
+ /// power saving and thermal status), T-D's smaps match by inode, the session label (deep-sleeping list) and the power-save
+ /// state read at the start, and T-A's cap probe ([capProbe], no model).
+ extension Research on Assistant {
+-  static const kit = 'r32';
+-  static const app = '1.32.0+32';
++  static const kit = 'r33';
++  static const app = '1.33.0+33';
+ 
+   /// r28: the owner's label for the session, chosen on the start screen before the kit can start (memo-31 §7: session A
+   /// with Samsung's deep-sleeping list, session B without). Recorded in the report and in every cap probe.
+@@ -831,7 +831,7 @@ extension Research on Assistant {
+         if (i == half) {
+           final until = started.add(const Duration(seconds: Research.probeSeconds)).millisecondsSinceEpoch;
+           for (var k = 0; k < 3; k++) {
+-            spins.add(Isolate.run(() => DeviceProfile.spinPinned(0xf0, until)));
++            spins.add(Research._spinIso(0xf0, until));
+           }
+         }
+         final h = i.isEven ? (await DeviceProfile.thermal()).headroom : null;
+@@ -894,6 +894,12 @@ extension Research on Assistant {
+   /// r32: the cool-down gate of the c3 probe waits up to 180 s (R69: the 90 s gate timed out before p2 and x1); the
+   /// timeout and the limit are recorded per block.
+   static const c3GateWait = Duration(seconds: 180);
++
++  /// r33: the isolate entry points are static, so the closure sent to the isolate captures only its parameters. r32 ran
++  /// Isolate.run inside c3Probe, whose scope also holds closures that use `this` (report, save): the closure's context
++  /// then reached the Assistant (with its ReceivePort) and every block failed with "object is unsendable" (R72 attempt 1).
++  static Future<Map<String, Object?>> _c3ProbeIso(String blk, String dir) => Isolate.run(() => DeviceProfile.c3Probe(blk, dir));
++  static Future<int> _spinIso(int mask, int untilMs) => Isolate.run(() => DeviceProfile.spinPinned(mask, untilMs));
+   String? get c3ProbeReport => _prefs.getString(Research.c3ProbeKey);
+ 
+   Future<void> c3Probe() async {
+@@ -953,31 +959,45 @@ extension Research on Assistant {
+         final g0 = DateTime.now();
+         final series = <List<num?>>[];
+         var timeout = true;
+-        while (!_stopTest) {
+-          final h = (await DeviceProfile.thermal()).headroom;
+-          final ms = DateTime.now().difference(g0).inMilliseconds;
+-          series.add([ms, h == null ? null : (h * 1000).round() / 1000]);
+-          if (h != null && h < Assistant.coolHeadroom) {
+-            timeout = false;
+-            break;
++        // r33: an exception in one block is recorded in that block's entry ('error') and the loop goes on.
++        try {
++          while (!_stopTest) {
++            final h = (await DeviceProfile.thermal()).headroom;
++            final ms = DateTime.now().difference(g0).inMilliseconds;
++            series.add([ms, h == null ? null : (h * 1000).round() / 1000]);
++            if (h != null && h < Assistant.coolHeadroom) {
++              timeout = false;
++              break;
++            }
++            if (ms >= Research.c3GateWait.inMilliseconds) break;
++            _researchStatus('${label == 'power-save on' ? 'POWER SAVING IS ON · ' : ''}c3 probe · $blk · cooling: headroom '
++                '${h == null ? '?' : (h * 100).round()}% (gate ${(Assistant.coolHeadroom * 100).round()}%), ${ms ~/ 1000} s');
++            await Future<void>.delayed(Research.gatePoll);
++          }
++          _researchStatus('c3 probe · $blk running (do not touch the phone)');
++          final pw = await DeviceProfile.powerState();
++          final bt = await DeviceProfile.battery();
++          setNativeEnv('VOLLIE_PROBE', '1');
++          final t0 = DateTime.now();
++          Map<String, Object?> r;
++          try {
++            r = await Research._c3ProbeIso(blk, dir);
++          } catch (e) {
++            r = {'error': 'isolate: $e'};
++          } finally {
++            unsetNativeEnv('VOLLIE_PROBE');
+           }
+-          if (ms >= Research.c3GateWait.inMilliseconds) break;
+-          _researchStatus('${label == 'power-save on' ? 'POWER SAVING IS ON · ' : ''}c3 probe · $blk · cooling: headroom '
+-              '${h == null ? '?' : (h * 100).round()}% (gate ${(Assistant.coolHeadroom * 100).round()}%), ${ms ~/ 1000} s');
+-          await Future<void>.delayed(Research.gatePoll);
++          blocks.add({
++            'block': blk, 'gate': {'below': Assistant.coolHeadroom, 'timeout': timeout, 'max_s': Research.c3GateWait.inSeconds, 'series': series},
++            'power_before': pw, 'battery_c_before': bt.tempC, 'plugged_before': bt.plugged,
++            'ms': DateTime.now().difference(t0).inMilliseconds, 'battery_c_after': (await DeviceProfile.battery()).tempC, ...r,
++          });
++        } catch (e) {
++          blocks.add({
++            'block': blk, 'error': 'block: $e',
++            'gate': {'below': Assistant.coolHeadroom, 'timeout': timeout, 'max_s': Research.c3GateWait.inSeconds, 'series': series},
++          });
+         }
+-        _researchStatus('c3 probe · $blk running (do not touch the phone)');
+-        final pw = await DeviceProfile.powerState();
+-        final bt = await DeviceProfile.battery();
+-        setNativeEnv('VOLLIE_PROBE', '1');
+-        final t0 = DateTime.now();
+-        final r = await Isolate.run(() => DeviceProfile.c3Probe(blk, dir));
+-        unsetNativeEnv('VOLLIE_PROBE');
+-        blocks.add({
+-          'block': blk, 'gate': {'below': Assistant.coolHeadroom, 'timeout': timeout, 'max_s': Research.c3GateWait.inSeconds, 'series': series},
+-          'power_before': pw, 'battery_c_before': bt.tempC, 'plugged_before': bt.plugged,
+-          'ms': DateTime.now().difference(t0).inMilliseconds, 'battery_c_after': (await DeviceProfile.battery()).tempC, ...r,
+-        });
+         await save(await report());
+       }
+     } finally {
+diff --git a/lib/settings_screen.dart b/lib/settings_screen.dart
+index 4b60875..864c993 100644
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -411,7 +411,7 @@ class _PerformanceCard extends StatelessWidget {
+           builder: (_, v, __) => OutlinedButton.icon(
+             onPressed: busy || optimizing || v == null ? null : assistant.capProbe,
+             icon: const Icon(Icons.speed_rounded),
+-            label: const Text('Run cap probe r32 (6 min, no model)'),
++            label: const Text('Run cap probe r33 (6 min, no model)'),
+           ),
+         ),
+       if (!assistant.researching && assistant.capProbeReport != null)
+@@ -434,7 +434,7 @@ class _PerformanceCard extends StatelessWidget {
+           builder: (_, v, __) => OutlinedButton.icon(
+             onPressed: busy || optimizing || v == null ? null : assistant.c3Probe,
+             icon: const Icon(Icons.memory_rounded),
+-            label: const Text('Run c3 probe r32 (R72: 20 to 40 min, no model needed)'),
++            label: const Text('Run c3 probe r33 (R72: 20 to 40 min, no model needed)'),
+           ),
+         ),
+       if (!assistant.researching && assistant.c3ProbeReport != null)
+@@ -462,7 +462,7 @@ class _PerformanceCard extends StatelessWidget {
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.downloadKitModels,
+                 icon: const Icon(Icons.download_rounded),
+-                label: Text('Download kit r32 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
++                label: Text('Download kit r33 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
+                     '(${(assistant.kitMissingBytes / 1e9).toStringAsFixed(1)} GB, Wi-Fi)'),
+               ),
+       if (assistant.kitModelReady)
+@@ -477,7 +477,7 @@ class _PerformanceCard extends StatelessWidget {
+                 builder: (_, v, __) => OutlinedButton.icon(
+                   onPressed: busy || optimizing || v == null ? null : assistant.researchRun,
+                   icon: const Icon(Icons.science_rounded),
+-                  label: Text(v == null ? 'Run research kit r32: choose the session label first' : 'Run research kit r32 (R68 run list, ~50-110 min)'),
++                  label: Text(v == null ? 'Run research kit r33: choose the session label first' : 'Run research kit r33 (R68 run list, ~50-110 min)'),
+                 ),
+               ),
+       if (assistant.kitModelReady && !assistant.researching)
+diff --git a/pubspec.yaml b/pubspec.yaml
+index fa84e48..7604be9 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@ name: vollie
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.32.0+32
++version: 1.33.0+33
+ 
+ environment:
+   sdk: ^3.10.7

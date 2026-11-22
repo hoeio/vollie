@@ -29,6 +29,22 @@ Build: `APP_SERIES="$(cd patches/app-c2 && ls 00[01][0-9]-kit-r[12][0-9].patch |
 tools/c2_build_kit.sh lab/llama.cpp-c3r32 lab/app-c3 patches/llama.cpp patches/llama.cpp-c1-olmoe patches/llama.cpp-c3`
 (app-c2 0001 to 0012 by name: 0013 and 0014 are not in the c3 app copy), then the APK is copied to a plain name without '+'.
 
+## 0003-kit-r33-probe.patch
+
+Kit r33 (version 1.33.0+33, versionCode 33), applied after 0002; installs over r32. It fixes R72 attempt 1, where
+r32's c3 probe ended in 5 s with no block: in `c3Probe()` the closure given to `Isolate.run` shared its scope with the
+local closures `report()` and `save()`, which use `this`, so the message to the isolate reached the Assistant (with a
+ReceivePort) and was refused ("object is unsendable"). r33 starts both isolates (c3 probe and the cap probe's spinners)
+through static helpers whose closures capture only their parameters, and catches errors per block: an exception is
+written into that block's entry (`error`, `isolate: ...` or `block: ...`) and the next block runs. Buttons and file
+names say r33. No runtime change: the llama.cpp series is r32's (`patches/llama.cpp-c3/0003`), and the build takes the
+libraries from the r32 APK, so every native library except `libapp.so` (the Dart code) is byte-identical to r32's.
+
+Build: as 0002, with the r32 APK's libraries: unzip `lib/arm64-v8a/*` of `vollie-c3-probe-r32.apk` to `<dir>`, then
+`LIBS_FROM=<dir>/lib/arm64-v8a APP_SERIES="$(cd patches/app-c2 && ls 00[01][0-9]-kit-r[12][0-9].patch | sed 's#^#patches/app-c2/#' | tr '\n' ' ')patches/app-c3"
+sh tools/c2_build_kit.sh lab/llama.cpp-c3r32 lab/app-c3 patches/llama.cpp patches/llama.cpp-c1-olmoe patches/llama.cpp-c3`,
+then the APK is copied to a plain name without '+'.
+
 ## D1 harness (memo-05 §4): design only, no patch yet
 
 D1 loads a real Q4_0 7B body with no repack, maps it executable and touches it, and records residency and kills
