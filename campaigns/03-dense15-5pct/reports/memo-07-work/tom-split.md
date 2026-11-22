@@ -153,3 +153,76 @@ Source: `patches/llama.cpp-c3/0002-d-rows.patch`, functions `k1` and `d2_identit
 held. A K1 build has the stock resident size, not stock plus a column copy, provided prefill runs through K1 (per token)
 and no tensor is both row-skipped and column-skipped. So the Yi corner does not close on residency. Her factor
 "P(resident at 3.3 GB plus the column copy) 0.3" can be re-read as "resident at the stock size".
+
+## 5. Follow-up (2026-11-22): k, v dense frontier on the MHA models, and k against v
+
+The lead asked for k, v dense at 35 / 40 / 45 % on Llama-2 and DeepSeek at both settings, 40 chunks, stopping a model at
+its first failing level, then k-only and v-only dense at 30 % on Llama-2 at `-b 512`. Runs were serial and used the thr2
+tables. A model stopped at the first level over +4.5 % at either setting; when `-b 512` already failed, its `-ub 1` cell
+was not run.
+
+**Validity after the container restart.** The queue finished before the restart (`split2 done` 08:24:15 in
+`lab/c3/logs/split.log`), so no cell was lost.
+- All 13 cells are in `lab/c3/logs/u1-<model>-<b512|ub1>-40.log`, each with 40 per-chunk values.
+- The `.err` files hold no error or traceback.
+- The printed consumer plans are as designed: `restore:qkv` for k, v dense and for k-only, `toggle3:qkv` for v-only
+  (see the tool change below).
+
+### 5.1 k, v dense frontier (*host*, Δ vs stock at the same setting, SE over 40 chunks)
+
+| model | level | nominal skipped share (*estimated*) | `-b 512` | `-ub 1` | verdict |
+|---|---|---|---|---|---|
+| Llama-2 | 30 % | 25.0 % | +1.30 % (0.33) | +1.21 % (0.35) | inside (§1) |
+| Llama-2 | 35 % | 29.2 % | +2.57 % (0.42) | +2.50 % (0.43) | inside |
+| Llama-2 | 40 % | 33.4 % | +3.97 % (0.57) | +3.95 % (0.53) | inside |
+| Llama-2 | 45 % | 37.5 % | **+6.74 %** (0.69) | not run | outside: stop |
+| DeepSeek | 30 % | 25.0 % | +1.06 % (0.31) | +1.29 % (0.24) | inside (§1) |
+| DeepSeek | 35 % | 29.2 % | +2.18 % (0.35) | +1.79 % (0.40) | inside |
+| DeepSeek | 40 % | 33.4 % | +2.95 % (0.56) | +3.54 % (0.54) | inside |
+| DeepSeek | 45 % | 37.5 % | **+5.21 %** (0.63) | not run | outside: stop |
+
+PPL values: Llama-2 7.5975 / 7.5928 (35 %), 7.7010 / 7.7000 (40 %), 7.9061 (45 %, `-b 512`). DeepSeek 8.4024 / 8.3665
+(35 %), 8.4659 / 8.5105 (40 %), 8.6512 (45 %, `-b 512`).
+
+- **The k, v dense frontier is 40 % on both MHA models at both settings.** It skips a nominal 33.4 % of the block's
+  mat-mul weights (*estimated*, 0.834 × 0.40). The uniform frontier skips 20 % on Llama-2 and 25 % on DeepSeek (§2).
+- **Ebony's "approach 0.35" is met and passed.** The frontier lies between 0.40 and 0.45. Llama-2's 40 % cell is 0.5
+  point under the line, so its margin is thin; DeepSeek's margin is 1.0 to 1.6 points.
+
+### 5.2 k against v (Llama-2, 30 %, `-b 512`)
+
+| cell | PPL | Δ vs stock (SE) | paired vs plain 30 % (SE) |
+|---|---|---|---|
+| plain 30 % (phase 2) | 7.8284 | +5.69 % (0.67) | – |
+| k dense only | 7.6412 | +3.16 % (0.49) | −2.39 % (0.48) |
+| v dense only | 7.6929 | +3.86 % (0.38) | −1.73 % (0.61) |
+| k and v dense (§1) | 7.5031 | +1.30 % (0.33) | −4.16 % (0.60) |
+
+- **Both inputs carry part of the loss, and the parts add.**
+  - Keeping k dense removes 2.4 points and keeping v dense 1.7 points. The sum, 4.1 points, matches the 4.2 points of
+    keeping both.
+  - k-only against v-only is −0.67 % (SE 0.45, paired): k is the larger part, but at 1.5 SE this is not resolved.
+  - Adding v to k-only still removes 1.81 % (SE 0.39). Neither one alone is enough.
+- **For a build:** leaving only one of the two dense does not keep 30 % inside with margin. Both single cells are inside
+  (+3.2 and +3.9 %), but with less room than k and v together.
+
+### 5.3 Tool change and identity re-check
+
+`tools/c3_colskip.py` (uncommitted): the consumer plan now handles an unedited reader that runs **between** two target
+readers. That is the v-only case: Llama-2's read order is Qcur, Vcur, Kcur, and with only v dense, K is still a target.
+- The plan restores the shared input before each unedited reader and puts the edited copy back before the next target
+  reader. After the last target it restores for good.
+- It is refused only if an unedited reader runs before the first target. The plan prints this as `toggle<n>:<group>`.
+- Toggle nodes are keyed by name and op; the tool asserts that this key is unique in the graph.
+- The single-restore path (`restore:`) is unchanged in effect.
+
+Checks (*host*, Llama-2 Q4_0):
+- **Known answer for v-only** (1 chunk, layer 0): Qcur and Kcur equal the plain 30 % cell bit for bit; Vcur equals the
+  stock cell bit for bit; plain 30 % Vcur differs from stock.
+- **Identity, re-run after the edit with the current tool** (2 chunks, ub 512):
+  - `C3_DENSE_W=attn_q,attn_k,attn_v` with groups `all` gives per-chunk NLL 1.7911861779847056, 1.9606204103102398.
+    That is bit-identical to groups `o,gu,down`, and identical to §0's pre-edit values.
+  - k, v dense 30 % gives 1.7961652146235187, 1.930309286603152, identical to §0's pre-edit values. So the 30 % cells
+    of §1, run before the edit, and the 35 to 45 % cells, run after it, come from the same computation.
+  - Table `-`, sparsity 0 gives running PPL [1]5.8104, [2]6.3386, the same as `llama-perplexity -c 512 -b 512
+    --chunks 2` on this build.

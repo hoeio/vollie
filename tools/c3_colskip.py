@@ -25,7 +25,8 @@
 #   group's largest |a| is under the layer's train threshold at quantile <sparsity> (= skipping their 4 gate/up rows
 #   and 4 down columns).
 # memo-07 U1(b): C3_DENSE_W=attn_k,attn_v (weight names) keeps those mat-muls on the unedited input: they are not
-#   targets, so the consumer plan restores the shared input after the last target reader (refused if they read first).
+#   targets, so the consumer plan restores the shared input before each of them and zeroes it again before the next
+#   target reader (refused if they read before the first target).
 # memo-05 T5: C3_KEEPSTAT=<out.npz> (eval, element rule) saves per input and column how often it was kept, and the mean
 #   fraction of columns kept by at least one token of each 32-token window (the 32-token union).
 import sys, os, re, time, json, ctypes as C, numpy as np, collections
@@ -63,7 +64,7 @@ if G4:
 KEEP = os.environ.get('C3_KEEPSTAT'); kc = {}; kn = collections.Counter(); ku = collections.defaultdict(lambda: [0.0, 0])
 def ptr(p): return C.cast(p, C.POINTER(ggml_tensor)).contents
 DENSE_W = set(filter(None, os.environ.get('C3_DENSE_W', '').split(',')))
-nodes = []; mmk = {}; XREST = {}; RESTORE = set(); pend = collections.defaultdict(list); unedited = collections.Counter()
+nodes = []; mmk = {}; XREST = set(); EV = collections.defaultdict(list); pend = {}; unedited = collections.Counter()
 inp = {}; outn = {}; phase = ['discover']; pos0 = [0]; samp = collections.defaultdict(list); rng = np.random.default_rng(0)
 cnt = collections.defaultdict(lambda: [0.0, 0])   # group -> [zeroed elements, elements]
 def cb(t, ask, ud):
@@ -79,9 +80,14 @@ def cb(t, ask, ud):
             if m.group(2) == b'ffn_gate': gaten[bytes(tt.name)] = int(m.group(1))
         return True
     name = tt.name
-    if mode == 'eval' and name in RESTORE:   # last target mat-mul of an input that other nodes read later: put it back
+    if mode == 'eval' and (name, ggml.ggml_op_desc(t)) in EV:   # a shared input's toggles around its other readers
         if ask: return True
-        for xv, sv in pend.pop(name, ()): xv[...] = sv
+        for xn, act in EV[(name, ggml.ggml_op_desc(t))]:
+            e = pend[xn]
+            if act == 'rezero': e[0][...] = e[2]; continue   # a target reads next: the edited input again
+            if e[2] is None: e[2] = e[0].copy()
+            e[0][...] = e[1]   # an unedited reader runs next (restore), or the last target ran (last)
+            if act == 'last': del pend[xn]
     if mode == 'ablate':
         if ask: return outn.get(name) in ASET   # one layer, or a comma list of layers
         C.memset(tt.data, 0, tt.nb[3] * tt.ne[3]); cnt['ablated'][1] += 1; return True
@@ -114,7 +120,7 @@ def cb(t, ask, ud):
     if k is None: return True
     if tt.type != 0 or tt.nb[1] != tt.ne[0]*4 or tt.ne[2]*tt.ne[3] != 1: unedited[k.split(':')[1]] += 1; return True   # reported, never silent
     x = np.ctypeslib.as_array(C.cast(tt.data, C.POINTER(C.c_float)), shape=(tt.ne[1], tt.ne[0]))
-    if mode == 'eval' and name in XREST: pend[XREST[name]].append((x, x.copy()))
+    if mode == 'eval' and name in XREST: pend[name] = [x, x.copy(), None]
     if mode == 'calib':
         if ADUMP and k.endswith(':down') and sum(len(a) for a in adump[k]) < 2048: adump[k].append(x.astype(np.float16))
         ax = np.abs(x).ravel(); samp[k].append(ax[rng.integers(0, ax.size, 32768)].astype(np.float32))
@@ -186,9 +192,13 @@ for xn in inp:
     rd = sorted({i for c in clo for i in cons[c] if nodes[i][2] not in VIEWS}); tg = [i for i in rd if i in mmk]; ot = [i for i in rd if i not in mmk]
     assert len({mmk[i][0] for i in tg}) == 1, 'input %s feeds mat-muls of different groups %s: unsupported block layout' % (xn, {mmk[i][0] for i in tg})
     if ot or FORCE:
-        assert not ot or max(tg) < min(ot), 'input %s is read by %s before its last target mat-mul: unsupported' % (xn, nodes[ot[0]][1])
-        XREST[xn] = nodes[max(tg)][1]; RESTORE.add(nodes[max(tg)][1]); plan['restore:' + inp[xn].split(':')[1]] += 1
+        assert not ot or min(tg) < min(ot), 'input %s is read by %s before its first target mat-mul: unsupported' % (xn, nodes[ot[0]][1])
+        # restore before each unedited reader, zero again before the next target, restore for good after the last target
+        ev = [(a, 'restore' if a in mmk else 'rezero') for a, b in zip(rd, rd[1:]) if (a in mmk) != (b in mmk) and a != max(tg)] + [(max(tg), 'last')]
+        for i, act in ev: EV[(nodes[i][1], nodes[i][2])].append((xn, act))
+        XREST.add(xn); plan[('restore:' if len(ev) == 1 else 'toggle%d:' % len(ev)) + inp[xn].split(':')[1]] += 1
     else: plan['inplace:' + inp[xn].split(':')[1]] += 1
+_kc = collections.Counter((n[1], n[2]) for n in nodes); assert all(_kc[k] == 1 for k in EV), 'toggle node not unique by (name, op)'
 print('consumer plan: %s' % dict(sorted(plan.items())), flush=True)
 print('discovered inputs: %d (%s); thresholds in use: %d' % (len(inp), dict(collections.Counter(v.split(':')[1] for v in inp.values())), len(THR) if mode == 'eval' else 0), flush=True)
 t0 = time.time(); nll = []; line = []
