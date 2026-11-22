@@ -226,3 +226,52 @@ Checks (*host*, Llama-2 Q4_0):
     of §1, run before the edit, and the 35 to 45 % cells, run after it, come from the same computation.
   - Table `-`, sparsity 0 gives running PPL [1]5.8104, [2]6.3386, the same as `llama-perplexity -c 512 -b 512
     --chunks 2` on this build.
+
+## 6. DeepSeek-LLM-7B-chat with BOS forced on (2026-11-22)
+
+The lead asked for this before the freeze. The GGUF from the publisher's converter had `add_bos_token = false`
+(tom-screens.md §5.1).
+
+**How the BOS was forced.** I edited the metadata of a copy; no weight changed and no runtime override was used.
+- `cp deepseek7b-q4_0.gguf deepseek7b-bos-q4_0.gguf`, then `gguf-py/gguf/scripts/gguf_set_metadata.py <copy>
+  tokenizer.ggml.add_bos_token true --force` from the lab tree.
+- `cmp -l` shows exactly **one byte** differs, at offset 3,970,331: the bool, 0 → 1, in the header. The tensor data
+  is byte-identical.
+- `bos_token_id` is 100000 (`<｜begin▁of▁sentence｜>`). `llama-tokenize` on the copy now emits it first.
+- The copy's sha256 is `f195d24f…35da9ec` (untracked, `lab/c3/models/`). The no-BOS file is kept unchanged.
+- The same one-byte edit was made on a re-made F16 (offset 3,970,410).
+- **The publisher weights were not altered.** For the F16 the publisher's `.bin` files were downloaded again at the same
+  commit `afbda8b3`, LFS sha256 checked, and converted with the same tree. The F16 and the re-quantised Q4_0 differ
+  from memo-06's files only in `general.name` ("Deepseek7B R", taken from the folder name). All 273 tensors of the
+  re-made Q4_0 are equal to the kept file's.
+- The F16 (both copies), the re-made Q4_0 and the downloaded weights were deleted after use. Free disk stayed above
+  45 GB.
+
+**Scoring.** `llama-perplexity` honours the flag, and so does `tools/c3_colskip.py`: it reads `llama_vocab_get_add_bos`
+and puts the BOS in place of each chunk's first token, as `llama-perplexity` does.
+- The k, v dense cells used a **new threshold table calibrated with BOS**, `lab/c3/thr7-deepseek7b-bos-q4_0.npz` (16
+  train chunks).
+- Its 40 % thresholds are within −1.7 % to +5.9 % of the no-BOS table's (median ratio 1.0008, 391 inputs).
+
+| file / cell (BOS on) | `-b 512` | `-ub 1` | note |
+|---|---|---|---|
+| F16, stock | **8.0449** | – | `llama-perplexity` |
+| Q4_0, stock | **8.3095** | 8.3104 | `-b 512` from both `llama-perplexity` and the tool (equal to 4 decimals); `-ub 1` from the tool |
+| Q4_0 / F16 | **× 1.0329** | – | no BOS: × 1.0367 (8.2231 / 7.9317) |
+| budget: Q4_0 stock × 1.05 | 8.7250 | 8.7259 | ceiling F16 × 1.20 = 9.654 |
+| k, v dense 40 % | 8.6262, **+3.81 %** (SE 0.56) | 8.6276, **+3.82 %** (SE 0.49) | inside the +4.5 % line at both settings, so the 35 % fallback was not run |
+
+All values are *host*, 40 chunks, ctx 512.
+
+- **BOS makes stock DeepSeek worse on this text**, not better. Q4_0 is 8.3095 with BOS against 8.2231 without (+1.05 %),
+  and F16 is 8.0449 against 7.9317 (+1.43 %).
+  - The first chunk gains (5.14 → 5.00 running value); the following chunks lose.
+  - I have no explanation. The tokenizer config says `add_bos_token: true`, so BOS-on is the publisher's intended
+    input.
+- **The lever's result holds with BOS.** At 40 % k, v dense, the cell is +3.81 / +3.82 % with BOS against +2.95 /
+  +3.54 % without. That is 0.3 to 0.9 point worse, but still 0.7 point inside the line at both settings.
+  - Realised zeroed fractions: `down` 0.410, gu 0.391, o 0.400, qkv 0.391 (q only; k and v dense).
+- **For the freeze:** if DeepSeek is served with BOS, use its BOS numbers above: stock 8.3095, budget 8.7250. Use them
+  consistently; the no-BOS cells of §1 to §5 are not comparable with them.
+- Logs (untracked) in `lab/c3/logs/`: `bos.log`, `ppl-deepseek7b-bos-{q4_0,f16}-b512-40.log`,
+  `bos-deepseek7b-{b512,ub1}-40.log`, `calib7-deepseek7b-bos.log`, `prep-deepseek7b-r.log`.
