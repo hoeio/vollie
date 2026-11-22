@@ -27,6 +27,7 @@ Lead's notes:
 - The folder keeps its name `03-dense15-5pct` (files are not renamed); the goal is the one in this amendment.
 - A model that does not reach 12 is reported as a result; it is replaced only by the owner (COMMON_RULES).
 - *Note 2026-11-22: subjects chosen (memo-06 section 6): Yi-1.5-6B-Chat, Mistral-7B-Instruct-v0.3, DeepSeek-LLM-7B-chat; reserves Llama-2-7b-chat, Qwen2.5-7B-Instruct. ChatGLM3-6B excluded by the owner.*
+- *Correction 2026-11-22: subject 2 is Llama-2-7b-chat, not Mistral (lead withdrew a post-hoc tie reading; memo-06 section 6). Subjects: Yi-1.5-6B-Chat, Llama-2-7b-chat, DeepSeek-LLM-7B-chat; reserves Mistral-7B-Instruct-v0.3, Qwen2.5-7B-Instruct.*
 - Selection of the three is done before any of them is measured on the device, by a rule written first
   (memo-06 section 1), and frozen together with each served file.
 

@@ -365,3 +365,61 @@ Please check `bonnie-reprice.md` section 7 (slots 2 and 3 after the ChatGLM3 exc
 price at R69's four-core r of 27 and 35) and leave a short note here. My result: by criterion 1 the order is
 Llama-2 (k, v dense, 40 %), DeepSeek (same), Mistral (0.40), Qwen2.5 (0.35), with margins of 0.1 to 0.7 tok/s,
 inside the estimate error. Please say whether you read Llama-2 against Mistral as a tie for criterion 2.
+
+## 9. Bonnie's addendum (§7) checked, and a challenge to the lead's final choice (memo-06 §6, `3348e3b`) (2026-11-22)
+
+### 9.1 Bonnie §7: reproduced
+
+I recomputed her table with the agreed conventions (c 71.8 G weights/s, O 12 / 6 band ends, printed 0.95 x steady,
+head at Q6_K from header shapes, k and v at k = 1). Every cell I recomputed agrees with hers to 0.1 tok/s: the
+levers bands at r 19 / 24 / 35 for all four models, k max on three cores (1.20 / 1.21 / 1.19 / 1.08) and four
+cores (1.44 / 1.46 / 1.37 / 1.26), and r min (37.5 / 38.6 / 37.1 / 41.8). Her "no candidate for slots 2 and 3
+reaches 12" stands. **Check passed, no correction.** I did not recompute her "4 cores at r4" column.
+
+One thing her ranking key hides (not an error): it sums the two band ends, so it averages over the kernel cost.
+The order depends on k in one direction (printed tok/s, *estimated*, O 8, at r 24 / r 35):
+
+| K1 device k | Llama-2 (40 %, k, v dense) | DeepSeek (same) | Mistral (40 %) | Qwen2.5 (35 %) | Llama-2 at 35 %, if its 40 % cell fails on the full set |
+|---|---|---|---|---|---|
+| 1.55 | 8.0 / 10.0 | 7.8 / 10.2 | 8.0 / 9.5 | 7.2 / 8.9 | 7.6 / 9.4 |
+| 1.8 | 8.0 / 9.0 | 7.8 / 9.1 | 8.0 / 8.3 | 7.2 / 7.8 | 7.6 / 8.4 |
+| 2.2 | 7.7 / 8.3 | 7.8 / 8.2 | 6.9 / 7.7 | 6.5 / 7.6 | 7.2 / 8.3 |
+| 2.6 (R69's pre-registered P2col centre) | 6.7 / 8.3 | 6.9 / 8.2 | 5.9 / 7.7 | 5.6 / 7.6 | 6.3 / 8.3 |
+
+Why: under the k, v dense rule a sixth of the body runs at k = 1, so a dear kernel costs the MHA models less.
+Mistral is level only at k ≤ about 1.6. From k 1.8 upward the two MHA models lead it by 0.5 to 1.0 tok/s at r 24
+and by 0.6 to 0.8 at r 35, and that holds even if Llama-2 drops to 35 %.
+
+### 9.2 Challenge to the lead's tie reading
+
+**I think the tie reading is wrong**, for three reasons. The lead's choice is recorded as a lead judgement and
+the strict alternative is on the record; this is my position beside it.
+
+1. **The error invoked is common-mode.** c, r and k are R69 centres, but an error in them moves all four models
+   together. It flips the order only through k, and §9.1 shows which way: the gap is a sign that depends on one
+   parameter, not noise. Inside the k band both files use (1.55 to 2.2) Mistral never leads, and at R69's own k
+   centre (2.6) it trails by 0.8 to 1.0 at r 24. A tie should be read off differential uncertainty, and the one
+   differential that matters favours the MHA models.
+2. **The differential uncertainties that exist do not reach Mistral either.** Llama-2's 40 % cell is 0.5 point
+   under the line. One grid step down (35 %) leaves it level with or above Mistral from k 1.8 upward (last
+   column).
+3. **Both tie-breaks inside the lead's reading are weak.**
+   - Criterion 2 puts DeepSeek ahead of Llama-2 on margin: +2.95 / +3.54 % against +3.97 / +3.95 %, each with
+     SE about 0.55 (*host*, tom-split §5.1). That is about 1.3 SE at `-b 512` and 0.5 SE at `-ub 1`.
+   - DeepSeek's cells were screened **without BOS**, Llama-2's with it, and the served DeepSeek file sets BOS
+     (lead's freeze note). The attention-sink token is exactly what a BOS changes, so DeepSeek's margin is not
+     like-for-like.
+
+**What follows by the rule as written** (section 1: R69 is not waited for, and criterion 1 comes first): subjects
+Yi-1.5-6B, Llama-2-7b-chat, DeepSeek-LLM-7B; reserves Mistral-7B-v0.3, then Qwen2.5-7B. The lead's set swaps
+Mistral in for Llama-2. Neither set changes the verdict: no subject 2 or 3 reaches 12 with priced levers, so the
+swap moves 0.0 to 1.0 tok/s of a sub-12 result and the generality report, not a pass. The lead's side effect (one
+GQA 7B in the set, Mistral's host evidence from E1, T1 and K1) is a real merit, but it is not a criterion.
+
+**If the lead keeps the choice, I ask for three things before the freeze (S3)**, each a host cell or two:
+- (a) DeepSeek's 40 % k, v dense cell rerun **with BOS**, at both settings. If it fails, slot 3 passes to
+  Llama-2 by the rule, with no new judgement.
+- (b) Mistral's 40 % frontier re-screened on our own quantised file. memo-02 used the second-state stand-in;
+  S3 requires a file quantised by us.
+- (c) A dated note in memo-06 §6: the tie holds only at k ≤ about 1.6, and R69's D2 row is the measurement that
+  would have decided it.

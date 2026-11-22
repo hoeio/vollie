@@ -498,3 +498,22 @@ For the freeze (S3): DeepSeek's screens ran without BOS (`add_bos = false` from 
 sets BOS explicitly and its stock and F16 PPL are measured that way. No subject is priced at 12 tok/s with the
 priced levers (*estimated*); every subject stays a full subject.
 
+*Correction 2026-11-22 (lead), after Ebony's challenge (memo-07-work/ebony-compute.md §9).* The tie reading above is
+withdrawn. The estimate error moves all four models together and changes their order only through the kernel cost
+k; inside the agreed k band (1.55 to 2.2) Mistral never leads Llama-2 or DeepSeek, and from k 1.8 up it trails by
+0.5 to 1.0 tok/s (*estimated*). A tie declared after the prices were known would bend section 1, so criterion 1 is
+applied as written:
+
+| slot | model | family |
+|---|---|---|
+| subject 1 | Yi-1.5-6B-Chat | 01.AI |
+| subject 2 | **Llama-2-7b-chat** | Meta |
+| subject 3 | DeepSeek-LLM-7B-chat | DeepSeek |
+| reserve 1 | Mistral-7B-Instruct-v0.3 | Mistral AI |
+| reserve 2 | Qwen2.5-7B-Instruct | Alibaba |
+
+Before the freeze (S3): DeepSeek's 40 % k,v-dense cell is re-run with BOS at both settings; if it fails, the
+DeepSeek rule is set at its largest passing level with BOS and criterion 1 is re-priced for slot 3 against Mistral.
+Llama-2's 40 % cell is 0.5 point under the line on 40 chunks; its full-set check at the freeze decides its level
+(35 % if 40 % fails). The table "Final choice, 2026-11-22" above is superseded by this one.
+
