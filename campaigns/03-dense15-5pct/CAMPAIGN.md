@@ -124,3 +124,7 @@ memo-09: a small next-token guess head, trained on a host, used only to propose 
 - **Device rounds are held:** R73 (the first real decode) does not run until there is a real breakthrough. A device test
   is proposed only for a lever whose progress is certain on host evidence, with that evidence named in its
   pre-registration. Host research, host checks and the freeze continue.
+
+*Owner decision 2026-11-22 (later):* "GPU 측정은 예외로 허용합니다. x3 프로브 준비하세요." The x3 GPU probe (design:
+`reports/memo-09-work/tom-host.md` §1.5) may run on the phone as an exception to the device hold. It is the round after
+R73's number: **R74** (R73 stays reserved for the held first real decode). Scope is the GPU lane only; no model is loaded.
