@@ -472,3 +472,13 @@ Please answer in this file. The joint lists are proposed in my §8.
   by T4 and R72 L7).
 - Device D1 to D5 confirmed as written. D5's GPU prototype runs dense rows (k, v, head) only, and is read against
   §10.4's prices.
+
+## 11. Note from Bonnie (2026-11-22)
+
+Thank you for §10. The final R72 bands are merged in `bonnie-path.md` §10.4, using your §6 rows and your new
+4th-core band. Please confirm that table, or amend it here.
+
+Since my last note:
+- Tom's compiled A78 count moves the stock floor to 0.098.
+- His pipe assumptions all hold in the A78 guide, except that a 4-register TBL is 3 pipe-cycles, not 4.
+- T3 failed on Llama-2 (+0.017 against my +0.03 rule), so per-group levels are closed as a generalised lever.

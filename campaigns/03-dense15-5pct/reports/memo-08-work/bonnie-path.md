@@ -396,3 +396,89 @@ Method: a Monte Carlo over the pre-registered R69 bands, 20,000 draws.
 - Snapdragon 888 memory: LPDDR5-6400, 4 × 16-bit, 51.2 GB/s peak (AnandTech SD888 deep dive, search summary).
 - Repository: memo-05-work/tom-host.md §1 (K1 instruction mix), memo-07-work/tom-split.md, R69 pre-registration
   §1 and §3, clyde-r72-plan.md, ebony-paths.md, campaign 2 knowledge.md (official prompt 155 tokens).
+
+## 10. Addendum 2026-11-22: Tom's K1m results, the pipe check, and the final R72 bands
+
+Inputs:
+- `tom-k1.md` (committed): A78 counts from an NDK r28 `-O3 -mcpu=cortex-a78` build, *estimated*; M4 timings, *host*.
+- Ebony's answer, `ebony-paths.md` §10.
+
+### 10.1 Tom's pipe assumptions, checked against the Cortex-A78 guide (*published*)
+
+| instruction | Tom's assumption | A78 guide row | verdict |
+|---|---|---|---|
+| `SADDW(2)` | either pipe | "ASIMD arith, basic": latency 2, throughput 2, pipes V | **holds** |
+| `BIC` (vector) | either pipe | "ASIMD logical": AND, BIC, EOR, MOV, …: throughput 2, pipes V | **holds** (the move-immediate class, `MOVI`, is also V at 2) |
+| `CMLT` | either pipe | "ASIMD compare": CMEQ … CMLT, CMTST: latency 2, throughput 2, pipes V | **holds** |
+| 4-register `TBL` | 4 µops | "ASIMD table lookup, 4 table regs": latency 4, throughput 2/3, pipes V | **3 pipe-cycles, not 4.** It is slightly pessimistic for `k1t`, whose floor drops from about 0.189 to about 0.180. That is still worse than K1m, so the ranking does not change |
+
+- **k1m4's floor (0.140 at keep 0.58) stands.** No op that it adds is V0-only.
+
+### 10.2 The stock floor
+
+- I accept Tom's **0.098 cycles per weight**: it counts the compiled loop, including `MOVI`/`MOV`. My 0.086 was a
+  hand mix and is withdrawn.
+- **Consequence for k on the A78.** R69's pre-registered P2hot centre for stock (0.105) is only 7 % above the issue
+  floor, so the A78 runs stock close to issue-bound. My two k cases (same efficiency, or additive stall) then
+  converge. Against the floors:
+
+| kernel | ratio of floors | additive stall | A78 k |
+|---|---|---|---|
+| K1 | 1.83 | 1.77 | **1.80 (1.77 to 1.83)** |
+| K1m | 1.56 | 1.51 | **1.54 (1.51 to 1.56)** |
+| k1m4 | 1.44 | 1.40 | **1.42 (1.40 to 1.44)** |
+
+- **X1 is unchanged** (by analogy with the X2 guide): K1 1.15 to 1.60, K1m 1.00 to 1.42. Per Tom §4, k1m4 equals K1m
+  on the X1, because the X1 is total-bound.
+- **On three cores** (X1 + 2 A78, rates add):
+
+| kernel | k, 3 cores (memo §2 value) |
+|---|---|
+| K1 | **1.57 (1.43 to 1.72)** (was 1.64) |
+| K1m | **1.36 (1.23 to 1.50)** (was 1.43) |
+| k1m4 | **1.31 (1.19 to 1.43)** |
+
+- **The M4 cannot show any of this.** Tom shows it runs these kernels at their total op count: K1m equals K1
+  within 0.03, and k1m4 is 0.05 to 0.10 worse (*host*). The M4 is not evidence against K1m. The device D2s row
+  decides.
+
+### 10.3 Full-set checks and T3 (Tom, *host*)
+
+- **Full-set frontier checks, at `-b 512`, k and v dense at 40 %:**
+  - Llama-2 is +3.40 %.
+  - DeepSeek with BOS is +3.55 %.
+
+  Both are inside. The Llama-2 fallback to 35 % (P 0.2 in my Monte Carlo) is removed: its 40 % holds. That raises
+  Llama-2's P figures in §4.3 slightly, but not their order (residency still caps it at 0.12).
+- **T3, per-group levels.** The gain in skipped share at the same budget was +0.032 on Yi and +0.017 on Llama-2. My
+  pass rule, written before the results, was "≥ frontier + 0.03 on both models".
+  - **It fails on Llama-2, so per-group levels are closed** as a generalised lever, scored as written.
+  - The Yi gain (+0.032) is reported per model and did not generalise. It is worth about −0.09 GB on Yi's bytes, or
+    about +0.4 tok/s at r 24 (*estimated*).
+  - Whether Yi alone may keep it is the lead's call.
+  - §4's stacks that include "groups" lose about 0.2 to 0.4 tok/s on the MHA subjects.
+
+### 10.4 Final R72 bands (joint: Bonnie and Ebony)
+
+Centre (80 % band), *estimated*.
+- Where the two of us differed, the merged band covers both and the centre is the midpoint; the source is noted.
+- Ebony's §10 moved her 4th-core band. Her other rows are from her §6.
+
+| row | quantity | merged band | note |
+|---|---|---|---|
+| L1 | K1 k, A78 (cpu 4), hot, keep 0.58 to 0.60, inputs 4096 / 11008 | **1.85 (1.65 to 2.2)** | Bonnie 1.80 (Tom's compiled floor); Ebony 1.9 (1.5 to 2.6), narrowed by 10.2. Cold: 0.1 lower |
+| L1 | K1 k, X1 (cpu 7), hot | **1.5 (1.15 to 2.0)** | Bonnie 1.35 (1.1 to 1.7); Ebony 1.7 (1.4 to 2.3). Still open: does the X1's stock slack absorb K1's extra ops? |
+| L1m | K1m k, A78 / X1 | **1.55 (1.45 to 1.75) / 1.25 (1.0 to 1.6)** | new row |
+| L1m4 | k1m4 k, A78 / X1 | **1.45 (1.35 to 1.65) / 1.25 (1.0 to 1.6)** | new row; equal to K1m on the X1 (Tom §4) |
+| L1x | k1m4 ÷ K1 on the A78, same cell | **0.79 (0.72 to 0.90)** | the one ratio the M4 cannot show; floor ratio 0.78 |
+| L2 | r4, cold, ggml threads, X1 + 3 A78 | **26 (20 to 33) GB/s**; r4 ÷ r3 **1.06 (0.95 to 1.22)** | the two of us agree |
+| L3 | c4 ÷ c3, all threads hot at once | **1.08 (0.90 to 1.24)** | Bonnie 1.12; Ebony 1.05 (0.90 to 1.20) after her §10 |
+| L4 | t_rule ÷ t_stock, cold, best set | **Yi 0.68 (0.58 to 0.92); Llama-2 0.74 (0.65 to 0.93); DeepSeek 0.75 (0.65 to 0.93)** | byte-bound at r 24; the upper end is the r 30 case |
+| L5 | Q6_K ÷ Q4_0x4 per weight, hot, 1 thread | **1.5 (1.15 to 2.0)** | Bonnie 1.6; Ebony 1.4 |
+| L6 | empty barriers per token, 3 / 4 threads | **2.5 (1.0 to 6) / 3.0 (1.2 to 7) ms** | Bonnie 2.0 / 2.4; Ebony 3 / 3.5 |
+| L7 | head cold, 3 threads: Yi / Llama-2 / DeepSeek | **10 (7 to 16) / 5 (3.5 to 8) / 16 (11 to 26) ms** | Bonnie 9 / 4.5 / 14; Ebony 11 / 5.6 / 18 |
+
+- **Pass and kill lines** are the lead's. A suggestion: keep K1m or k1m4 for the build if L1x ≤ 0.90 on the A78 cell
+  with identity at 1; close both if L1x ≥ 0.97.
+
+Ebony: please confirm the merged column in your file. I have not seen your view of it.
