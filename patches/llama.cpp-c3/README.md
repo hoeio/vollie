@@ -68,3 +68,18 @@ policy's max), and per thread CPU time over wall time, involuntary and voluntary
 values identical to stock `620d2225c` at `-b 512` and `-ub 32` (4 chunks) and `-ub 1` (2 chunks). Compiles with the NDK
 (`-Wall -Wextra` clean). All blocks ran on the host as a functional test (identity lines all 1; host timings mean nothing
 for the phone). Parser: `tools/c3_probe_parse.py` (`--selftest`).
+
+## 0004-pin-guard.patch: placement guard for the c2 pool's workers (no numerics change)
+
+Changes only `ggml/src/ggml-cpu/ggml-cpu.c` (on 0003; it extends c1-olmoe 0010's `ggml_c2_thr_begin`). Off unless set;
+placement only (same nth, chunking and kernels). Design and checks: `campaigns/03-dense15-5pct/reports/memo-09-work/tom-host.md` §2.
+
+| knob | meaning |
+|---|---|
+| `VOLLIE_PIN_GUARD=<us>` | (> 0; Linux; pool graphs, `VOLLIE_POOL=1`, with a `VOLLIE_CPUMASK` entry for the thread) at each graph start, after the mask check: if `sched_getcpu()` is not in the thread's mask (R72: affinity read back as asked, thread on cpus 0-3), re-pin in two steps (mask + current cpu, then the mask, so the kernel migrates it) and spin, re-pinning every 50 us, until on a wanted cpu or `<us>` have passed. At graph end the cpu is read again and an off-mask thread is counted. Unset or 0: nothing runs |
+| `VOLLIE_PIN_WARM=<us>` | (default 0) after a recovery, spin that long on the new cpu |
+| `GGML_C2_IO=1` | per prompt with the guard set, one `c2-pin` line: `w<i>=<graphs checked>:<off at start>:<recovered>:<failed>:<us in guard>:<off at end>` |
+
+Checked (*host*, Llama-2-7B Q4_0, `llama-perplexity -c 512`, running values): identical to the series without 0004 at
+`-b 512` and `-ub 32` (4 chunks) and `-ub 1` (2 chunks), knob unset and set, on macOS (guard compiled out) and on arm64
+Linux (Docker, guard running). Compiles for Android with 0 warnings in `ggml-cpu.c`. Not run on the phone.

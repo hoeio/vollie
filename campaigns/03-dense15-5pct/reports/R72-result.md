@@ -340,3 +340,13 @@ Every number here is *estimated* unless marked *device*. The lead re-checked the
    tok/s (best 11.3, Yi, *estimated*). Only a stack of unbuilt numerics rules on top of a near-perfect GPU kernel
    touches 12, with no margin. The goal stays at 12, and the lead reports it as out of reach by priced levers. The
    rounds above are there to confirm or overturn that with *device* numbers.
+
+*Correction 2026-11-22 (lead, from Tom's four-way labels, `memo-09-work/tom-host.md` §3; *device* data, verdicts unchanged):*
+
+- §2 names Llama-2 and DeepSeek for the off-core A78 thread in the pos 0 stock arm on `4,5,6`. Yi had one too: its cpu-4
+  thread was on cpu 3 in 324 of 324 checks.
+- Two unscored cells also ran off-core:
+  - the l3 cell on `4,5,6`: cpu 6 thread off in 1,420/1,420 checks, at 3.968 G weights/s;
+  - the l2 read cell on `4,5,6`: cpu 5 thread off in 391/391 checks.
+
+  The "A78 threads: 20.5" figure holds only for threads labelled C (compute).

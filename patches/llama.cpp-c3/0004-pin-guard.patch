@@ -1,0 +1,139 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index 5184802..87b8626 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -6077,7 +6077,20 @@ static unsigned long long ggml_c2_pool_want[GGML_C2_THR]; // parsed VOLLIE_CPUMA
+ static char ggml_c2_pool_mask_s[128] = "";
+ static struct ggml_threadpool * ggml_c2_pool = NULL;
+ static int  ggml_c2_sched = 0;            // VOLLIE_SCHED=1
+-struct ggml_c2_thr_t0 { int ph; int64_t ex, wq, nv, ni; };
++struct ggml_c2_thr_t0 { int ph; int64_t ex, wq, nv, ni; int gph; unsigned long long gwant; };
++
++// Vollie c3 (patches/llama.cpp-c3/0004-pin-guard.patch, bit-identical: placement only, same nth and chunking).
++// VOLLIE_PIN_GUARD=<us> (> 0; Linux, persistent-pool graphs with a VOLLIE_CPUMASK entry for the thread): after the
++// mask check at each graph start, the thread reads sched_getcpu(). If it is not on a cpu of its mask (R72: the thread
++// pinned to cpu 7 ran on cpus 0-3 with its affinity read back as asked), it re-pins in two steps (mask + its current
++// cpu, then the mask, so the kernel sees a change and migrates it) and spins, re-pinning every 50 us, until it is on
++// a wanted cpu or <us> have passed. VOLLIE_PIN_WARM=<us> (default 0): after a recovery it spins that long more on the
++// new cpu (load for the clock governor and core control). With GGML_C2_IO=1, per prompt with the guard set, one
++// "c2-pin" line: guard, warm, and per thread index w<i>=<graphs checked>:<off at start>:<recovered>:<failed>:<us spent
++// in the guard>:<off at graph end>. Unset or 0: nothing here runs (no extra syscall).
++static int ggml_c2_guard_us = 0, ggml_c2_warm_us = 0;      // VOLLIE_PIN_GUARD, VOLLIE_PIN_WARM at the graph's start
++static char ggml_c2_guard_s[32] = "-";                    // VOLLIE_PIN_GUARD at the prompt's start
++static struct { int chk, mis, rec, fail, endoff; int64_t us; } ggml_c2_pin[GGML_C2_THR][2];
+ 
+ // Vollie c2 (patches/llama.cpp-c1-olmoe/0012-c2-touch-nice.patch, bit-identical: scheduling priority only).
+ // VOLLIE_NICE=<n> (Linux, persistent-pool graphs only, so with VOLLIE_POOL=1): every thread of the graph (0 = the caller)
+@@ -6115,9 +6128,48 @@ static void ggml_c2_thr_sample(struct ggml_c2_thr_t0 * t) {
+ #endif
+ }
+ 
++#if defined(__linux__)
++// Vollie c3 (0004): this thread's affinity = m (cpus 0-63).
++static void ggml_c2_pin_set(unsigned long long m) {
++    cpu_set_t cs;
++    CPU_ZERO(&cs);
++    for (int c = 0; c < 64; c++) {
++        if (m >> c & 1) CPU_SET(c, &cs);
++    }
++    sched_setaffinity(0, sizeof cs, &cs);
++}
++
++// Vollie c3 (0004): VOLLIE_PIN_GUARD at a graph start (cpu = sched_getcpu() after the mask check).
++static void ggml_c2_pin_guard(int ith, int ph, unsigned long long want, int cpu) {
++    if (ph >= 0) ggml_c2_pin[ith][ph].chk++;
++    if (cpu < 0 || cpu >= 64 || (want >> cpu & 1)) {
++        return;
++    }
++    const int64_t t0 = ggml_time_us();
++    do {
++        ggml_c2_pin_set(want | 1ull << cpu); // a different mask that keeps the current cpu: no move yet
++        ggml_c2_pin_set(want);               // the current cpu is not in it: the kernel moves the thread now
++        for (const int64_t t1 = ggml_time_us(); ggml_time_us() - t1 < 50; ) {
++            if ((cpu = sched_getcpu()) >= 0 && cpu < 64 && (want >> cpu & 1)) break;
++        }
++    } while (!(cpu >= 0 && cpu < 64 && (want >> cpu & 1)) && ggml_time_us() - t0 < ggml_c2_guard_us);
++    const bool ok = cpu >= 0 && cpu < 64 && (want >> cpu & 1);
++    if (ok && ggml_c2_warm_us > 0) {
++        for (const int64_t t1 = ggml_time_us(); ggml_time_us() - t1 < ggml_c2_warm_us; ) {}
++    }
++    if (ph >= 0) {
++        ggml_c2_pin[ith][ph].mis++;
++        ggml_c2_pin[ith][ph].rec += ok;
++        ggml_c2_pin[ith][ph].fail += !ok;
++        ggml_c2_pin[ith][ph].us += ggml_time_us() - t0;
++    }
++}
++#endif
++
+ // Every thread at its graph start: the mask (pool graphs) and the counters (GGML_C2_IO=1).
+ static void ggml_c2_thr_begin(int ith, bool pool, struct ggml_c2_thr_t0 * t) {
+     t->ph = -1;
++    t->gph = -1;
+     const int ph = ggml_cpu_c2io.state - 1; // 0 prefill, 1 decode, -1 no prompt open (counters off)
+     if (ith >= GGML_C2_THR || (ph < 0 && !pool)) {
+         return;
+@@ -6178,6 +6230,11 @@ static void ggml_c2_thr_begin(int ith, bool pool, struct ggml_c2_thr_t0 * t) {
+         s->tid = tid;
+     }
+     cpu = sched_getcpu();
++    if (want && ggml_c2_guard_us > 0) { // Vollie c3 (0004); the histogram below keeps the cpu seen before the guard
++        ggml_c2_pin_guard(ith, ph, want, cpu);
++        t->gph = ph;
++        t->gwant = want;
++    }
+ #endif
+     if (ph < 0) {
+         return;
+@@ -6201,6 +6258,12 @@ static void ggml_c2_thr_begin(int ith, bool pool, struct ggml_c2_thr_t0 * t) {
+ 
+ // Every thread before the graph's last barrier (so thread 0 reads finished counters).
+ static void ggml_c2_thr_end(int ith, const struct ggml_c2_thr_t0 * t) {
++#if defined(__linux__)
++    if (t->gph >= 0) { // Vollie c3 (0004): off its mask at the graph's end (moved during the graph; counted, not fixed)
++        const int cpu = sched_getcpu();
++        ggml_c2_pin[ith][t->gph].endoff += cpu >= 0 && cpu < 64 && !(t->gwant >> cpu & 1);
++    }
++#endif
+     if (t->ph < 0) {
+         return;
+     }
+@@ -6244,6 +6307,18 @@ static void ggml_c2_thr_flush(const char * run) {
+         }
+         fprintf(stderr, "%s\n", line);
+     }
++    if (strcmp(ggml_c2_guard_s, "-") != 0) { // Vollie c3 (0004): VOLLIE_PIN_GUARD
++        len = snprintf(line, sizeof line, "c2-pin run=%s guard=%s warm=%d pool=%d", run, ggml_c2_guard_s, ggml_c2_warm_us, ggml_c2_thr_on);
++        for (int i = 0; i < nt && len < (int) sizeof line - 96; i++) {
++            int v[5] = {0}; int64_t us = 0;
++            for (int ph = 0; ph < 2; ph++) {
++                v[0] += ggml_c2_pin[i][ph].chk; v[1] += ggml_c2_pin[i][ph].mis; v[2] += ggml_c2_pin[i][ph].rec;
++                v[3] += ggml_c2_pin[i][ph].fail; v[4] += ggml_c2_pin[i][ph].endoff; us += ggml_c2_pin[i][ph].us;
++            }
++            len += snprintf(line + len, sizeof line - len, " w%d=%d:%d:%d:%d:%lld:%d", i, v[0], v[1], v[2], v[3], (long long) us, v[4]);
++        }
++        fprintf(stderr, "%s\n", line);
++    }
+     for (int ph = 0; ph < 2 && ggml_c2_sched; ph++) {
+         len = snprintf(line, sizeof line, "c2-sched run=%s phase=%s n=%d", run, ph ? "decode" : "prefill", ggml_c2_thr[0].ph[ph].ss);
+         for (int i = 0; i < nt && len < (int) sizeof line - 96; i++) {
+@@ -6262,6 +6337,9 @@ static void ggml_c2_thr_reset(void) {
+     const char * m = getenv("VOLLIE_CPUMASK"), * p = getenv("VOLLIE_POOL");
+     snprintf(ggml_c2_thr_mask, sizeof ggml_c2_thr_mask, "%s", m && *m ? m : "-");
+     ggml_c2_thr_on = p && atoi(p) == 1;
++    memset(ggml_c2_pin, 0, sizeof ggml_c2_pin); // Vollie c3 (0004)
++    const char * g = getenv("VOLLIE_PIN_GUARD");
++    snprintf(ggml_c2_guard_s, sizeof ggml_c2_guard_s, "%s", g && atoi(g) > 0 ? g : "-");
+     const char * n = getenv("VOLLIE_NICE"); // Vollie c2 (0012)
+     snprintf(ggml_c2_nice_s, sizeof ggml_c2_nice_s, "%s", n && *n ? n : "-");
+     ggml_c2_nice_restored[0] = ggml_c2_nice_restored[1] = 0;
+@@ -7493,6 +7571,9 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+         const char * ne = getenv("VOLLIE_NICE"); // Vollie c2 (0012)
+         ggml_c2_nice_on = ne && *ne;
+         ggml_c2_nice_want = ggml_c2_nice_on ? atoi(ne) : 0;
++        const char * ge = getenv("VOLLIE_PIN_GUARD"), * we = getenv("VOLLIE_PIN_WARM"); // Vollie c3 (0004)
++        ggml_c2_guard_us = ge ? atoi(ge) : 0;
++        ggml_c2_warm_us = we && atoi(we) > 0 ? atoi(we) : 0;
+ #if defined(__linux__)
+         for (int i = 0; i < GGML_C2_THR && !ggml_c2_nice_on; i++) {
+             struct ggml_c2_nice_slot * s = &ggml_c2_nice[i];

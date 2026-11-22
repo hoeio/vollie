@@ -1,10 +1,10 @@
 # Campaign 3: tabulates a c3 probe report (kit r29, "Save c3 probe to Downloads"; patches/llama.cpp-c3/0001-probe; and
 # 0002-d-rows: the per-block "hdr" lines (D3) and the "p2d" rows (D2); kit r32, 0003-r72-rows: the R72 rows a, l1, l4,
-# l2/l3, l5, l6, l7, anon and x2r / x2info, under "R72 rows").
+# l2/l3, l5, l6, l7, anon and x2r / x2info, under "R72 rows"; per-thread labels M / U / P / C on l1-l4, see thr_labels).
 # usage: python3 -I tools/c3_probe_parse.py <vollie-c3probe-r29-*.json>      python3 -I tools/c3_probe_parse.py --selftest
 # Every number it prints is *device* (from the phone's lines); the ratios are arithmetic on them. A cell whose workers did
 # not all stay on their cpu (cpu_ok < n) is marked '*' and should not be used for a claim.
-import json, re, statistics, sys
+import json, os, re, statistics, sys
 
 
 def kv(line):
@@ -57,6 +57,97 @@ def parse(rep):
 
 R32 = ('a', 'l1', 'l4', 'l4sum', 'l2', 'l3', 'l5', 'l6', 'l7', 'anon', 'x2r', 'x2info')
 
+# Four-way per-thread label (Ebony, R72 §11; replaces CPU / wall as the only check). One letter per condition met, in
+# this order; the first is the thread's label, none = C:
+#   M misplaced     on its pinned cpu in < 0.9 of the sched_getcpu checks (an affinity read-back is not in r33's lines)
+#   U under-clocked the pinned cpu's policy sampled below 0.9 x its hardware maximum (lowest sample of mhz_range against
+#                   cpuinfo_max_freq from max_mhz, else HW_MHZ); a lowered scaling_max_freq counts as under-clocked
+#   P pre-empted    involuntary switches > NIV_HI in the cell, or CPU / wall < 0.9
+#   C compute       none of the above
+# The thresholds are this parser's defaults (calibration knobs, not pre-registered): change them here and say so.
+HW_MHZ = {0: 1804, 4: 2419, 7: 2841}   # SD888 policies 0 / 4 / 7 (A55 / A78 / X1)
+ON_MIN, CLK_MIN, CW_MIN, NIV_HI = 0.9, 0.9, 0.9, 50
+
+
+def policy(cpu):
+    return 7 if cpu >= 7 else 4 if cpu >= 4 else 0
+
+
+def thr_labels(f):
+    """[(cpu, flags, cpu_over_wall, nivcsw, on_share or None)] for a line with thr=cpu:cw:niv:nv[:off/chk@last],..."""
+    hw = dict(HW_MHZ)
+    for t in (f.get('max_mhz') or '').split(','):
+        if t.startswith('p') and ':' in t:
+            p, v = t[1:].split(':', 1)
+            hw[int(p)] = int(v.split('/')[-1])
+    lo = {}
+    rng = f.get('mhz_range') or ''
+    if '..' in rng:
+        lo = dict(zip((0, 4, 7), (int(v) for v in rng.split('..')[0].split('/'))))
+    out = []
+    for t in f.get('thr', '').split(','):
+        x = t.split(':')
+        if len(x) < 4:
+            continue
+        cpu, cw, niv = int(x[0]), float(x[1]), int(x[2])
+        on = None
+        if len(x) >= 5 and '/' in x[4]:
+            off, chk = (int(v) for v in x[4].split('@')[0].split('/'))
+            on = (chk - off) / chk if chk > 0 else None
+        flags = ''
+        if on is not None and on < ON_MIN:
+            flags += 'M'
+        p = policy(cpu)
+        if p in lo and hw.get(p, 0) > 0 and lo[p] < CLK_MIN * hw[p]:
+            flags += 'U'
+        if niv > NIV_HI or 0 <= cw < CW_MIN:
+            flags += 'P'
+        out.append((cpu, flags, cw, niv, on))
+    return out
+
+
+def labelstr(f):
+    """'4:C,5:M,7:MU' (cpu:flags, C = compute)"""
+    return ','.join('%d:%s' % (c, fl or 'C') for c, fl, *_ in thr_labels(f))
+
+
+def labelled(rows):
+    return [dict(f, labels=labelstr(f)) if 'thr' in f else f for f in rows]
+
+
+def labelreport(r):
+    """thread counts by tag, pinned cpu and label; the l3 per-thread rates against a clean single-thread reference"""
+    cnt = {}
+    for tag in ('l1', 'l2', 'l3', 'l4'):
+        for k, f in r[tag]:
+            for c, fl, *_ in thr_labels(f):
+                key = (tag, c)
+                cnt.setdefault(key, {'M': 0, 'U': 0, 'P': 0, 'C': 0, 'n': 0})
+                cnt[key][(fl or 'C')[0]] += 1
+                cnt[key]['n'] += 1
+    if not cnt:
+        return []
+    L = ['\nPer-thread labels (first condition met: M misplaced, U under-clocked, P pre-empted, C compute; thresholds in the parser)',
+         '| tag | pinned cpu | threads | M | U | P | C |', '|---|---|---|---|---|---|---|']
+    for (tag, c), d in sorted(cnt.items()):
+        L.append('| %s | %d | %d | %d | %d | %d | %d |' % (tag, c, d['n'], d['M'], d['U'], d['P'], d['C']))
+    ref = {}
+    for k, f in r['l3']:
+        lab = thr_labels(f)
+        if len(lab) == 1 and not lab[0][1]:
+            ref.setdefault(policy(lab[0][0]), num(f['per_thread_gw_per_s'].split(':')[1]))
+    rows = []
+    for k, f in r['l3']:
+        lab = {c: fl or 'C' for c, fl, *_ in thr_labels(f)}
+        for t in f.get('per_thread_gw_per_s', '').split(','):
+            c, v = int(t.split(':')[0]), num(t.split(':')[1])
+            rf = ref.get(policy(c))
+            rows.append('| %s | %d | %s | %.3f | %s | %s |' % (f['set'], c, lab.get(c, '-'), v, '%.3f' % rf if rf else '-', '%.3f' % (v / rf) if rf else '-'))
+    if rows:
+        L += ['\nL3 per thread against its cluster reference (the first single-thread l3 cell labelled C on that cluster; - = none)',
+              '| set | cpu | label | G weights/s | reference | ratio |', '|---|---|---|---|---|---|'] + rows
+    return L
+
 
 def table(L, rows, cols):
     """markdown table of the given fields; '*' after a cell whose workers left their cpu"""
@@ -82,7 +173,7 @@ def r32report(r):
     cells = [f for k, f in r['l1'] if k != 'identity' and 'kern' in f]
     if cells:
         L.append('\nL1: k = ns per touched weight / stock (mean of before and after), same shape, regime and cpu')
-        table(L, cells, ['k_in', 'regime', 'cpu', 'kern', 'keep', 'd', 'k', 't_vs_stock', 'gbs', 'drift', 'cpu_ok', 'mhz_range'])
+        table(L, labelled(cells), ['k_in', 'regime', 'cpu', 'kern', 'keep', 'd', 'k', 't_vs_stock', 'gbs', 'drift', 'cpu_ok', 'labels', 'mhz_range'])
         by = {}
         for f in cells:
             by[(f['k_in'], f['regime'], f['cpu'], f['keep'], f['kern'])] = num(f['k'])
@@ -96,12 +187,13 @@ def r32report(r):
         L.append('  l4 identity %s keep %s: k1=%s k1m=%s (layer %s MB, rule reads %s MB)' % (f['subj'], f['keep'], f['k1'], f['k1m'], f['layer_mb'], f['rule_layer_mb']))
     if r['l4sum']:
         L.append('\nL4 (ABBA means; body_ms = ms per layer x layers)')
+        table(L, labelled([f for k, f in r['l4'] if 'arm' in f and f.get('arm') != 'ggml_stock']), ['subj', 'arm', 'pos', 'set', 'ms_per_layer', 'cpu_ok', 'labels', 'mhz_range', 'max_mhz'])
         table(L, [f for k, f in r['l4sum']], ['subj', 'set', 't_stock', 't_k1', 't_k1m', 'k1_vs_stock', 'k1m_vs_stock', 'body_ms_stock', 'body_ms_k1', 'body_ms_k1m'])
         table(L, [f for k, f in r['l4'] if f.get('arm') == 'ggml_stock'], ['subj', 'arm', 'buft', 'set', 'ms_per_layer', 'body_ms', 'gbs', 'proc_cpu_over_wall', 'proc_nivcsw'])
     if r['l2'] or r['l3']:
         L.append('\nL2 read rate and L3 compute ceiling (thr = cpu:cpu_time/wall:involuntary:voluntary switches)')
-        table(L, [f for k, f in r['l2']], ['kern', 'set', 'gbs', 'ns_per_w', 'cpu_ok', 'thr', 'proc_cpu_over_wall', 'mhz_range'])
-        table(L, [f for k, f in r['l3']], ['set', 'gw_per_s', 'per_thread_gw_per_s', 'cpu_ok', 'thr', 'mhz_range'])
+        table(L, labelled([f for k, f in r['l2']]), ['kern', 'set', 'gbs', 'ns_per_w', 'cpu_ok', 'labels', 'thr', 'proc_cpu_over_wall', 'mhz_range'])
+        table(L, labelled([f for k, f in r['l3']]), ['set', 'gw_per_s', 'per_thread_gw_per_s', 'cpu_ok', 'labels', 'thr', 'mhz_range'])
     if r['l5']:
         L.append('\nL5 per-type gemv (ratio = ns per weight / Q4_0 pass 1, same k_in, regime and set)')
         q = {(f['k_in'], f['regime'], f['set']): num(f['ns_per_w']) for k, f in r['l5'] if f.get('type') == 'q4_0' and f.get('pass') == '1'}
@@ -130,6 +222,7 @@ def r32report(r):
             g = [num(f['gbs']) for f in fs]; mf = [int(f['majflt']) for f in fs]
             L.append('| %s | %d | %.2f | %.2f | %d | %d | %s | %s | %s |' % (n, len(fs), statistics.median(g), statistics.median(g[-5:]), sum(mf), sum(mf[-5:]),
                      fs[-1]['vmrss'], fs[-1]['vmswap'], fs[-1]['swapfree']))
+    L += labelreport(r)
     return L
 
 
@@ -289,6 +382,28 @@ def selftest():
     assert '| p2d | memory | some | 1.50 | 0.80 | 0.20 | 12345 |' in r and '| p2d | cpu | e13 |' in r, r
     assert '| 4096 | hot | 4 | 0.600 | - | 0.800 |' in r and '| q6_K | 1 | 4096 | hot | 4 | 64 | CPU | 0.1500 | 1.500 |' in r, r
     assert '| 3.4 | 2 | 18.00 | 18.00 | 5 | 5 | 3400000 | 0 | 2 |' in r and 'l1 identity k_in=4096 keep=0.60: k1=1 k1m=1 k1m4=1' in r, r
+    # four-way label: 4 clean; 7 off-core, X1 at its floor, 60 involuntary switches; 5 CPU / wall 0.85; old 4-field thr
+    t = {'thr': '4:0.995:2:0:0/100@-1,7:0.990:60:0:100/100@2,5:0.850:0:0:0/10@-1', 'max_mhz': 'p4:2419/2419,p7:2841/2841',
+         'mhz_range': '1804/2419/844..1804/2419/844,n=3'}
+    assert labelstr(t) == '4:C,7:MUP,5:P', labelstr(t)
+    assert labelstr({'thr': '4:1.000:0:0', 'max_mhz': 'p4:1555/2419', 'mhz_range': '1/1555/1..1/1555/1,n=1'}) == '4:U'
+    assert '| l1 | 4 | 2 | 0 | 0 | 0 | 2 |' in r, r
+    # against the R72 device file (R72-result.md §2): 67 of 84 L1 cells on cpu 7 off-core, 17 clean; the cpu-7 thread
+    # off-core in all 18 L4 arms on 7,4,5 and in the pos 0 stock arm of 4-7 for each subject (21 of 36); every L3 cell with
+    # cpu 7; the L1 11008 hot stock_before cell on cpu 4
+    j = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'campaigns', '03-dense15-5pct', 'reports', 'device',
+                     'r72-c3probe-r33-2026-11-22T1759.json')
+    if os.path.exists(j):
+        q = parse(json.load(open(j)))['r32']
+        def first(tag, cpu, kern=None):
+            return [lab for k, f in q[tag] if 'thr' in f and (kern is None or f.get('kern') == kern)
+                    for c, fl, *_ in thr_labels(f) if c == cpu for lab in [(fl or 'C')[0]]]
+        l1_7, l4_7, l1_4 = first('l1', 7), first('l4', 7), first('l1', 4)
+        assert (len(l1_7), l1_7.count('M'), l1_7.count('C')) == (84, 67, 17), (len(l1_7), l1_7.count('M'))
+        assert (len(l4_7), l4_7.count('M')) == (36, 21) and l1_4.count('M') == 1 and set(first('l3', 7)) == {'M'}
+        arms = [f for k, f in q['l4'] if 'thr' in f and f.get('set') == '7,4,5']
+        assert len(arms) == 18 and all('M' in dict((c, fl) for c, fl, *_ in thr_labels(f))[7] for f in arms)
+        print('selftest r72 ok')
     print('selftest ok')
 
 
