@@ -309,3 +309,266 @@ the phone order of memo-09 §10.10; T2 gains one arm.
 - Repository: `lab/llama.cpp-base/src/llama-kv-cache.cpp`, `src/llama-context.cpp`,
   `examples/speculative/speculative.cpp`, `ggml/src/ggml-cpu/ggml-cpu.c` (base `620d2225c`);
   `docs/negative-results.md` and `reports/02_methods.md` (R20, R18, EAGLE-3 on the host).
+
+## Ebony review
+
+Date: 2026-11-22. Reviewer: Ebony (`claude-fable-5-2`). Appended, not committed. §1 to §10 above are Bonnie's and
+are unchanged; the header's "Ebony has not reviewed this" was true until this section. Labels: *host* = this
+laptop (Apple M4 Pro), relative only; *estimated* = arithmetic or an instruction count; *published* = a paper's
+number. Nothing here is a phone number. Work files (untracked):
+[memo-10-work/ebony_gw.c](memo-10-work/ebony_gw.c) (a W-position Q4_0 kernel that unpacks each weight block once),
+[memo-10-work/ebony_reprice.py](memo-10-work/ebony_reprice.py) (her model with c(W) swapped; asserts her 7.94 / 7.79
+/ 7.38 and 9.82 / 9.49 / 9.25 first).
+
+### E1. Verdict
+
+- **Her verdict stands: the best width is 2, and no width or stack reaches 12 on any subject at the centre.** With
+  my inputs the best centre stack is **9.3 / 9.1 / 8.8** tok/s (Yi / Llama-2 / DeepSeek), gated 9.7 / 9.3 / 9.1.
+- **The attack on c(W) fails. An unpack-once kernel does not make the extra position cheap**, because the unpack
+  is the small part of a Q4_0 gemv. Counted on the compiled kernel, the marginal position costs **0.52** of a stock
+  gemv (hers: 0.45), constant from width 2 to 8. The M4 gives 0.42 to 0.49 (*host*). A marginal cost of 0.15 is
+  not reachable with exact output: 8 SDOT per 128 weights per position alone are 0.26 to 0.32 of a stock gemv.
+- One opening remains, for width 2 only: if the A78 runs the stock kernel below its issue limit (R72 says it is
+  not issue-bound on K1), the first extra position could cost as little as 0.19. That is a bound, not a centre.
+  Even there no stack reaches 12 at the centre (10.4 to 10.8 / 10.1 to 10.5 / 9.8 to 10.2), and width 3 still
+  needs top-1 of 0.60.
+- **The draft-layer what-if reaches 12 on Yi only** at the centre (12.0 / 10.7 / 10.8 at top-1 0.75 with her
+  inputs; 11.4 / 10.2 / 10.3 with mine). It is a draft model, not a guess head (E5), and it cannot be trained to
+  its published accuracy on the laptop.
+- **P(all three at 12): about 0.002 to 0.003** (my judgement; hers 0.002). Agreed.
+
+### E2. kB(W): the unpack-once split (her §2, §9 items 1 and 2)
+
+**What I built to count it.** `ebony_gw.c`: the stock 4x4 gemv's block loop with the four `shl` and four `and`
+done once per weight block, the weight scales converted once, and then, per position, the stock sequence (8 SDOT
+into one sum, SCVTF, FMUL, FMLA) in the stock order. The activation scales are converted to float once per call
+(exact).
+
+- **Identity (*host*):** every position's output equals the stock gemv's on the same input, by `memcmp`, at widths
+  1, 2, 3, 4, 6 and 8 (256 rows × 4,096 columns, random weights and activations). This is not Tom's T10; it shows
+  only that the split keeps the per-column operation order.
+- **A78 issue count (*estimated*):** NDK r28 clang, `-O3 -mcpu=cortex-a78`, counted with `tools/c3_a78_pipes.py`
+  (SCVTF and FCVTL as two V0 cycles, as in memo-08):
+
+  | kernel | V0 / V1 / either, per 128 weights | slots | floor, cycles | against stock |
+  |---|---|---|---|---|
+  | stock 4x4 gemv | 6 / 4 / 15 | 25 | 12.5 | 1.00 (Tom's count, reproduced) |
+  | W = 1 | 4 / 4 / 15 | 23 | 11.5 | 0.92 |
+  | W = 2 | 6 / 4 / 26 | 36 | 18.0 | **1.44** |
+  | W = 3 | 8 / 4 / 37 | 49 | 24.5 | 1.96 |
+  | W = 4 | 10 / 4 / 48 | 62 | 31.0 | 2.48 |
+  | W = 6 | 14 / 4 / 71 | 89 | 44.5 | 3.56 |
+  | W = 8 | 18 / 4 / 94 | 116 | 58.0 | 4.64 |
+
+  - The split: **10 slots shared** (8 unpack, 2 for the weight-scale FCVTL) and **13 per position** (8 SDOT, the
+    zeroing MOVI, SCVTF at 2, FMUL, FMLA). The unpack is 8 of the stock kernel's 25 slots. The dot products and
+    the float step, which no sharing removes, are 13.
+  - Every width binds on the total, not on V0 or V1, so the line is straight: c(W) = (10 + 13 W) ÷ 25.
+- **M4 timing (*host*, hot, one thread, best of 5):** stock 0.0105 ns per weight; W = 1 to 8 at 0.94, 1.42, 1.93,
+  2.43, 3.43, 4.43 × stock. Marginal position 0.42 to 0.49. A core with four vector pipes shows the same split, so
+  the X1 will not differ in kind.
+- **§9 item 1, linear to 8: yes.** Register pressure does not bind: only the 8 unpacked vectors and one float
+  accumulator per position live across a block (16 registers at width 8); the activations and the integer sum are
+  temporaries. A 4- or 8-row block does nothing for the per-position cost, which is fixed by 8 SDOT per 128
+  weights.
+- **Against the device rate.** The A78 measured 0.118 cycles per weight, 15.1 cycles per block, against the floor
+  of 12.5 (*device* rate, *estimated* floor). Two readings of the 2.6 cycles in between:
+  - they scale with the work: c(2) = 1.44, marginal 0.52 (**my centre**; it equals her 1.45 at width 2 and is
+    dearer above);
+  - they are slack that a second, independent SDOT chain can fill, so width 2 runs at its own floor:
+    c(2) = 18 ÷ 15.1 = **1.19**, and every later position adds 6.5 cycles, 0.43. This is the lower bound.
+  - I cannot choose between them from the data we have. R72's K1m miss (the pipe model predicted 0.79, the
+    phone gave 0.983) says the A78 is not issue-bound on that kernel, which makes the second reading possible. One
+    hot single-thread cell at widths 1 to 4 decides it in seconds (T2 below).
+
+**Re-priced** (her model, only c(W) changed; printed tok/s, Yi / Llama-2 / DeepSeek; *estimated*):
+
+| c(W) | c at W = 2, 3, 4, 8 | kB at C 40: W = 2, 3, 4 | best width alone, C 40 | centre stack, her inputs | centre stack, my inputs | top of every band |
+|---|---|---|---|---|---|---|
+| Bonnie, 1 + 0.45 (W − 1) | 1.45, 1.90, 2.35, 4.15 | 1.12, 1.41, 1.69 | 2: 7.94 / 7.79 / 7.38 | 2: 9.82 / 9.49 / 9.25 | 2: 9.27 / 8.99 / 8.77 | 2: 11.25 / 10.93 / 10.57 |
+| **count, (10 + 13 W) ÷ 25** | 1.44, 1.96, 2.48, 4.64 | 1.12, 1.45, 1.77 | 2: 7.98 / 7.83 / 7.42 | 2: 9.87 / 9.55 / 9.30 | **2: 9.32 / 9.05 / 8.81** | 2: 11.28 / 10.96 / 10.59 |
+| lower bound, 1.19 then + 0.43 | 1.19, 1.62, 2.05, 3.77 | 1.03, 1.23, 1.50 | 2: 8.55 / 8.42 / 7.93 | 2: 10.81 / 10.49 / 10.17 | 2: 10.36 / 10.10 / 9.78 | 11.99 / 11.74 (W 3) / 11.24 |
+| what-if 0.30 flat | 1.30, 1.60, 1.90, 3.10 | 1.05, 1.22, 1.41 | 2: 8.43 / 8.30 / 7.82 | 2: 10.56 / 10.23 / 9.93 | 2: 10.09 / 9.82 / 9.53 | 11.65 / 11.79 / 11.04 |
+| what-if 0.15 flat (**not reachable**) | 1.15, 1.30, 1.45, 2.05 | 1.02, 1.05, 1.12 | 3: 8.96 / 9.29 / 8.45 | 3: 11.19 / 11.42 / 10.72 | 3: 10.71 / 10.97 / 10.30 | 12.47 / 12.61 / 11.78 |
+
+- Per width, alone at C 40, with the count: 7.98 / 7.83 / 7.42 (W 2), 6.83 / 7.00 / 6.51 (W 3), 6.00 / 6.10 / 5.71
+  (W 4), 4.77 / 4.85 / 4.59 (W 6), 3.98 / 4.05 / 3.84 (W 8). Widths 6 and 8 are slower than stock, as she says.
+- "Compute overtakes the bus at 1.75 positions": **agreed** with the count (1.77 at C 40); 2.3 on the lower bound.
+- Even the 0.15 row, which the count rules out, gives no subject at 12 at the centre. **Cheaper positions are
+  not what is missing; accepted tokens are.** Width 3 beats width 2 at head top-1 of 0.55 / 0.75 / 0.76 with the
+  count (C 50 / 40 / 35) and 0.17 / 0.60 / 0.74 on the lower bound. Tom measured 0.379 and 0.497 (*host*).
+- **§9 item 2, the centre C: I hold kB(2) = 1.15, a small split.** The three body times in her script come from
+  the `4-7` arms of R72 L4, and those ran with the A78 cap at 1,555 to 1,785 MHz on all three subjects. A batch of
+  two priced against those bodies belongs at the same clocks, C about 35, where kB(2) is 1.22. C 40 prices the
+  second position at better clocks than the stock time it is divided by. T2 decides; the difference between 1.12
+  and 1.15 is 0.15 tok/s.
+- A by-product, not a lever: width 1 of this kernel is 0.92 (count) and 0.94 (*host*) of the stock gemv's
+  compute, exact. Stock is bus-bound, so this is worth under 1 ms per token.
+
+### E3. Top-k from the Medusa post (her §4, §9 items 3 and 4)
+
+- **The transfer is weak, and the conclusion does not depend on it.** It is one blog sentence, in-domain, for a
+  different head, carried by one log-odds step. But sibling shapes need the second-ranked guess to be right in 0.20
+  to 0.30 of passes. With top-1 at 0.38 to 0.50, the second rank would have to hold a third to a half of all the
+  remaining mass. Her 0.09 could be 0.15 and nothing changes. T7 is a count on existing dumps and settles it.
+- One caution for T7: it must rank the **head's** outputs. The top-64 logits stored in Tom's dumps are the model's
+  own for that row, not the head's guess for the next one.
+- **§9 item 3, a published per-head top-k table: not found.**
+  - Medusa: none in the paper (memo-09 §10.5).
+  - Hydra (arXiv 2402.05109v2, fetched): no per-head accuracy. Acceptance length only in figures; "up to 0.46
+    tokens" over Medusa from making heads depend on the earlier candidates.
+  - Beagle (arXiv 2505.24544v4, fetched): per-position acceptance only as figures.
+- **§9 item 4, depth 2 for a block-size head: not found.** The only numbers are for a full layer. EAGLE Table 2
+  (*published*, MT-bench, temperature 0): Vicuna-7B 0.79, 0.74, 0.72, 0.73, 0.67; **Llama-2-chat-7B 0.76, 0.69,
+  0.67, 0.68, 0.68**. Depth 2 given depth 1 is about 0.92 × the first. EAGLE-3 says EAGLE's rate "drops
+  significantly" with more self-predicted inputs on Llama-3.1-8B (text; the values are in a figure). Hydra's
+  premise is that independent heads lose accuracy with depth. Her band of 0.7 to 1.15 × is fair; I would centre it
+  at 0.85 for a second independent head. T9 measures it.
+
+### E4. A guesser between the block and the layer (her §9 item 5)
+
+Nothing found that trains at laptop data scale. Everything published sits at ShareGPT scale or above:
+
+| method | draft | training | result | read |
+|---|---|---|---|---|
+| EAGLE (2401.15077v3) | FC + one decoder layer, 0.24 B | ShareGPT, about 68,000 dialogues; "an RTX 3090 node in 1 to 2 days" (the repository says 8 × RTX 3090) | Llama-2-chat-7B tau 3.62, first-token 0.76 | fetched |
+| Hydra++ (2402.05109v2) | 4-layer MLP heads + one extra decoder layer | ShareGPT, 8 × A100-80GB, 10 epochs | 1.27 × Medusa's throughput at 7B | fetched |
+| Beagle (2505.24544v4) | one cross-attention block + MLP, "fewer parameters than EAGLE" (no count) | ShareGPT, over 60,000 dialogues; one 24 GB GPU is enough for a 7B target | tau 4.1 against EAGLE-2's 4.0 (Vicuna-7B, MT-bench) | fetched |
+| EAGLE-3 (2503.01840) | one decoder layer, multi-level features | ShareGPT + UltraChat (about 532,000 entries), answers regenerated by the target | gains with data where EAGLE does not (figures only) | fetched |
+| SpecForge (2603.18567) | EAGLE-3 trainer | 8 × H200; 1.4 M conversations; tau 2.82 → 3.48 on Math500 from 5 × the data | no Llama-2, Yi or DeepSeek-LLM draft | fetched |
+| FastEagle (2509.20416), SpecVocab (2602.13836) | one-pass cascaded drafter; a shortlist for the draft's output head (+8.1 % over EAGLE-3) | – | – | search summary only |
+
+- Tom's head has 36 M parameters and overfits (training top-1 0.78 against 0.33 held out). **Data is his limit,
+  not the block's size.** A bigger guesser on the same 0.3 to 0.4 M rows is not the next step.
+- A cheaper way to more rows, as T12: teacher-forced dumps of fixed chat text at `-b 512` instead of greedy
+  generation. Keep the rows where the text's next token equals the model's greedy token; the label is the next
+  row's greedy token. EAGLE reports a fixed dataset costs little against regenerated answers (2.78 × against
+  2.88 ×, *published*). Tom's slope is +0.04 (Llama-2) and +0.02 (Yi) per doubling, so two doublings would put
+  Llama-2 near 0.57 and Yi near 0.42 (*estimated*). It moves Llama-2 over 0.50 and leaves Yi short.
+
+### E5. The EAGLE-size draft layer (her §6 item 1)
+
+**Phone cost per draft step** (*estimated*; hers is one body layer plus the shortlist):
+
+| part | Yi | Llama-2 | DeepSeek |
+|---|---|---|---|
+| one decoder layer = body ÷ layers (32 / 32 / 30) | 3.77 | 4.39 | 4.36 |
+| the input FC, 2 × 4,096 → 4,096, 33.5 M weights, as Tom's block | 0.73 | 0.73 | 0.73 |
+| 8,192-row shortlist of the served head | 1.16 | 1.13 | 1.11 |
+| **per draft step** | **5.7** | **6.2** | **6.2 ms** |
+
+- She left out the FC (0.7 ms). Also not priced by either of us: the layer must pass over every committed token's
+  true feature to keep its own KV (one batched call per pass, about +0.5 to 1 ms), and a draft file in Q8_0 would
+  double the layer's read.
+- **Memory.** 0.236 B weights in Q4_0 are 0.13 GB, read on every pass. R69 measured 4.2 GB of file-backed
+  capacity (*device*). Llama-2 and DeepSeek would stand at 4.15 and 4.14 GB with it.
+- **Re-priced** (chain, depth 2 at 0.92 × the first, d 0.90; best width; printed tok/s):
+
+  | first-token top-1 | c(W) | centre stack, her inputs | centre stack, my inputs | top of every band |
+  |---|---|---|---|---|
+  | 0.60 | count | 2: 11.12 / 9.89 / 10.01 | 2: 10.51 / 9.38 / 9.50 | 2: 12.65 / 11.31 / 11.35 |
+  | 0.75 | count | 2: **12.04** / 10.74 / 10.82 | 2: 11.38 / 10.19 / 10.27 | 3: 13.84 / 12.36 / 12.32 |
+  | 0.75 | lower bound | 3: 13.25 / 11.82 / 11.82 | 2: 12.61 / 11.34 / 11.35 | 3: 15.77 / 14.17 / 13.97 |
+
+  Her table is reproduced within 0.1 at the centre; at 0.75 with every band at its top mine is 0.6 to 0.7 lower. **All three pass 12 only with every band at its top**, as she found.
+  At the centre Yi alone passes, and only with her inputs or on the lower bound.
+- **Does the published acceptance hold for our subjects?**
+  - Llama-2-chat-7B is one of EAGLE's own targets: 0.76 first token, tau 3.62 (*published*, fp16 model, MT-bench).
+    Official weights exist (`yuhuili/EAGLE-llama2-chat-7B`, 0.24 B). So for one subject the number can be
+    **measured** on our Q4_0 file and prompt set without training (T13). I expect 0.65 to 0.75 there (judgement):
+    the prompts are Dolly, the model is quantised, and the test is the greedy token.
+  - Yi-1.5-6B-Chat and DeepSeek-LLM-7B-chat: no published draft of any kind found (EAGLE's and EAGLE-3's lists
+    read; `EAGLE3-DeepSeek-R1-Distill-LLaMA-8B` is a different model). They would have to be trained.
+- **Training cost on the M4 Pro (*estimated*):**
+  - Data: about 68,000 dialogues. At 1,000 to 2,000 tokens each that is 70 to 140 M positions (my arithmetic; the
+    paper gives no token count), 150 to 300 × Tom's largest set.
+  - Features: at Tom's 118 to 135 rows per second, 6 to 14 days per model for one pass; stored at 8 KB a row, 0.5
+    to 1.1 TB. The laptop was at 0.2 GB free this week.
+  - Training: 1 to 2 days on a node of RTX 3090s. If the M4 Pro is a quarter of one 3090 (judgement, not
+    measured), that is weeks per model, for two or three models.
+  - **Not a laptop job.** A laptop-sized run (1 to 2 M rows) is possible in a day or two. Its accuracy is unknown;
+    my guess is 0.45 to 0.60, since Tom's block overfits on that much data already.
+- **Is it a "guess head"? My reading: no, it is a draft model**, and it goes to the owner before any work.
+  - The owner allowed option 3 of memo-09, recorded as "a small next-token guess head". This is a transformer
+    layer with attention and its own KV state, called once per draft depth. It has 3.4 to 3.9 % of the subject's
+    parameters (Tom's block: 0.5 %).
+  - That is the class campaign 1 measured in R20 (*device*, 0.48 to 0.76 × the plain rate) and that
+    `reports/02_methods.md` row 10 lists as lost on the host with EAGLE-3. Bonnie is right that the loss reason
+    there (the union of experts) does not carry to a dense model. The classification does.
+  - R69's Rule B scored KILL for a drafted second token, with an inside line of a match rate under 0.4 on any
+    subject. Tom's Yi head is at 0.379 (*host*), under that line as written. Memo-09 §10.6 asked the lead to write
+    the reopening and its line before T2 runs on the phone; that still stands, for the head as well as for a layer.
+  - The published Llama-2 weights are a third party's file: usable for a host measurement, but "a different file
+    or model is proposed to the owner first" applies to shipping them.
+- **I do not propose it either.** P(first-token top-1 of 0.75 or more on all three with training we can afford):
+  0.02. And at 0.75 the centre is still 10.2 to 10.8 on the two MHA subjects.
+
+### E6. The gate (her §9 item 6) and smaller points
+
+- **Agreed: a threshold fitted on the training text is a calibration-derived value.** The 2026-11-19 decision
+  names thresholds. It belongs in the head's sidecar header with the shas, from the committed script. Output stays
+  exact, so the check is greedy identity, not PPL. The lead confirms.
+- The gate's gain rests on an assumed Beta distribution. T8 replaces it; until then −2 to −6 ms is a guess.
+- §3 (mask, rollback, unified KV): read and agreed. T10 is the right check.
+- §5.4, P(width 2 delivers its centre alone) 0.30: I say 0.25, for the clocks argument in E2.
+
+### E7. Verdicts
+
+| item | Bonnie | Ebony | verdict |
+|---|---|---|---|
+| marginal position, exact kernel | 0.45 (0.30 to 0.60), linear | 0.52 by count, 0.42 to 0.49 *host*; lower bound 0.19 for the first, 0.43 after | **agreed**; the 0.15 hypothesis is closed by the count |
+| compute overtakes the bus at | 1.75 positions (C 40) | 1.77; 2.3 on the lower bound | **agreed** |
+| centre kB(2) | 1.12 (C 40) | 1.15; bodies were measured at caps | **split**, small; T2 |
+| best width | 2 | 2 on every c(W) the count allows | **agreed** |
+| top-k transfer | +0.98 log-odds, top-2 gain 0.09 | weak source, conclusion insensitive | **agreed**; T7 |
+| depth 2 conditional | 1.0 × top-1 (0.7 to 1.15) | 0.85 × for an independent head; 0.92 × *published* for a layer | **agreed band** |
+| draft layer, cost per step | 3.8 to 4.4 ms + shortlist | 5.7 / 6.2 / 6.2 ms | **split**, +1 ms |
+| draft layer, rule | the lead's question | a draft model; the owner's question; Rule B's line unwritten | **split** on who decides |
+| gate as a calibration value | yes | yes | **agreed** |
+| any width or stack at 12 on all three, centre | no | no | **agreed** |
+| P(all three at 12) | 0.002 | 0.002 to 0.003 | **agreed** |
+
+### E8. Merged lists for Tom (through the lead)
+
+**Tests** (T7 to T11 are hers, unchanged unless marked +):
+
+| # | test | where | cost | closes when |
+|---|---|---|---|---|
+| T7 | Top-k of the head on the prompt-set dumps. **+** rank the head's outputs, not the stored model logits | host | a few lines | top-2 − top-1 < 0.20 on both → sibling shapes closed |
+| T8 | Confidence histogram and gate thresholds | host | same script | best threshold gains under 1.5 % at kB 1.12 and 1.23 → gate not built |
+| T10 | Tree identity at batches of 3, 4, 8 with sibling sequence ids and `seq_rm`. **+** an arm on the W-position kernel once it is in the tree (`ebony_gw.c` is a starting point and is exact on random data only) | host | minutes | any difference → not exact as built |
+| T2 | Device kB cell. **+** build the kernel with the width as a parameter. **+** hot single-thread cells on cpu 4 at full clock, widths 1 to 4: this is c(W) itself. **+** 60 s arms at widths 1, 2, 3 on `4-7` at subject shapes, with caps and placement logged | device, model-free | one kernel; about 8 phone-minutes | hot c(2) ≥ 1.35 → the count holds and width 3 is closed whatever the head; hot c(2) ≤ 1.25 → re-price on the lower bound (width 2 gains about 0.6 tok/s, width 3 then needs top-1 0.60 at C 40); sustained kB(2) > 1.20 → her line |
+| T9 | Depth-2 head | host | minutes per model | **only if** T2 gives c(2) ≤ 1.25 **or** a head passes 0.55; otherwise width 3 is closed without it |
+| T11 | DeepSeek head | host | about 1 hour | replaces an estimate |
+| T12 | **+** Teacher-forced dumps of fixed chat text at `-b 512` (E4), two more doublings of pairs, same head | host | rows per second to be measured first; hours | Yi under 0.45 at 1.2 M pairs → Yi's head stays where it is; reports the slope either way |
+| T13 | **+** Optional: the published EAGLE layer for Llama-2-chat-7B on Tom's prompt-set dumps (first-token and depth-2 top-1 against the Q4_0 greedy token). Check first that its input feature is the post-norm state Tom stored | host; a download of about 0.5 GB, the lead's call | 1 to 2 hours | under 0.65 → the 0.75 what-if row is dropped. It cannot open the goal: at 0.75 Llama-2 prices 10.2 to 10.7 at the centre |
+
+**Try list** (build only after its test; env-gated, off by default, model-generic, two subjects):
+
+| # | lever | after | label | price alone at the centre (Yi / Llama-2 / DeepSeek) | P |
+|---|---|---|---|---|---|
+| Y1 + Y5 | Width 2 with the trained head and the W-position kernel | T2, T10; the lead's written Rule B reopening | bit-identical output | Bonnie (C 40): −17.9 / −31.1 / −24.0 ms → 7.94 / 7.79 / 7.38. Ebony (C 38.6): −16.2 / −29.2 / −22.1 → 7.82 / 7.67 / 7.27; at the caps (C 35): −9.3 / −21.8 / −14.9 → 7.40 / 7.24 / 6.90 | 0.30 / 0.25 |
+| Y6 | Confidence gate on Y1 | T8 | bit-identical output; threshold in the sidecar | −2 to −6 ms (hers; the distribution is assumed) | 0.5 given Y1 |
+| Y7 | Width 3, chain of 2 | T2 at c(2) ≤ 1.25, then T9 | bit-identical output | a loss of 14 to 20 ms against Y1 with the count (hers: 11 to 16) | 0.05; 0.03 mine |
+| Y8 | Widths 4 to 8 | not proposed | – | a loss at every c(W) the count allows | under 0.01 |
+| Y9 | A55 cores for the second position | Y1 on the device | bit-identical output | −5 ms at best | 0.05 |
+| Y10 | Draft layer (EAGLE-size) | **not proposed**; an owner question first (E5) | bit-identical output; a 0.13 GB sidecar | what-if at top-1 0.75: centre stack 12.0 / 10.7 / 10.8 (her inputs), 11.4 / 10.2 / 10.3 (mine) | 0.02 that 0.75 is reached on all three |
+
+Order: T7, T8, T10 now, as she proposes. T12 before T9 and T11 (it changes what the heads are). T2's hot cells
+ride in the kit that carries the kB cell. Nothing changes the phone order of memo-09 §10.10.
+
+### E9. Sources of this review (read 2026-11-22) and limits
+
+- EAGLE, arXiv 2401.15077v3 (fetched; Tables 2, 5, 6): <https://arxiv.org/html/2401.15077v3>
+- EAGLE-3, arXiv 2503.01840 (fetched; acceptance and data-scale values are in figures only): <https://arxiv.org/html/2503.01840>
+- EAGLE repository (fetched; weight lists, "within 1-2 days ... on 8x RTX 3090"): <https://github.com/SafeAILab/EAGLE>
+- Hydra, arXiv 2402.05109v2 (fetched): <https://arxiv.org/html/2402.05109v2>
+- Beagle, arXiv 2505.24544v4 (fetched): <https://arxiv.org/html/2505.24544v4>
+- SpecForge, arXiv 2603.18567 (fetched): <https://arxiv.org/html/2603.18567>
+- FastEagle, arXiv 2509.20416; SpecVocab, arXiv 2602.13836 (search summaries only).
+- Repository: `lab/llama.cpp-base/ggml/src/ggml-cpu/arch/arm/repack.cpp` lines 230 to 289 (the stock gemv),
+  `tools/c3_a78_pipes.py`, memo-08-work `tom-k1.md` §3 and `bonnie-path.md` §10.2, R72-result.md, R69 amendment 1.
+
+Limits: the web pages were read through a summarising fetch, not line by line. The A78 numbers are an issue
+count, not a simulation or a measurement; the SDOT chain latency on the A78 was not looked up. The M4 timing is
+one run on a busy laptop. The kernel is a scratch file, checked on random data, not in the tree. No device run.
