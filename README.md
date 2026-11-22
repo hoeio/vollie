@@ -10,8 +10,8 @@ log of every measurement. The work is organised as **campaigns**, each with its 
 | # | goal | status |
 |---|---|---|
 | 1 | 20 tok/s on a Snapdragon 888 phone, one frozen Granite-4.0-H-Tiny file, perplexity budget +2 % | **done**: median **20.51 tok/s** (*device*, R49). Frozen at commit `686f17d`. Described on this page |
-| 2 | 25 tok/s on the same phone, a 7B-class model, budget +5 % | **in progress**: device rounds R52 to R68; 25 tok/s **not claimed**. Latest: OLMoE-1B-7B scored runs median 25.03 tok/s with the pinned pool (*device*, R67, not a claim; 4 of 8 runs at or above 25.0); R68 sessions A and B are in (claim-format rehearsal, power saving off): OLMoE num + touch median 27.25 tok/s with the deep-sleeping list on, 25.47 with it off (*device*, rehearsal, not a claim), go rule missed; session R (campaign 1 and stock references) pending. State: [STATUS.md](campaigns/02-25toks-5pct/STATUS.md), goal: [campaigns/02-25toks-5pct/](campaigns/02-25toks-5pct/CAMPAIGN.md) |
-| 3 | 15 tok/s on the same phone, a **dense** 7B-class model (Mistral-7B-Instruct-v0.3, Qwen2.5-7B-Instruct), file not changed, budget +5 % | **research**: host screens done (memo-02, *host*); first device round R69 (probe: read rate, compute ceiling, residency, GPU) pre-registered, not run. The arithmetic puts 15 tok/s out of reach (*estimated*, memo-01). State: [STATUS.md](campaigns/03-dense15-5pct/STATUS.md), goal: [campaigns/03-dense15-5pct/](campaigns/03-dense15-5pct/CAMPAIGN.md) |
+| 2 | 25 tok/s on the same phone, a 7B-class model, budget +5 % | **closed (owner, 2026-11-21)**: goal met on OLMoE-1B-7B, not on Granite-4.0-H-Tiny. OLMoE b5 num + touch median **27.21 tok/s**, 1 of 10 runs below 25.0 (*device*, R70; power saving off, deep-sleeping list on, warm start); Granite num 23.21 tok/s, 10 of 10 below 25.0 (*device*). Result: [CAMPAIGN.md](campaigns/02-25toks-5pct/CAMPAIGN.md), state: [STATUS.md](campaigns/02-25toks-5pct/STATUS.md) |
+| 3 | 15 tok/s (first goal) on the same phone, a **dense** 7B-class model, file not changed, budget +5 % | **research, under Amendment 1 (owner, 2026-11-21)**: 12 tok/s on **each** of three dense 7B-class models of different families, all three must pass, budget +5 %, file not changed. Subjects: Yi-1.5-6B-Chat, Llama-2-7b-chat, DeepSeek-LLM-7B-chat (reserves Mistral-7B-Instruct-v0.3, Qwen2.5-7B-Instruct). R69 (probe, no model) is scored: no void; r 28.56 GB/s and c_b 24.46 GB/s at reduced clocks (*device*); no subject reaches 12 with the priced CPU levers (*estimated*). R72 (probe, kit r33) ran all ten blocks on 2026-11-22; scoring pending. State: [STATUS.md](campaigns/03-dense15-5pct/STATUS.md), goal: [campaigns/03-dense15-5pct/](campaigns/03-dense15-5pct/CAMPAIGN.md) |
 
 **[Vollie](https://play.google.com/store/apps/details?id=com.insaneutils.vollie) is the Android app that runs
 this work, so you can reproduce the result on your own phone.** The app's source code is not in this repository.
@@ -145,7 +145,7 @@ GGML_TINY_OP=262144 GGML_EXPERT_IO=5 llama-cli -m model.gguf -t 3 ...
 |---|---|
 | [docs/](docs/README.md) | overview, findings, levers, negative results, knobs, glossary, and [how to run it on your phone](docs/run-on-your-phone.md) |
 | [reports/](reports/README.md) | readable index of the research log, with a one-line verdict per R-number |
-| [campaigns/](campaigns/README.md) | the campaign index, rules shared by every campaign, and campaign 2's goal, status, feasibility, candidates, pre-registrations and digest of campaign 1 |
+| [campaigns/](campaigns/README.md) | the campaign index, rules shared by every campaign, and the goal, status, pre-registrations and logs of campaigns 2 and 3 |
 | [CLAUDE.md](CLAUDE.md) | hand-off for a new session: reading order, rules, who does what |
 | [RULES.md](RULES.md) | campaign 1's rules: the conditions every change must meet |
 | [reports/03_final.md](reports/03_final.md) | the original R-log, R1 to R49, with pre-registrations and verdicts |
@@ -173,6 +173,7 @@ cites as `lab/...` are not in this repository.
   progress with pre-registered device rounds (second model OLMoE-1B-7B, stock non-abliterated Granite); best
   medians so far are 19.70 tok/s on OLMoE (21.03 when the file was resident before the run) and 17.19 on
   Granite (*device*, R58). Its goal of 25 tok/s is not reached.
+  *Correction 2026-11-22: campaign 2 closed on 2026-11-21 with the goal met on OLMoE-1B-7B (27.21 tok/s, *device*, R70) and not on Granite (23.21 tok/s, *device*); the sentence above and the "in progress" wording describe the state at campaign 1's close. Campaign 3 is the further step toward other models.*
 - **The metric.** The printed number is llamadart's `decodeTokensPerSec`. Its time includes one final
   decode whose logits are never used, ≈ 3 % of the official number (*estimated*, R48). It was left in, so
   the benchmark's definition did not change.
