@@ -1,0 +1,4 @@
+campaign,r_number,date,model,model_sha256,device,build,label,change,ppl,ppl_vs_stock_pct,tok_s,ms_per_token,notes
+3,R69,2026-11-22,none (probe, no model),,Galaxy Z Flip 3 SD888,kit r29 probe,device,"run 1 (16:46, scored): r q4x4 X1 + 2 A78 28.56 GB/s; c_b 24.46 GB/s; C 4.2 GB file-backed; S 1.575",,,,,"clocks low (1 of 26 cells at full clocks); no void; A KILL, B KILL, C in between, D open; 7 of 16 bands inside; JSON db4985af4ca7"
+3,R69,2026-11-22,none (probe, no model),,Galaxy Z Flip 3 SD888,kit r29 probe,device,"run 2 (17:05, cooled, descriptive only): r 31.30 GB/s; c_b 27.22 GB/s; C 4.2 GB; S 1.507",,,,,"does not replace run 1; verdicts unchanged; JSON 2818b23c5cf0"
+3,R72,2026-11-22,none (probe; Yi-1.5-6B, Llama-2-7B, DeepSeek-LLM-7B shapes),,Galaxy Z Flip 3 SD888,kit r33 probe (runtime = r32),device,"attempt 2: all ten blocks ran; scoring pending",,,,,"attempt 1 (kit r32) no block ran, kit bug, not scored, not a void; JSON cbc332ddc487"
