@@ -43,6 +43,46 @@ R69 amendment 1 committed before any R69 data (owner to tag). Next:
    outcome. D1 (design in `patches/app-c3/README.md`) lacks chosen served campaign-3 Q4_0 files: proposal to the
    owner, which file per model, URL and sha256 (the Qwen2.5 lab file is a two-part split).
 
+## Current state and next actions (appended 2026-11-22, end of day; supersedes the blocks above where they differ)
+
+*Added by Annie from git (`787b651..55453a7`); the earlier blocks stay as history.*
+
+**State.** S3 freeze is running on the owner's laptop since 2026-11-22 22:46 (`tools/c3_freeze.sh`, one subject per call, in the order
+Yi, Llama-2, DeepSeek; DeepSeek is served unmodified, owner 2026-11-22, no BOS change). **Device rounds are held by the owner:**
+R73 does not run until there is a real breakthrough; a device test is proposed only for a lever whose progress is certain on host
+evidence, named in its pre-registration. Host research, host checks and the freeze continue. Served files may go to the public HF
+repo `HoeioUser/vollie3` after the freeze checks pass and when a round needs them.
+
+**Where the numbers stand (all *estimated* from *device* inputs, or researcher judgement).** R72 K0: 6.81 / 5.88 / 5.84 tok/s
+(Yi / Llama-2 / DeepSeek), gaps +60.4 / +82.3 / +83.3 ms to the 79.2 ms printed for 12 tok/s. Every priced route is closed or below 12.
+Best priced stacks: memo-10 9.8 / 9.5 / 9.3 tok/s (Ebony's inputs 9.3 / 9.0 / 8.8); memo-09's 11.7 / 10.6 / 10.6 needs a GPU kernel
+that does not exist and a trained head whose measured top-1 is below the value assumed (memo-10), so about 9 to 10 is the range.
+P(all three at 12): about 0.002 to 0.003 (judgement: memo-09 Ebony 0.003, memo-10 Bonnie 0.002, memo-11 Bonnie 0.005,
+memo-11 Ebony 0.002 to 0.003).
+
+**Closed levers (with source).**
+- K1m / k1m4 (R72, L1x 0.983); K1 parked on all three subjects as built (R72).
+- Lever M (trained guess head) as written: top-1 Yi 0.379, Llama-2 0.497 against the 0.50 line (*host*, memo-09-work/tom-head.md).
+  The head is still the best single guess source measured (tokens per pass 1.33 and 1.45, *host*); allowed by owner 2026-11-22.
+- Retrieval store of the model's own outputs (memo-11 exotic, *host* data); layer-skip self-speculation (memo-11 exotic, by price).
+- LUT kernels and runtime re-encode of the frozen weights (U2, *host*, contended: faithful 2-bit k 0.84 to 0.96, 3-bit 1.21 to 1.34
+  against the k <= 0.5 that memo-11 bytes requires; A78 issue count agrees, *estimated*).
+- Skipping and low-rank (layer skip, FFN skip, dynamic depth, low rank: at most 3 to 5 % of bytes inside the budget, memo-11 bytes).
+- A55 lane and the CPU-alone bus lift (memo-11 exotic; a single processor stays near 0.6 of nominal bandwidth).
+- Wider verify trees: width 2 is best on all three, no width reaches 12 (memo-10).
+
+**Open.**
+- GPU lane (R72 joint reading: a perfect lane on stock bytes 11.3 / 10.5 / 10.0 tok/s, *estimated*). The unknown only the phone can
+  answer is the Adreno Q4_0 gemv rate; the upstream kernel cross-compiles for arm64 at our base (*host*, not run anywhere), the x3
+  probe is a design only (memo-09-work/tom-host.md), kill at g < 7 GB/s (R72 result). Held until the owner allows a device round.
+- Prefix-exit ring (memo-11 exotic, test E-T3, host): beats the head only if top-1 gains 0.07 or more; cannot reach 12 alone.
+
+**Next actions.**
+1. Let the S3 freeze finish (about 12 to 21 h serial, *estimated*, memo-10-work/clyde-freeze.md); record the results when the logs arrive.
+2. Host test E-T3 and remaining host tests from memo-11; no device request until a breakthrough.
+3. Owner to tag `prereg-R72` (tags are the owner's).
+4. The R73 plan stays a draft (memo-10-work/clyde-r73-plan.md).
+
 ## Open owner decisions
 
 Collected here; the owner asked not to be asked until the R68 JSON arrives.
@@ -95,3 +135,4 @@ Collected here; the owner asked not to be asked until the R68 JSON arrives.
 | 2026-11-22 | 5 (annie) | Fix: Tom's kit r33 (app patch 0003; 12 of 13 native libraries byte-identical to r32, only `libapp.so` differs) and `prereg/R72-amendment-1.md` (`dc19d32`) before the r33 upload; APK `vollie-c3-probe-r33.apk` sha256 1917aa4c...db7c uploaded to HF `r33/` on 2026-11-22. R72 run received (`37129fc`, `device/r72-c3probe-r33-2026-11-22T1759.json`, sha256 cbc332dd...; app 1.33.0+33; all ten blocks ran, power saving off, charger out, deep-sleeping list on per commit message). Scoring pending: the lead writes reports/R72-result.md. Open: owner to tag `prereg-R72` (tags are the owner's). |
 | 2026-11-22 | 5 (clyde) | R72 scored (reports/R72-result.md; JSON `cbc332dd…`, `37129fc`; kit r33, all ten blocks ran, no void; owner to confirm the r33 APK sha). 14 of 26 bands inside. K1m and k1m4 closed (L1x 0.983). The K1 lever is parked on all three subjects as built (4-7: 0.960 / 0.948 / 0.987), and it is slower than ggml stock on every subject. Fourth core adopted (0.863 / 0.694 / 0.667), with a caveat: the cpu-7-pinned thread ran on small cores in most cells, and the A78 cap was 1,555 to 1,785 MHz in L4. K0 (*estimated*): 6.81 / 5.88 / 5.84 tok/s, gaps +60.4 / +82.3 / +83.3 ms, so out of reach with the K1 family and the 4th core. Type filter: Q4_0 stays. anon34 held, anon42 not: only Yi can hold a repacked body. GPU read sum 46.5 GB/s reproduced; the `x2r` build failed with err -6. Joint reading by Bonnie and Ebony: a perfect GPU lane on stock bytes gives 11.3 / 10.5 / 10.0; P(all three) about 0.001 to 0.01. Next: S3 freeze, then R73 real stock decode on Yi and Llama-2 with placement logging; then a GPU probe with the upstream Adreno Q4_0 gemv (kill at g < 7 GB/s). Not committed. |
 | 2026-11-22 | 5 (clyde) | Next steps after R72 prepared (not committed): reports/memo-10-work/clyde-freeze.md and new `tools/c3_freeze.sh` (S3 freeze per subject on the laptop: pinned download into `lab/c3/dl/<m>`, F16 re-made, re-quantised Q4_0 must equal the kept file byte for byte, DeepSeek BOS field, full wikitext-2 PPL F16 `-b 512`, served `-b 512` and `-ub 1`; F16 `-ub 1` optional because the ceiling cannot bind; about 12 to 21 h serial, about 28 GB peak, *estimated*). Trap found: `general.name` comes from the download directory, so the 2026-11-22 DeepSeek re-prep (`deepseek7b-r`) gave a different F16 and Q4_0 than the kept file. reports/memo-10-work/clyde-r73-plan.md: R73 = first stock decode on Yi, Llama-2, DeepSeek (kit r34, 4 threads on 4-7, nCtx 512, ABBA guard 0004 off/on, logging K-a to K-j incl. affinity read-back, caps vs hardware max, thermal, core_ctl, devfreq/THP = T6); draft K0 check ±10 % of 6.90 / 6.21 / 6.22; fixed prompt set adopted (`eval.txt` ff1f32e3…); served files to a new public HF repo `HoeioUser/vollie3` (owner question F3); Rule B reopened with Ebony's joint line in coverage form G = (1 + p) ÷ (c × kB_eff + 1 − c) < 1.05 on any subject, guess source f by max-min (L lives only if device kB_eff ≤ 1.075); M closed as written by T5 (Yi 0.379, Llama-2 0.497 < 0.50). Owner questions F1 (DeepSeek BOS), F2 (F16 `-ub 1` optional), F3 (hosting). |
+| 2026-11-22 | 5 (annie) | Books catch-up from git (`787b651..55453a7`): R72 scored (`78a959e`; results.csv row updated from "scoring pending"); memo-09 and Ebony §10 (`0e31a8e`, `568dd5a`); owner decision on trained heads (`ef37c35`); T5/T1/T1b host (`80f993d`); GPU, guard and label host work (`0087ab1`); memo-10 and Ebony review (`ee652e6`, `f20b2dc`); freeze script and R73 plan (`73b1cf9`); owner decisions 2026-11-22 (`7cfb0f9`: DeepSeek unmodified, vollie3 allowed, R73 held); memo-11 bytes (`9c269fa`), exotic (`c8a4c98`); U2 LUT closed (`55453a7`). Memo index extended; new state block above. |
