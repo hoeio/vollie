@@ -177,3 +177,26 @@ Collected here; the owner asked not to be asked until the R68 JSON arrives.
 | 2026-11-22 | 5 (annie) | Books catch-up from git (`787b651..55453a7`): R72 scored (`78a959e`; results.csv row updated from "scoring pending"); memo-09 and Ebony §10 (`0e31a8e`, `568dd5a`); owner decision on trained heads (`ef37c35`); T5/T1/T1b host (`80f993d`); GPU, guard and label host work (`0087ab1`); memo-10 and Ebony review (`ee652e6`, `f20b2dc`); freeze script and R73 plan (`73b1cf9`); owner decisions 2026-11-22 (`7cfb0f9`: DeepSeek unmodified, vollie3 allowed, R73 held); memo-11 bytes (`9c269fa`), exotic (`c8a4c98`); U2 LUT closed (`55453a7`). Memo index extended; new state block above. |
 | 2026-11-23 | 6 (clyde) | S3 freeze results recorded (*host*; all three inside budget). R74 scored (R74-result.md): no void, GPU lane OPEN on all three (g_cold 17.5 / 18.3 / 18.3 GB/s, CPU+GPU 1.611x, *device*); dispatch 452 µs binds; P_G 7.86 / 7.39 / 7.30, stack 9.55 / 9.50 / 9.26 tok/s (*estimated*); 10 of 28 bands inside; verdict unchanged. Next: host numerics check and a join-cost lane design. |
 | 2026-11-23 | 6 (annie) | Books from git (`cd5660d..2517042`) and number audit. R74 audit: every number in R74-result §1 to §6 reproduces from the raw JSON (`384bc4b5…`, sha confirmed) and `bonnie_tree.py` (g_cold 17.53 / 18.33, lane 0.621, g_eff 24.8, P_G 7.86 / 7.39 / 7.30, stack 9.55 / 9.50 / 9.26, 10 of 28 bands inside); results.csv S3 freeze rows match `lab/c3/logs/freeze-*.log` (budgets, ceilings, ratios) and the R74 row matches. One note appended to R74-result.md: the K0 gaps +60.4 / +82.3 / +83.3 and "about 1.2 tok/s" use R72's K1 body while P_G uses the ggml body; on the same base the lift is +0.96 / +1.18 / +1.08 tok/s (*estimated*); no verdict changes. Memo index: R74 prereg and result, the two device JSONs, memo-12-work, R75 pending. Hand-offs recorded above (`70adc9b`, `8bbabb7`, `2517042`): Tom numerics check (patch 0006) and Tom kit r35 build (patches 0007 and app 0005) running; lead owes the R75 pre-registration; owner owes the HF token and a true 30 min cool start. |
+
+## Hand-offs and open items (appended 2026-11-23 evening by Annie from git `3461e19..2588f40`; supersedes the block of the same name above where they differ)
+
+*Corrections to the block above: open hand-offs 2 (Tom, kit r35) and 3 (lead, R75 pre-registration) are done. Hand-off 1 (Tom, numerics check, patch 0006) is still running: the files `0006-x3-emu.patch`, `tools/c3_x3emu_check.c`, `bonnie_pack_time.c` and `ebony_hmax.py` are uncommitted in the working tree and are not yet books.*
+
+**State.** R75 is pre-registered and not run. Nothing in R75 is measured.
+
+**Landed (all 2026-11-23).**
+- `a4117fc`, `fe621aa` (Bonnie r7, r8): packed side file design, file-backed KleidiAI buffer keyed on the served sha; buffer 3.38 / 3.77 / 3.84 GB and side file 2.22 / 2.43 / 2.57 GB at share 0.37 (*estimated*); Q6_K head +22 % (*estimated*). Bonnie r8 flags that S3 stock PPL was measured on ggml's repack path, while the phone serves the KleidiAI path (head re-quantised to int8).
+- `b4b9168` (Tom): kit r35 final rebuild. APK `465d97bb7932fc4c9b7c675e1b3e2b78536466f9dec3442d4b8c59405f558af5` supersedes `e961ecf`'s `089ab530...4c62`.
+- `2588f40` (lead): R75 pre-registration, `prereg/R75-x4-gpu-join-probe-device.md`.
+
+**Owner decisions in chat, 2026-11-23.** x4m stays in R75 (owner: "x4m도 넣어도 됩니다"; translated: x4m may go in too). The Hugging Face token the owner pasted was rejected by HF as invalid; no token is written in any file.
+
+**Audit (Annie, 2026-11-23).** Every sha256 in R75 prereg §0 matches `shasum -a 256` of the file in `lab/dist-c3/r35/`, `patches/` and `tools/`, and of libllama.so, libvollie_x4c.so and libggml-cpu-android_armv8.2_2.so unzipped from the APK into a scratch directory outside the repo (APK, BUILD-r35.txt, SHA256SUMS, 0007, app 0005, c3_x4child.c, three libraries: 9 of 9). APK size 16,621,998 B matches. SHA256SUMS lists the APK and BUILD file hashes as stated. No mismatch; the prereg was not edited.
+
+**Next actions.**
+1. Owner: create tag `prereg-R75` on `2588f40`.
+2. Owner: upload `lab/dist-c3/r35/` (APK, `BUILD-r35.txt`, `SHA256SUMS`) to `HoeioUser/vollie-kits` as `r35/`, either with a new valid write token (given per session, never stored) or by uploading the three files directly.
+3. Owner: run R75 per prereg §8 with a true 30 minute cool start and no other probe first; confirm the APK sha256 `465d97bb...f8af5` on the phone side before the run.
+4. Open owner question (Bonnie r8): which path defines "stock" PPL, ggml's repack path (S3 as measured) or the phone's KleidiAI path? Bonnie r9 is reading the campaign terms.
+5. Tom: numerics report for patch 0006 (`reports/memo-12-work/tom-numerics.md`); Annie commits the patch and tool with it.
+| 2026-11-23 | 7 (annie) | Books from git (`3461e19..2588f40`): Bonnie r7, r8, kit r35 final rebuild (`b4b9168`, APK `465d97bb...f8af5`), R75 pre-registration (`2588f40`). Audit: all 9 sha256 in R75 prereg §0 match the files and the libraries unzipped from the APK (scratch dir); no mismatch, prereg not edited. Owner decisions: x4m stays in R75; the pasted HF token was rejected as invalid, so the r35 upload is pending. Open: tag prereg-R75, upload, owner run with 30 min cool start, "stock PPL path" question (repack vs KleidiAI). Memo index updated. |
