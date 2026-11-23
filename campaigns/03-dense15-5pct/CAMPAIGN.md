@@ -133,3 +133,11 @@ R73's number: **R74** (R73 stays reserved for the held first real decode). Scope
 device cells listed in `reports/memo-12-work/bonnie-joins.md` §5 and `ebony-joins.md` §7.1). The X4 join probe may run
 on the phone as a second exception to the device hold: **R75**, kit r35. Scope is the GPU lane's launch and join cost
 (and its residency at a larger GPU share); no model is loaded. R73 stays reserved for the held first real decode.
+
+*Owner decision 2026-11-23 (later):* "(a)안 그대로 적용하세요. host 실행 허락합니다." (in answer to the lead's report of
+`reports/memo-12-work/bonnie-joins-r9.md` §1). Campaign 2's option (a) (owner, 2026-11-15, R61) carries over to
+campaign 3: the budgets stay the absolute values in `results.csv` from the S3 freeze (host build without KleidiAI);
+stock is measured a second time on a host build with KleidiAI (the phone's Q4_0 path), and both references are
+printed side by side; a numerics setting must be at or below same-build stock × 1.05 at both batch settings and at or
+below the existing absolute budget. A stock shift between the two builds is a recorded fact, not a budget event. The
+lead may run the KleidiAI-build stock runs on the owner's laptop (label *host*); the run plan is r9 §3.
