@@ -152,3 +152,13 @@ way: the overhead was 3 times the centre.
 
 *Note 2026-11-23 (lead): the owner confirmed that the downloaded r34 APK's sha256 matched `2b0a2929…81de`. The APK void
 is not triggered on the owner's check either.*
+
+*Note 2026-11-23 (Annie, number audit; appended, the text above is not changed).* Every number in §1 to §6 was
+re-derived from the raw JSON (`384bc4b5…`) and the committed scripts (`python3 -I`); all reproduce. One comparison
+needs its basis stated. The K0 figures in §4 "Reading" and §7 (6.81 / 5.88 / 5.84 tok/s, gaps +60.4 / +82.3 / +83.3 ms)
+come from R72-result §5, which uses the K1 body (122.53 / 149.06 / 140.66 ms). P_G and the prices above use the ggml
+stock body (120.6 / 140.6 / 130.8 ms), as the prereg §5 inputs say. On the same ggml base K0 is 6.90 / 6.21 / 6.22 tok/s
+(gaps +58.5 / +73.8 / +73.5 ms, *estimated*), so the lane lifts K0 by +0.96 / +1.18 / +1.08 tok/s and narrows the gap
+by 16.8 / 24.4 / 22.5 ms. Against R72's K0 the lifts are +1.05 / +1.51 / +1.46 tok/s and the narrowing 19 to 33 ms, as
+written above. The sentence "about 1.2 tok/s per subject" fits neither exactly (about 1.0 to 1.5). P_G, the stack
+prices, the gaps to 79.2 ms (79.17) and the verdict are unaffected. The lead decides whether to reword.
