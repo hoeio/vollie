@@ -20,12 +20,14 @@
    line reference is the F32 function; the Q4_0 call goes through `compute_forward_qx`, with the same result.
    Two, three and four columns cost the same. CPU alone at two columns: **14.1 GB/s** (12.2 to 16.5); P(under 19)
    0.90.
-2. **My sum line (38.5 / 35.5) cannot be read on the cell as built. Her GPU-ratio line can, with one change and
-   one caveat.** Change: when the CPU alone at two columns reads under 19, the `bonnie` reading is the GPU ratio
+2. **My sum line (38.5 / 35.5) cannot be read on the cell as built. Her GPU-ratio line can, with two changes and
+   one caveat.** (Second change, §2.5: earlier *device* cells put the ratio's ceiling at 0.952, so `pair` reads
+   at ≥ 0.93, not ≥ 0.95. The same cells refute my rigid model; my floor is now a `linear` variant, 0.3 tok/s
+   under hers at K 300 instead of 0.7.) Change: when the CPU alone at two columns reads under 19, the `bonnie` reading is the GPU ratio
    ≤ 0.90 alone (the sum-ratio half of her rule cannot be met: my own model gives 0.905 there). Caveat: the tile
    makes the CPU draw 14 GB/s of bus, not the 20 to 22 a lane would draw, so the cell leans towards `pair`.
 3. **Cheapest change to the cell: one mixed arm, CPU at one column beside the GPU's `_mc3` at four columns.** No
-   new kernel. `both_cpu_gbs` there against the one-column cell: 0.98 in my model, 1.28 in hers.
+   new kernel. `both_cpu_gbs` there against the one-column cell: 1.12 in my `linear` model, 1.28 in hers.
 4. **The W-position CPU kernel is now a build item of any width-2 lane**, not an option (agreed with Ebony). Stock
    ggml at batch 2 costs the CPU more than two separate gemvs.
 5. **A share that follows the clock cap is worth +0.24 to +0.45 tok/s per 5 GB/s of cap mismatch** and costs 0.16
@@ -67,7 +69,7 @@ the union. "field" is the printed field in the patch as of 19:15; **none** = no 
 | x4r held / killed | 0.35 / 0.10 | 0.25 / 0.15 | 0.25 to 0.35 / 0.10 to 0.15 | `x4 res sum`, `x4 res done`; killed = no `x4r end` |
 | hand-off: no-call variant correct / best ≤ 20 µs and correct | 0.55 | 0.60 / 0.50 | 0.55 to 0.60 / 0.50 | `x4 handoff mode=ahp_persist match=`; `extra_us=` |
 | together: CPU alone at 2 columns reads under 19 GB/s | **0.90** | 0.65 | 0.65 to 0.90 | `x4 tog2sum cpu_alone_gbs=` |
-| together: the line reads `pair` / undecided / `bonnie` | 0.60 / 0.20 / 0.20 | 0.50 / 0.25 / 0.25 | 0.50 to 0.60 / 0.20 to 0.25 / 0.20 to 0.25 | derived from `x4 tog2sum` (§2.3) |
+| together: the line reads `pair` / undecided / `bonnie` | 0.50 / 0.30 / 0.20 (with my 0.93 / 0.89 lines, §2.5) | 0.50 / 0.25 / 0.25 (her 0.95 / 0.90) | 0.50 / 0.25 to 0.30 / 0.20 to 0.25 | derived from `x4 tog2sum` (§2.3) |
 
 ### 1.2 Cells
 
@@ -103,7 +105,7 @@ the union. "field" is the printed field in the patch as of 19:15; **none** = no 
 | x4s lead: best ratio over 0.20 to 0.60; best share | 0.73; 0.70–0.79. 0.50 (0.78) | 0.72; 0.67–0.79. 0.50 (0.60) | 0.72 to 0.73; 0.67–0.79. 0.50 | `x4 splitsum mode=lead` |
 | x4s lead, share 0.20 / 0.35 ratio | 0.92 / 0.82; 0.88–0.96 / 0.79–0.86 | = | = | same |
 | x4s share 0.50: `gpu_ms`; `gpu_dev_ms`; `wait_ms`; `enq_us` | 1.29; 0.985; 0.04; 65 | =; 1.03 (0.92–1.10); 0.08 (0.02–0.25); = | 1.29 (1.15–1.42); 0.985 / 1.03 (0.90–1.10); 0.04 / 0.08 (0–0.25); 65 (35–125) | `x4 split` |
-| x4s share 0.55: ratio; `gpu_ms`; `wait_ms`; `gpu_dev_ms` | 0.78; 1.38; 0.21; 1.08 | =; =; =; 1.13 | 0.78 (0.72–0.84); 1.38 (1.28–1.46); 0.21 (0.11–0.29); 1.08 / 1.13 (0.98–1.22) | `x4 split share=0.55` (the 18:55 note stops at 0.50) |
+| x4s share 0.55: ratio; `gpu_ms`; `wait_ms`; `gpu_dev_ms` | 0.78; 1.38; 0.21; 1.08 | =; =; =; 1.13 | 0.78 (0.72–0.84); 1.38 (1.28–1.46); 0.21 (0.11–0.29); 1.08 / 1.13 (0.98–1.22) | `x4 split share=0.55` |
 | x4s share 0.60: the same four | 0.83; 1.48; 0.39; 1.18 | =; =; =; 1.23 | 0.83 (0.77–0.90); 1.48 (1.38–1.56); 0.39 (0.29–0.47); 1.18 / 1.23 (1.07–1.33) | `x4 split share=0.60` |
 | x4s in-situ K = `gpu_ms` − `gpu_dev_ms`, GPU-bound share | 300; 200–380 | 290; 170–400 | 290 / 300; 170–400 | derived |
 | x4s GPU device-time rate beside the CPU, best share | 25.7 | 24.6; 22.5–27.5 | 24.6 / 25.7; 22.5–27.5 | `gpu_rows` × 4096 × 0.5625 B ÷ `gpu_dev_ms` |
@@ -117,10 +119,10 @@ the union. "field" is the printed field in the patch as of 19:15; **none** = no 
 | together, 2 columns: `both_cpu_gbs` | **13.7; 11.7–16.0** (was 19.5) | 15.0; 12.5–22.0 | 13.7 / 15.0; 11.7–22.0 | `x4 tog2sum both_cpu_gbs=` |
 | together, 2 columns: `both_gpu_gbs` | 18.5; 13.5–21.5 | 18.6; 13.5–22.0 | 18.6; 13.5–22.0 | `x4 tog2sum both_gpu_gbs=` |
 | together, 2 columns: sum | **32.5; 27.5–36.5** (was 37.0) | 33.5; 28.0–41.0 | 32.5 / 33.5; 27.5–41.0 | `x4 tog2sum sum_gbs=` |
-| together, 2 columns: GPU both ÷ GPU alone (**the model line**) | 0.95; 0.85–1.00 | 0.94; 0.85–1.00 | 0.95; 0.85–1.00. Models: `bonnie` 0.87, `pair` 1.00 | `both_gpu_gbs` ÷ `gpu_alone_gbs`; cross-check `gpu_alone_dev_us` ÷ `both_gpu_dev_us` |
+| together, 2 columns: GPU both ÷ GPU alone (**the model line**) | **0.92; 0.85–0.96** (ceiling 0.952, §2.5) | 0.94; 0.85–1.00 | 0.92 / 0.94; 0.85–1.00. Models: carried-over 0.87, `pair` 0.95 | `both_gpu_gbs` ÷ `gpu_alone_gbs`; cross-check `gpu_alone_dev_us` ÷ `both_gpu_dev_us` |
 | together, 2 columns: sum ratio (both ÷ alone) | 0.95; 0.88–1.00 | 0.95; 0.85–1.00 | 0.95; 0.85–1.00. Models at c 2.5: 0.905, 0.988 | `sum_gbs` ÷ (`cpu_alone_gbs` + `gpu_alone_gbs`) |
 | together, 2 columns: `sum_vs_cpu_alone` as printed (÷ CPU alone at **two** columns) | 2.30; 1.9–2.8 | not given | mine only. It is not r4's 1.44 row, which divided by the one-column CPU | `x4 tog2sum sum_vs_cpu_alone=` |
-| mixed arm, if built (§2.4): `both_cpu_gbs` at (CPU 1, GPU 4 columns) ÷ at (1, 1) | 1.15; 0.97–1.30 | not seen by her | mine only. Models: 0.98, 1.28 | **none** (arm not in the kit) |
+| mixed arm, if built (§2.4): `both_cpu_gbs` at (CPU 1, GPU 4 columns) ÷ at (1, 1) | 1.15; 1.02–1.30 | not seen by her | mine only. Models: rigid 0.98, `linear` 1.12, `pair` 1.28 | **none** (arm not in the kit) |
 
 Lines that go with the table: cg lines in r3 §1.2 (print the `pair` column with 60 µs slack); the model line in
 §2.3 here (it replaces r4 §1.1); design kill and build values in r2 §2.3 with Ebony's B.4 changes (mailbox line
@@ -188,8 +190,8 @@ hand-off.
 
 | reading at two columns, four rates from the same block | says |
 |---|---|
-| GPU both ÷ GPU alone ≥ 0.95, or sum ratio ≥ 0.94 | `pair` |
-| GPU ratio ≤ 0.90; and sum ratio ≤ 0.89 **only if the CPU alone at two columns reads ≥ 19** | `bonnie` |
+| GPU both ÷ GPU alone ≥ 0.95 (hers) or ≥ 0.93 (mine, §2.5), or sum ratio ≥ 0.94 | `pair` |
+| GPU ratio ≤ 0.90 (hers) or ≤ 0.89 (mine); and sum ratio ≤ 0.89 **only if the CPU alone at two columns reads ≥ 19** | carried-over contention (`bonnie` / `linear`) |
 | between | undecided; print both stack columns |
 
 - **Change 1.** With the tile, my own model gives a sum ratio of 0.905, so her "and" could never read `bonnie`.
@@ -215,8 +217,8 @@ swapped. About 3 s of phone time for an ABBA pair.
 | (1, 3), cg 1.6 | 19.4 / 24.2 | 0.99 / 1.23 | 0.87 / 1.00 |
 | **(1, 4), cg 1.95** | **19.4 / 25.2** | **0.98 / 1.28** | 0.87 / 1.00 |
 
-- **Line:** CPU ratio ≥ 1.15 → the bus is conserved (`pair`); ≤ 1.05 → the CPU keeps its one-column share
-  (`bonnie`). R74's two `both` arms differed by 2.7 % (*device*), so 1.05 is outside noise.
+- **Line (superseded by §2.5 item 4):** CPU ratio ≥ 1.20 → `pair`; 1.05 to 1.20 → `linear`; under 1.05 → rigid.
+  R74's two `both` arms differed by 2.7 % (*device*), so the steps are outside noise.
 - It reads nothing if x4m shows `dev_ratio(4)` under about 1.3 (the GPU is then not slowed enough to free bus).
   P of that: 0.10.
 - The arm brackets the lane from the heavy side (CPU draw 25), the tile cell from the light side (14). The lane
@@ -228,6 +230,40 @@ swapped. About 3 s of phone time for an ABBA pair.
 - **Free in the cell as built:** the CPU-alone arm at two columns is the first *device* value of ggml's batch-2
   cost. If Tom's arm takes ne1 as a parameter, one CPU-alone arm at ne1 = 4 checks the reading (same rate as at
   2, within 5 %).
+
+### 2.5 Two device cells we already hold bound both models (found after §2.2 to §2.4 were written)
+
+R69 and R72 ran the CPU's q4x4 kernel on 4-6 beside two GPU kernels (`x1gpu`, *device*, three runs):
+
+| GPU kernel beside the CPU | GPU alone | GPU beside | GPU ratio | CPU beside (alone 30.09) |
+|---|---|---|---|---|
+| `read` (draws the bus) | 30.86 / 31.41 / 31.14 | 26.19 / 26.13 / 25.81 | 0.849 / 0.832 / 0.829 | 21.20 / 21.21 / 20.70 |
+| `q4` (compute-bound, draws 1.8 GB/s) | 1.88 / 1.88 / 1.88 | 1.79 / 1.79 / 1.79 | **0.952** three times | 30.04 / 29.98 / 30.35 |
+
+1. **My rigid `bonnie` variant is wrong at the low end:** beside a GPU that draws almost nothing the CPU loses
+   nothing. The CPU's loss depends on the GPU's draw. What is not known is the shape between the two points.
+2. **`pair`'s GPU ratio of 1.00 is too high:** a GPU kernel that needs almost no bus still lost 4.8 % beside the
+   CPU, three times out of three. So the ceiling of the GPU ratio is about 0.95, and Ebony's `pair` line "≥ 0.95"
+   sits on it. **I propose ≥ 0.93 for `pair` and ≤ 0.89 for the carried-over contention** (models: 0.87 and 0.95).
+3. **A third variant, `linear`** (`bonnie_joins_r5.py` part 4): the CPU's bus share falls in proportion to the
+   GPU's draw, through the two measured points. It replaces rigid `bonnie` as my floor. `pair` is the other end
+   (the CPU keeps everything the GPU does not take).
+
+   | K µs | `bonnie` (rigid, r3) | `linear` | `pair` |
+   |---|---|---|---|
+   | 0 | 13.31 / 12.96 / 12.42 | 14.24 / 13.90 / 13.25 | 14.89 / 14.57 / 13.84 |
+   | 150 | 12.13 / 11.93 / 11.48 | 12.78 / 12.61 / 12.10 | 13.22 / 13.09 / 12.52 |
+   | 300 | 11.15 / 11.05 / 10.68 | 11.59 / 11.54 / 11.13 | 11.89 / 11.88 / 11.43 |
+   | 452 | 10.60 / 10.46 / 10.15 | 10.91 / 10.83 / 10.48 | 11.12 / 11.08 / 10.71 |
+
+   (W 2, GPU at 19.5 GB/s beside the CPU, C 40, every unbuilt lever at centre; *estimated*.) K for 12.00 in
+   `linear`: 245 / 233 / 164 µs. **The gap between my floor and her model at K 300 shrinks from 0.7 to 0.3 tok/s.**
+4. **The mixed arm now separates `linear` from `pair`,** which the tile cell cannot (both leave a compute-bound
+   CPU alone). At (CPU 1, GPU 4 columns): rigid 0.98, `linear` 1.12, `pair` 1.28. **Line: ≥ 1.20 `pair`; 1.05 to
+   1.20 `linear`; under 1.05 contradicts the x1gpu cells and would need explaining.** At (1, 2) the two differ by
+   0.04 only, so the arm must use four columns (or three).
+5. Limits: x1gpu ran three threads and the probe's own kernel, R74 four threads through ggml; the 0.952 is one
+   kernel at one draw.
 
 ## 3. Item 2: do the rows map to printed fields? (patch of 19:15, build note of 19:19)
 
@@ -401,8 +437,7 @@ buffers.
    And its real A78 cost against the 1.44 count. Every width-2 price hangs on it (§2.1 item 3).
 3. **Does the phone really pick the dotprod entry?** One log line (`kleidiai: primary q4 kernel feature`) in the
    next kit's header. If it were the i8mm entry, the gemm is a different kernel and §2.1's count does not apply.
-4. **The mixed arm's physics, from data we have:** R72 and R69 read sums (GPU read beside CPU read at different
-   CPU thread counts) may already show whether the GPU's rate recovers when the CPU draws less. Host, an hour.
+4. ~~The mixed arm's physics, from data we have~~ **done, §2.5:** R69 / R72 `x1gpu` give the two end points.
 5. **Stock-kernel speed for overlap rows** (§4, §7 route 2): R72's type or stock rows may hold a not-repacked
    Q4_0 rate; else one probe cell.
 6. **Depth-2 head accuracy** (`C2`), which decides width 3 on Llama-2 (§6): host, on Tom's existing dumps.
@@ -414,8 +449,8 @@ buffers.
   assembly from another lab tree of the same version; the kit's binary was not disassembled.
 - The Cortex-A78 pipe rules are those I tabled in memo-08 from Arm's guide. Today's fetch of the guide returned
   an unreadable PDF, so they were not re-read.
-- §2.3's caveat and §2.4's line rest on two rigid models; the mixed arm exists because neither has a mechanism
-  for a partly loaded bus.
+- §2.3's caveat and §2.4's line rest on models with no mechanism for a partly loaded bus; §2.5's `linear`
+  variant is an interpolation between two measured points, not a mechanism either.
 - §4 holds the body fixed at its R72 value and is valid for C ≥ 31 only (the script's guard).
 - §5's probabilities are judgement; no clock trace of this GPU under minutes of compute load exists anywhere I
   found.
@@ -430,7 +465,7 @@ Repository: `lab/llama.cpp-c3r32/ggml/src/ggml-cpu/kleidiai/kleidiai.cpp` (lines
 (`…16x4_neon_dotprod_asm.S`, `…1x4_neon_dotprod_asm.S`, read); `tools/c3_a78_pipes.py`; `memo-10-tree.md` E2;
 `memo-08-work/bonnie-path.md` §2; `patches/llama.cpp-c3/0005-x3-gpu-probe.patch` (lines 983 to 1102, 1229 to
 1233) and `0007-x4-join-probe.patch` (as of 19:15); `tom-r35-build.md` (19:19); R74 JSON; `R72-result.md` lines
-194 to 195; `docs/negative-results.md`, `reports/04_campaign.md`; [ebony-joins-r2.md](ebony-joins-r2.md) B.2 to
+194 to 195; `docs/negative-results.md`, `reports/04_campaign.md`; R69 and R72 JSON (`x2`, `x1gpu` lines, three runs); [ebony-joins-r2.md](ebony-joins-r2.md) B.2 to
 B.4, [ebony-joins-r3.md](ebony-joins-r3.md), [ebony-joins-r4.md](ebony-joins-r4.md).
 
 External (web search today; summaries, pages not opened unless marked):
