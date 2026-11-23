@@ -83,6 +83,27 @@ memo-11 Ebony 0.002 to 0.003).
 3. ~~Owner to tag `prereg-R72`~~ *Correction 2026-11-22 (lead): done; `prereg-R72` (364c438) and `prereg-R72-amendment-1` (dc19d32) exist on the remote, created by the owner and checked by the lead.*
 4. The R73 plan stays a draft (memo-10-work/clyde-r73-plan.md).
 
+## Current state and next actions (appended 2026-11-23; supersedes the blocks above where they differ)
+
+**S3 freeze done** (*host*, full wikitext-2, `tools/c3_freeze.sh`; re-made Q4_0 byte-identical to the kept file on all three):
+Yi 8.3875 (F16 8.1773, served/F16 1.0257), Llama-2 7.7435 (7.4932, 1.0334), DeepSeek 8.7311 (8.4115, 1.0380) at `-b 512`;
+`-ub 1` within 0.03 %; all inside budget and ceiling. Rows in results.csv.
+
+**R74 scored** (reports/R74-result.md; JSON `384bc4b5…`): no void. Rules 1 to 4 pass on all three, so the **GPU lane is OPEN**
+(host numerics check and lane design only, not a device go). *Device*: all four upstream kernels built and passed identity;
+g_cold 17.53 / 18.33 / 18.33 GB/s; CPU+GPU 1.611x (41.3 GB/s); dispatch overhead 452 µs per round trip (3x the centre).
+*Estimated*: P_G 7.86 / 7.39 / 7.30 tok/s, centre stack 9.55 / 9.50 / 9.26; at zero dispatch 12.23 / 11.87 / 11.44.
+Campaign verdict unchanged (12 on all three out of reach by priced levers); the binding cost is now the join, not g.
+Conditions: cool start not met (campaign 2's T-A cap probe ran until 18 s before R74; its JSON is filed as descriptive),
+x3b and x3r gates timed out. Owner to confirm the r34 APK sha256.
+
+**Next actions.**
+1. Tom: host numerics check of the lane (half-precision `(q - 8) x d` emulated in the CPU backend behind a knob, per-chunk PPL
+   at `-b 512` and `-ub 1` on two subjects); the `loadlog` text.
+2. Bonnie and Ebony: price a lane design with joins cut or overlapped (async queue, one host wait per token, event polling);
+   the line to beat is about 20 µs per join at 64 joins.
+3. Device rounds stay held (R73 included); a lane device test needs its own pre-registration and the owner's permission.
+
 ## Open owner decisions
 
 Collected here; the owner asked not to be asked until the R68 JSON arrives.
@@ -136,3 +157,4 @@ Collected here; the owner asked not to be asked until the R68 JSON arrives.
 | 2026-11-22 | 5 (clyde) | R72 scored (reports/R72-result.md; JSON `cbc332dd…`, `37129fc`; kit r33, all ten blocks ran, no void; owner to confirm the r33 APK sha). 14 of 26 bands inside. K1m and k1m4 closed (L1x 0.983). The K1 lever is parked on all three subjects as built (4-7: 0.960 / 0.948 / 0.987), and it is slower than ggml stock on every subject. Fourth core adopted (0.863 / 0.694 / 0.667), with a caveat: the cpu-7-pinned thread ran on small cores in most cells, and the A78 cap was 1,555 to 1,785 MHz in L4. K0 (*estimated*): 6.81 / 5.88 / 5.84 tok/s, gaps +60.4 / +82.3 / +83.3 ms, so out of reach with the K1 family and the 4th core. Type filter: Q4_0 stays. anon34 held, anon42 not: only Yi can hold a repacked body. GPU read sum 46.5 GB/s reproduced; the `x2r` build failed with err -6. Joint reading by Bonnie and Ebony: a perfect GPU lane on stock bytes gives 11.3 / 10.5 / 10.0; P(all three) about 0.001 to 0.01. Next: S3 freeze, then R73 real stock decode on Yi and Llama-2 with placement logging; then a GPU probe with the upstream Adreno Q4_0 gemv (kill at g < 7 GB/s). Not committed. |
 | 2026-11-22 | 5 (clyde) | Next steps after R72 prepared (not committed): reports/memo-10-work/clyde-freeze.md and new `tools/c3_freeze.sh` (S3 freeze per subject on the laptop: pinned download into `lab/c3/dl/<m>`, F16 re-made, re-quantised Q4_0 must equal the kept file byte for byte, DeepSeek BOS field, full wikitext-2 PPL F16 `-b 512`, served `-b 512` and `-ub 1`; F16 `-ub 1` optional because the ceiling cannot bind; about 12 to 21 h serial, about 28 GB peak, *estimated*). Trap found: `general.name` comes from the download directory, so the 2026-11-22 DeepSeek re-prep (`deepseek7b-r`) gave a different F16 and Q4_0 than the kept file. reports/memo-10-work/clyde-r73-plan.md: R73 = first stock decode on Yi, Llama-2, DeepSeek (kit r34, 4 threads on 4-7, nCtx 512, ABBA guard 0004 off/on, logging K-a to K-j incl. affinity read-back, caps vs hardware max, thermal, core_ctl, devfreq/THP = T6); draft K0 check ±10 % of 6.90 / 6.21 / 6.22; fixed prompt set adopted (`eval.txt` ff1f32e3…); served files to a new public HF repo `HoeioUser/vollie3` (owner question F3); Rule B reopened with Ebony's joint line in coverage form G = (1 + p) ÷ (c × kB_eff + 1 − c) < 1.05 on any subject, guess source f by max-min (L lives only if device kB_eff ≤ 1.075); M closed as written by T5 (Yi 0.379, Llama-2 0.497 < 0.50). Owner questions F1 (DeepSeek BOS), F2 (F16 `-ub 1` optional), F3 (hosting). |
 | 2026-11-22 | 5 (annie) | Books catch-up from git (`787b651..55453a7`): R72 scored (`78a959e`; results.csv row updated from "scoring pending"); memo-09 and Ebony §10 (`0e31a8e`, `568dd5a`); owner decision on trained heads (`ef37c35`); T5/T1/T1b host (`80f993d`); GPU, guard and label host work (`0087ab1`); memo-10 and Ebony review (`ee652e6`, `f20b2dc`); freeze script and R73 plan (`73b1cf9`); owner decisions 2026-11-22 (`7cfb0f9`: DeepSeek unmodified, vollie3 allowed, R73 held); memo-11 bytes (`9c269fa`), exotic (`c8a4c98`); U2 LUT closed (`55453a7`). Memo index extended; new state block above. |
+| 2026-11-23 | 6 (clyde) | S3 freeze results recorded (*host*; all three inside budget). R74 scored (R74-result.md): no void, GPU lane OPEN on all three (g_cold 17.5 / 18.3 / 18.3 GB/s, CPU+GPU 1.611x, *device*); dispatch 452 µs binds; P_G 7.86 / 7.39 / 7.30, stack 9.55 / 9.50 / 9.26 tok/s (*estimated*); 10 of 28 bands inside; verdict unchanged. Next: host numerics check and a join-cost lane design. |
