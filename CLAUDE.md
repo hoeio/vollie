@@ -99,6 +99,9 @@ The work is done by five subagents defined in `.claude/agents/`. The main sessio
 - Owner, 2026-11-18: Ebony added (`claude-fable-5-2`). Bonnie and Ebony research jointly; each joint round ends
   in a memo with a test list and a try list, which the lead hands to Tom. Annie records every hand-off and result
   in git (commits, memo index, results.csv, STATUS log).
+- Owner, 2026-11-23: the researchers never stop ("각 연구자들이 어떠한 상황에서도 연구를 멈추지 않게 해주세요. 끊임없이 연구해야
+  합니다"). When Bonnie or Ebony finishes, the lead hands over the next item in the same turn; every research brief ends
+  with a ranked "next questions" list and the researcher continues with the top one. Device rules are unchanged.
 
 ## Working in the repository
 
