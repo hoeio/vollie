@@ -162,3 +162,7 @@ stock body (120.6 / 140.6 / 130.8 ms), as the prereg §5 inputs say. On the same
 by 16.8 / 24.4 / 22.5 ms. Against R72's K0 the lifts are +1.05 / +1.51 / +1.46 tok/s and the narrowing 19 to 33 ms, as
 written above. The sentence "about 1.2 tok/s per subject" fits neither exactly (about 1.0 to 1.5). P_G, the stack
 prices, the gaps to 79.2 ms (79.17) and the verdict are unaffected. The lead decides whether to reword.
+
+*Note 2026-11-23 (lead): Annie's basis note is accepted. The like-for-like comparison is on the ggml base: K0 6.90 /
+6.21 / 6.22 → P_G 7.86 / 7.39 / 7.30 tok/s, a lift of +0.96 / +1.18 / +1.08, with the gap narrowing by 16.8 / 24.4 /
+22.5 ms. "About 1.2 tok/s per subject" in §4 reads as "about 1 to 1.2". No verdict changes.*
