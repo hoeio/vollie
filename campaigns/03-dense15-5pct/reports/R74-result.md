@@ -149,3 +149,6 @@ way: the overhead was 3 times the centre.
    - The prereg line to beat is about 20 µs per join at 64 joins, or about 1.3 ms per token.
    - A device test of a lane needs its own pre-registration and the owner's permission.
 3. Annie: books (results.csv R74 row, STATUS, memo index).
+
+*Note 2026-11-23 (lead): the owner confirmed that the downloaded r34 APK's sha256 matched `2b0a2929…81de`. The APK void
+is not triggered on the owner's check either.*
