@@ -31,6 +31,7 @@ def bus_of(rate, C=40.0):                                  # bus share that give
 def rates(W, variant, cg=1.45, C=40.0, gdev=False):
     """(ca, cb, g): CPU alone, CPU beside the GPU, GPU. cg = GPU time per byte at width W / at width 1 (1 at W 1)."""
     cgw = 1.0 if W == 1 else cg
+    assert C >= 31, "valid only while the CPU is bus-bound at width 1 (C above 30.5 GB/s): the measured body is taken as fixed"
     ca = cpu_rate(W, bus_of(CA), C)
     if variant == "bonnie":
         g = (GD if gdev else GW) / cgw
