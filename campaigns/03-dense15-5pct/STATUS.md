@@ -200,3 +200,25 @@ Collected here; the owner asked not to be asked until the R68 JSON arrives.
 4. Open owner question (Bonnie r8): which path defines "stock" PPL, ggml's repack path (S3 as measured) or the phone's KleidiAI path? Bonnie r9 is reading the campaign terms.
 5. Tom: numerics report for patch 0006 (`reports/memo-12-work/tom-numerics.md`); Annie commits the patch and tool with it.
 | 2026-11-23 | 7 (annie) | Books from git (`3461e19..2588f40`): Bonnie r7, r8, kit r35 final rebuild (`b4b9168`, APK `465d97bb...f8af5`), R75 pre-registration (`2588f40`). Audit: all 9 sha256 in R75 prereg §0 match the files and the libraries unzipped from the APK (scratch dir); no mismatch, prereg not edited. Owner decisions: x4m stays in R75; the pasted HF token was rejected as invalid, so the r35 upload is pending. Open: tag prereg-R75, upload, owner run with 30 min cool start, "stock PPL path" question (repack vs KleidiAI). Memo index updated. |
+
+## Hand-offs and open items (appended 2026-11-23 night by Annie from git `7765cf8..463ee88`; supersedes the block of the same name above where they differ)
+
+**State.** R75 is pre-registered, tagged and not run. Nothing in R75 is measured.
+
+**Landed (all 2026-11-23).**
+- Owner created tag `prereg-R75` on `2588f40` (verified on origin). Kit r35 is uploaded to HF `HoeioUser/vollie-kits` `r35/` (HF commit `433fdd2e`); the downloaded APK sha256 was re-checked: `465d97bb...f8af5`. This closes next actions 1 and 2 of the block above.
+- `748b6e7` (Bonnie r9): stock PPL path. Campaign 2's R61 option (a) carries over; KleidiAI-path stock is not yet measured for campaign 3 (band -0.3..+1.0 %, *estimated*); 40-chunk host run spec; pack routine 4.1-4.4 GB/s on one thread (*host*), first load 8-18 s (*estimated*).
+- `219bb1b` (owner decision 2026-11-23, in CAMPAIGN.md): option (a) on stock PPL carries over, absolute budgets stay those of the S3 freeze, the KleidiAI-build stock is a second side-by-side reference; host KleidiAI stock runs are allowed.
+- `463ee88` (Bonnie r10): every campaign-3 PPL figure is on the repack build; the freeze stock and patch 0006 need a KleidiAI reading; the 0006 emulation cannot run on a KleidiAI build as written; KleidiAI vs repack Q4_0 differ only at ties and the int8 head, band revised to +0.03 % (-0.05..+0.15, *estimated*); Granite's R61 +0.5 % unexplained, tail kept.
+
+**Correction (2026-11-23, Annie, from Bonnie r10 §1).** The `build` column of the three S3 freeze rows in `results.csv` says "stock llama.cpp". It means `lab/llama.cpp-c3/build` at `26f78f925`, `GGML_CPU_KLEIDIAI=OFF`, repack on, which is not the phone's KleidiAI path. The cells are not rewritten; the correction is appended to each row's notes cell. The freeze numbers (*host*) are unchanged.
+
+**Open hand-offs.**
+1. Tom (second instance): KleidiAI-build 40-chunk stock runs, output `reports/memo-12-work/tom-kai-stock.md` (*host*).
+2. Tom: numerics report for patch 0006 (`tom-numerics.md`); the patch and `tools/c3_x3emu_check.c` are uncommitted until it lands.
+
+**Next actions.**
+1. Owner: run R75 per prereg §8 after 08:30 KST on 2026-11-24 (not possible earlier), true 30 minute cool start, no other probe first; confirm APK sha256 `465d97bb...f8af5` on the phone side.
+2. KleidiAI stock result pending (Tom, above).
+3. Tom's 0006 numerics pending.
+| 2026-11-23 | 8 (annie) | Books from git (`7765cf8..463ee88`): Bonnie r9, r10; owner decision `219bb1b` (stock PPL option (a) carries over; host KleidiAI stock runs allowed); tag `prereg-R75` verified; kit r35 on HF (`433fdd2e`, sha re-checked). Correction note on the S3 freeze rows' build column (repack build, KleidiAI off), appended in results.csv notes, cells not rewritten. Memo index: Bonnie r9, r10, bonnie_pack_time.c. Open: R75 run after 08:30 KST 11-24, KleidiAI stock, 0006 numerics. |
