@@ -7,7 +7,7 @@ import sys
 src = open(sys.argv[1]).read().split('# ---- stats')[0]
 sys.argv = sys.argv[1:]
 exec(src)                                                        # ggml, L, C, np, re, CB, ggml_tensor, batch, argv parsing
-M = {}                                                           # (kind, layer) -> [in_all, in_no_pos0, out_all, out_no_pos0, K]
+R = []; M = {}                                                           # (kind, layer) -> [in_all, in_no_pos0, out_all, out_no_pos0, K]
 def cb(t, ask, ud):
     tt = t.contents
     if ask: return ggml.ggml_op_desc(t) == b'MUL_MAT'
@@ -17,6 +17,7 @@ def cb(t, ask, ud):
     if s1.nb[1] != k * 4 or n < 2: return True
     x = np.abs(np.ctypeslib.as_array(C.cast(s1.data, C.POINTER(C.c_float)), shape=(n, k)))
     y = np.abs(np.ctypeslib.as_array(C.cast(tt.data, C.POINTER(C.c_float)), shape=(n, m)))
+    if s0.name == b'output.weight': xs = np.ctypeslib.as_array(C.cast(s1.data, C.POINTER(C.c_float)), shape=(n, k)); R.extend(((xs.max(1) - xs.min(1)) / np.sqrt((xs * xs).mean(1))).tolist())
     nm = s0.name.decode(); mm = re.match(r'blk\.(\d+)\.(.*)\.weight', nm)
     key = (mm.group(2), int(mm.group(1))) if mm else (nm, -1)
     v = M.setdefault(key, [0.0, 0.0, 0.0, 0.0, k])
@@ -43,5 +44,6 @@ for kind in sorted({k for k, _ in M}):
     rows = {l: v for (kk, l), v in M.items() if kk == kind}
     def top(i): l = max(rows, key=lambda l: rows[l][i]); return rows[l][i], l
     print('%-14s %6d | %10.1f @%-2d %10.1f @%-2d | %10.1f @%-2d %10.1f @%-2d' % ((kind, next(iter(rows.values()))[4]) + top(0) + top(1) + top(2) + top(3)))
+if R: print('head input (final hidden state), range / rms per position: median %.1f, p90 %.1f, max %.1f over %d positions' % (np.median(R), np.quantile(R, .9), max(R), len(R)))
 g = max(max(v[0], v[2]) for v in M.values())
 print('largest of all: %.1f = %.4f of the half-precision maximum 65504' % (g, g / 65504))
