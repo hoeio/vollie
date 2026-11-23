@@ -96,3 +96,18 @@ unzipped from the r33 APK, given as `LIBS_FROM=<dir>`; the c3 series dir passed 
 `LIBS_FROM=<dir> APP_SERIES="$(cd patches/app-c2 && ls 00[01][0-9]-kit-r[12][0-9].patch | sed 's#^#patches/app-c2/#' | tr '\n' ' ')patches/app-c3"
 sh tools/c2_build_kit.sh lab/llama.cpp-c3r34 lab/app-c3 patches/llama.cpp patches/llama.cpp-c1-olmoe <dir with c3 0001 0002 0003 0005>`,
 then the APK is copied to a plain name without '+'. Details: `campaigns/03-dense15-5pct/reports/memo-09-work/tom-r34-build.md`.
+
+## 0005-kit-r35-probe.patch
+
+Kit r35 (version 1.35.0+35, versionCode 35), applied after 0004; installs over r34 (same package and debug key). The button
+"Run c3 probe r35 (GPU joins). Cool start: do not run any other probe before this" runs the R75 blocks x4i, x4a, x4b, x4f,
+x4c, x4d, x4e, x4m, x4s, x4r (`patches/llama.cpp-c3/0007`), each after the r16 gate (up to 180 s); no model is needed. The app copy
+also carries `android/app/src/main/jniLibs/arm64-v8a/libvollie_x4c.so`, the x4d / x4e child process, built from
+`tools/c3_x4child.c` (a binary, so not in the patch; command and sha256 in `lab/dist-c3/r35/BUILD-r35.txt`). File name
+`vollie-c3probe-r35-<time>.json`.
+
+Build: libllama.so from c3 0001, 0002, 0003, 0005, 0007 and the CPU module unzipped from the r34 APK, as `LIBS_FROM=<dir>`;
+then `LIBS_FROM=<dir> APP_SERIES="$(cd patches/app-c2 && ls 00[01][0-9]-kit-r[12][0-9].patch | sed 's#^#patches/app-c2/#' | tr '\n' ' ')patches/app-c3"
+sh tools/c2_build_kit.sh lab/llama.cpp-c3r35 lab/app-c3 patches/llama.cpp patches/llama.cpp-c1-olmoe <dir with c3 0001 0002 0003 0005 0007>`
+(new files in the tree marked with `git add -N` so the script's file check sees them), then the APK is copied to a plain
+name. Details: `campaigns/03-dense15-5pct/reports/memo-12-work/tom-r35-build.md`.
