@@ -382,6 +382,11 @@ def x4report(x4):
             L.append('  %s: ' % k + ', '.join('%s=%s' % kv_ for kv_ in f.items() if kv_[0] != 'block'))
     for f in by.get('ext', [])[:1]:
         L.append('  extensions (%s): %s' % (f.get('n'), f.get('text')))
+    for f in by.get('kai', []):
+        L.append('  kleidiai (x4k child): ' + ', '.join('%s=%s' % kv_ for kv_ in f.items() if kv_[0] != 'block'))
+    if 'therm' in by:
+        L.append('\nthermal status (AThermal, 0 none .. 6 shutdown) and kgsl thermal_pwrlevel before / after each block')
+        table(L, by['therm'], ['blk', 'when', 'status', 'thermal_pwrlevel', 'gpu_max_mhz', 'gpu_mhz'])
     for f in by.get('cond', []):   # x3-tagged cond lines of each x4 block (GPU devfreq, THP)
         L.append('  cond (%s): %s' % (f['block'], ', '.join('%s=%s' % kv_ for kv_ in f.items() if kv_[0] != 'block')))
     if 'build' in by:
@@ -391,7 +396,7 @@ def x4report(x4):
     if 'identity' in by:
         L.append('\nidentity against float64 (x4i: 2816 rows; x4c: stacked 22016 and 12288 rows)')
         table(L, by['identity'], ['block', 'kern', 'm', 'k', 'err', 'max_rel_err', 'rows_bad', 'nonfinite', 'ok'])
-    tail = ['lcpu_us', 'lcpu_over_wall', 'lplace', 'labels', 'mhz_range', 'gpu_mhz', 'ramp_s', 'ramp_ok']
+    tail = ['lcpu_us', 'lcpu_over_wall', 'lplace', 'labels', 'mhz_range', 'gpu_mhz', 'gpu_max_mhz', 'ramp_s', 'ramp_ok']
     if 'tlsum' in by:
         L.append('\nx4a launch timeline (profiling queue; us; gap = START(i) - END(i-1), i >= 1; busy = device time / span)')
         table(L, labelled(by['tlsum']), ['case', 'lcpu', 'reps', 'wall_us', 'enq_us', 'q2s_first_us', 's2b_first_us', 'q2s_rest_p50_us', 's2b_rest_p50_us', 'gap_p50_us',
@@ -447,12 +452,21 @@ def x4report(x4):
         L.append('\nx4m cold rates, 11008 x 4096, ABBA (gbs = weight bytes per wall second; dev_us per launch)')
         table(L, [f for f in by['mc'] if 'pos' in f], ['pos', 'n_cols', 'kern', 'gbs', 'us_per_gemv', 'dev_us', 'dev_gbs', 'gpu_mhz', 'ramp_ok', 'err'])
         table(L, by.get('mcsum', []), ['n_cols', 'dev_us_1', 'dev_us_n', 'dev_ratio', 'wall_us_1', 'wall_us_n', 'wall_ratio', 'reason'])
-    if 'tog' in by or 'tog2' in by:
+    if 'tog' in by or 'tog2' in by or 'togmix' in by:
         L.append('\nx4m together: CPU ggml Q4_0 (4-7, x [4096, n]) and GPU 11008 x 4096 cold (mc3 at n 2, general at n 1), ABBA; GB/s = weight bytes')
         for f in by.get('tog2', []) + [f for f in by.get('tog', []) if 'pos' not in f]:
             L.append('  ' + ', '.join('%s=%s' % kv_ for kv_ in f.items() if kv_[0] != 'block'))
         table(L, labelled([f for f in by.get('tog', []) if 'pos' in f]), ['n_cols', 'pos', 'arm', 'cpu_gbs', 'gpu_gbs', 'sum_gbs', 'cpu_ms_per_graph', 'gpu_dev_us', 'gpu_dev_gbs',
                                                                         'labels', 'feeder', 'mhz_range', 'gpu_mhz', 'hr', 'err'])
+        for f in by.get('togmix', []):
+            if 'pos' not in f:
+                L.append('  mixed: ' + ', '.join('%s=%s' % kv_ for kv_ in f.items() if kv_[0] != 'block'))
+        mx = [f for f in by.get('togmix', []) if 'pos' in f]
+        if mx:
+            L.append('  mixed arm: CPU at 1 column beside GPU mc3 at gpu_n_cols')
+            table(L, labelled(mx), ['gpu_n_cols', 'pos', 'arm', 'cpu_gbs', 'gpu_gbs', 'sum_gbs', 'cpu_ms_per_graph', 'gpu_dev_us', 'gpu_dev_gbs', 'labels', 'mhz_range', 'gpu_mhz', 'hr', 'err'])
+        table(L, by.get('togmixsum', []), ['gpu_n_cols', 'cpu_alone_gbs', 'gpu_alone_gbs', 'both_cpu_gbs', 'both_gpu_gbs', 'both_cpu_vs_tog1_both_cpu', 'sum_gbs', 'sum_vs_cpu_alone',
+                                           'cpu_alone_ms', 'both_cpu_ms', 'gpu_alone_dev_us', 'both_gpu_dev_us', 'err'])
         sums = [dict(f, n_cols=k[3]) for k in ('tog2sum', 'tog1sum') for f in by.get(k, [])]
         table(L, sums, ['n_cols', 'cpu_alone_gbs', 'gpu_alone_gbs', 'both_cpu_gbs', 'both_gpu_gbs', 'sum_gbs', 'sum_vs_cpu_alone', 'cpu_loss_gbs', 'gpu_loss_gbs',
                         'cpu_alone_ms', 'both_cpu_ms', 'gpu_alone_dev_us', 'both_gpu_dev_us', 'err'])
@@ -479,6 +493,8 @@ def x4report(x4):
             L.append('  passes %d: CPU GB/s median %.2f, passes 5+ median %s, last 5 median %.2f, majflt total %d, memavail first %s last %s' % (
                 len(ps), statistics.median(g), '%.2f' % statistics.median(g[5:]) if len(g) > 5 else '-', statistics.median(g[-5:]),
                 sum(int(f['majflt']) for f in ps), ps[0]['memavail'], ps[-1]['memavail']))
+            mm = sorted({f.get('gpu_max_mhz', '-') for f in ps})
+            L.append('  gpu_max_mhz over the passes: %s' % ','.join(mm))
     # inputs to the memo-12 kill lines (descriptive; the pre-registration scores them)
     def pick(rows, **kw):
         return [f for f in rows if all(f.get(k) == v for k, v in kw.items())]
@@ -505,6 +521,9 @@ def x4report(x4):
     L.append('  cg (x4m dev_ratio) n_cols 2 %s, 3 %s, 4 %s' % tuple(g([f for f in by.get('mcsum', []) if f.get('n_cols') == str(n)], 'dev_ratio') for n in (2, 3, 4)))
     L.append('  together sum_vs_cpu_alone n_cols 2 %s%s, n_cols 1 %s' % (g(by.get('tog2sum', []), 'sum_vs_cpu_alone'),
              (' (skip: %s)' % by['tog2'][0].get('reason')) if by.get('tog2') else '', g(by.get('tog1sum', []), 'sum_vs_cpu_alone')))
+    L.append('  mixed (CPU 1 col, GPU %s cols) both_cpu_vs_tog1_both_cpu %s, sum_vs_cpu_alone %s' % (g(by.get('togmixsum', []), 'gpu_n_cols'),
+             g(by.get('togmixsum', []), 'both_cpu_vs_tog1_both_cpu'), g(by.get('togmixsum', []), 'sum_vs_cpu_alone')))
+    L.append('  kleidiai q4 kernel %s (features %s, q4_buft %s)' % (g(by.get('kai', [])[:1], 'kernel'), g(by.get('kai', [])[:1], 'features'), g(by.get('kai', [])[:1], 'q4_buft')))
     L.append('  hand-off extra_us %s' % ('/'.join('%s:%s' % (f['mode'], f.get('extra_us', f.get('reason'))) for f in by.get('handoff', []) if 'mode' in f) or '-'))
     L.append('  X4-s best lead ratio %s at share %s (feeder 0.25: %s)' % (((bs['ratio'], bs['share']) if bs else ('-', '-')) + (g(pick(by.get('splitsum', []), mode='feeder'), 'ratio'),)))
     return L
@@ -672,6 +691,11 @@ X4T = ' lcpu=4 lcpu_us=150.0 lcpu_over_wall=0.300 lplace=0/50@-1 thr=4:0.300:2:5
 X4TEST = {'kit': 'r35', 'blocks': [
     {'block': 'x4i', 'rc': 100, 'ms': 900, 'gate': {'timeout': False, 'series': []}, 'lines': [
         'c3-probe: x3 cond kgsl gpuclk=e13 max_gpuclk=840000000 devfreq_cur=315000000',
+        'c3-probe: x4 therm blk=x4i when=before status=0 thermal_pwrlevel=0 gpu_max_mhz=840 gpu_mhz=-1',
+        'c3-probe: x4 kai kernel=DOTPROD features=dotprod+fp16 q4_buft=CPU_KLEIDIAI backend=load_all:CPU:CPU_KLEIDIAI| cpu_ok=1',
+        'c3-probe: x4 kai log text=kleidiai:_primary_q4_kernel_feature_DOTPROD',
+        'c3-probe: x4 child blk=x4k_c rc=0 s=0.30 timeout=0 lines=2',
+        'c3-probe: x4 therm blk=x4i when=after status=1 thermal_pwrlevel=1 gpu_max_mhz=840 gpu_mhz=-1',
         'c3-probe: x4 info device=QUALCOMM,Adreno(TM) cstd=CL2.0 e031=38',
         'c3-probe: x4 ext n=3 text=cl_khr_fp16,cl_qcom_recordable_queues,cl_khr_subgroups',
         'c3-probe: x4 dev svm_err=0 svm_caps=0x3 svm_coarse=1 svm_fine_buffer=1 svm_fine_system=0 svm_atomics=0',
@@ -718,6 +742,9 @@ X4TEST = {'kit': 'r35', 'blocks': [
         'c3-probe: x4 tog setup n_cols=2 cpu=ggml_q4_0 cpu_buft=CPU_REPACK cpu_mb=576 gpu_kern=mc3 gpu_m=11008 gpu_k=4096 gpu_copies=22 gpu_mb=532 set=4,5,6,7 feeder=0-3 queue=profiling backend=x',
         'c3-probe: x4 tog pos=2 n_cols=2 arm=both set=4,5,6,7 cpu_gbs=17.00 gpu_gbs=9.00 sum_gbs=26.00 cpu_ms_per_graph=35.000 gpu_dev_us=1100.0 gpu_dev_gbs=22.00 cpu_calls=40 gpu_batches=100 err=0 thr=4:0.990:2:0:0/30@-1 mhz_range=1804/2419/2841..1804/2419/2841,n=30 gpu_mhz=840..840,n=20 hr=0.5',
         'c3-probe: x4 tog2sum cpu_alone_gbs=20.00 gpu_alone_gbs=12.00 both_cpu_gbs=17.00 both_gpu_gbs=9.00 sum_gbs=26.00 sum_vs_cpu_alone=1.300 cpu_loss_gbs=3.00 gpu_loss_gbs=3.00 cpu_alone_ms=30.000 both_cpu_ms=35.000 gpu_alone_dev_us=900.0 both_gpu_dev_us=1100.0 err=0',
+        'c3-probe: x4 togmix choice gpu_n_cols=3 n4_ok=0 n3_ok=1',
+        'c3-probe: x4 togmix pos=2 cpu_n_cols=1 gpu_n_cols=3 arm=both set=4,5,6,7 cpu_gbs=16.00 gpu_gbs=8.00 sum_gbs=24.00 cpu_ms_per_graph=37.000 gpu_dev_us=1200.0 gpu_dev_gbs=21.00 cpu_calls=40 gpu_batches=90 err=0 thr=4:0.990:2:0:0/30@-1',
+        'c3-probe: x4 togmixsum cpu_n_cols=1 gpu_n_cols=3 cpu_alone_gbs=20.00 gpu_alone_gbs=11.00 both_cpu_gbs=16.00 both_gpu_gbs=8.00 both_cpu_vs_tog1_both_cpu=0.914 sum_gbs=24.00 sum_vs_cpu_alone=1.200 cpu_alone_ms=30.000 both_cpu_ms=37.000 gpu_alone_dev_us=1000.0 both_gpu_dev_us=1200.0 err=0',
         'c3-probe: x4 tog1sum cpu_alone_gbs=20.00 gpu_alone_gbs=10.00 both_cpu_gbs=17.50 both_gpu_gbs=6.50 sum_gbs=24.00 sum_vs_cpu_alone=1.200 cpu_loss_gbs=2.50 gpu_loss_gbs=3.50 cpu_alone_ms=30.000 both_cpu_ms=34.000 gpu_alone_dev_us=800.0 both_gpu_dev_us=1000.0 err=0']},
     {'block': 'x4s', 'rc': 100, 'ms': 900, 'gate': {'timeout': False, 'series': []}, 'lines': [
         'c3-probe: x4 split pos=3 share=0.30 mode=lead gpu_rows=6656 cpu_rows=15360 mats=900 ms_per_mat=1.600 cpu_ms=1.300 wait_ms=0.050 gpu_ms=1.200 gpu_dev_ms=0.600 enq_us=90.0 gbs=30.0 err=0 thr=4:0.990:2:0:0/30@-1 mhz_range=1804/2419/2841..1804/2419/2841,n=30 max_mhz=p4:2419/2419',
@@ -731,14 +758,14 @@ X4TEST = {'kit': 'r35', 'blocks': [
     {'block': 'x4r', 'rc': 100, 'ms': 900, 'gate': {'timeout': False, 'series': []}, 'lines': [
         'c3-probe: x4 res stage=gpu_alloc kern=s11008_1_4096 copies=59 gpu_mb=1430 alloc_s=1.0 err=0',
         'c3-probe: x4 res pass=0 s=0.130 gbs=20.00 gpu_gbs=5.0 majflt=3 minflt=0 memavail=900000 cached=1 swapfree=2 vmswap=0 vmrss=3',
-        'c3-probe: x4 res pass=1 s=0.140 gbs=18.00 gpu_gbs=5.0 majflt=4 minflt=0 memavail=800000 cached=1 swapfree=2 vmswap=0 vmrss=3',
+        'c3-probe: x4 res pass=1 s=0.140 gbs=18.00 gpu_gbs=5.0 majflt=4 minflt=0 memavail=800000 cached=1 swapfree=2 vmswap=0 vmrss=3 gpu_max_mhz=840',
         'c3-probe: x4 res sum passes=2 secs=0.3 cpu_gbs_median=19.00 cpu_gbs_min=18.00 gpu_gbs=5.00 majflt=7',
         'c3-probe: x4d skip reason=no_extension']}]}
 
 
 def x4selftest():
     p = parse(X4TEST)
-    assert not p['x3'] and len(p['x4']) == 53 and p['meta']['x4i_s'] == '1.5' and not p['errors'], (len(p['x3']), len(p['x4']), p['errors'])
+    assert not p['x3'] and len(p['x4']) == 61 and p['meta']['x4i_s'] == '1.5' and not p['errors'], (len(p['x3']), len(p['x4']), p['errors'])
     r = report(p)
     assert 'R74 x3 GPU lane' not in r and 'R75 x4 GPU join' in r, r
     assert 'extensions (3): cl_khr_fp16,cl_qcom_recordable_queues,cl_khr_subgroups' in r and 'recq: present=1, max_size=8192' in r, r
@@ -765,6 +792,10 @@ def x4selftest():
     assert '  together sum_vs_cpu_alone n_cols 2 1.300, n_cols 1 1.200' in r, r
     assert '| 4 | ahp_persist | 2000 | 2000 | 2.0 | 4.0 | 480.0 | 2400 | 0 | 4:C |' in r and '| write | 40.0 | 60.0 | 575.0 | 105.0 | 4000 | 4000 | 1 | 2 |  |' in r, r
     assert '  hand-off extra_us none:0.0/write:105.0/ahp_persist:8.0' in r and 'gpu_rows=6656, k=4096' in r, r
+    assert '| x4i | before | 0 | 0 | 840 | -1 |' in r and '  kleidiai (x4k child): kernel=DOTPROD, features=dotprod+fp16' in r, r
+    assert '| 3 | 2 | both | 16.00 | 8.00 | 24.00 | 37.000 | 1200.0 | 21.00 | 4:C |' in r and '| 3 | 20.00 | 11.00 | 16.00 | 8.00 | 0.914 | 24.00 | 1.200 |' in r, r
+    assert '  mixed (CPU 1 col, GPU 3 cols) both_cpu_vs_tog1_both_cpu 0.914, sum_vs_cpu_alone 1.200' in r and '  kleidiai q4 kernel DOTPROD (features dotprod+fp16, q4_buft CPU_KLEIDIAI)' in r, r
+    assert '  gpu_max_mhz over the passes: -,840' in r and 'mixed: choice=' not in r and 'gpu_n_cols=3, n4_ok=0, n3_ok=1' in r, r
     print('selftest x4 ok')
 
 

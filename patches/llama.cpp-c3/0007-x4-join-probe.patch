@@ -1,5 +1,5 @@
 diff --git a/src/llama-vollie-probe.cpp b/src/llama-vollie-probe.cpp
-index 2198080..bf86531 100644
+index 2198080..a67b486 100644
 --- a/src/llama-vollie-probe.cpp
 +++ b/src/llama-vollie-probe.cpp
 @@ -32,6 +32,8 @@
@@ -11,7 +11,15 @@ index 2198080..bf86531 100644
  #if defined(VOLLIE_PROBE_STUB)
  #include <cstddef>
  extern "C" int llama_vollie_probe(const char *, const char *, char *, size_t) { return -1; }
-@@ -80,14 +82,16 @@ using clk = std::chrono::steady_clock;
+@@ -58,6 +60,7 @@ extern "C" int llama_vollie_probe(const char *, const char *, char *, size_t) {
+ #include <unistd.h>
+ #if defined(__linux__)
+ #include <sched.h>
++#include <sys/auxv.h>
+ #endif
+ #if defined(__ANDROID__)
+ #include <sys/system_properties.h>
+@@ -80,14 +83,16 @@ using clk = std::chrono::steady_clock;
  double secs(clk::time_point a, clk::time_point b) { return std::chrono::duration<double>(b - a).count(); }
  
  struct Out {
@@ -29,7 +37,7 @@ index 2198080..bf86531 100644
      }
  };
  
-@@ -1087,20 +1091,20 @@ std::vector<uint8_t> templ(ggml_type t, int K, int nr) {   // nr rows quantized
+@@ -1087,20 +1092,20 @@ std::vector<uint8_t> templ(ggml_type t, int K, int nr) {   // nr rows quantized
      ggml_quantize_chunk(t, f.data(), q.data(), 0, nr, K, nullptr);
      return q;
  }
@@ -53,7 +61,7 @@ index 2198080..bf86531 100644
      s.bytes = h.size() * ncopies; s.weights = (double) K * R * ncopies; s.ok = true;
      return true;
  }
-@@ -2240,18 +2244,24 @@ std::string self_dir() { Dl_info i; if (dladdr((void *) &self_dir, &i) && i.dli_
+@@ -2240,18 +2245,24 @@ std::string self_dir() { Dl_info i; if (dladdr((void *) &self_dir, &i) && i.dli_
  struct Child { int rc = 0; double s = 0; std::string log; };
  // campaign 1's compiler process (tool/clc.c): exit 0 built, 3 built only with -cl-opt-disable, 1 failed, 2 setup; here also
  // -<signal> (the compiler crashed), -1001 timed out (120 s), -1000 could not start
@@ -83,7 +91,7 @@ index 2198080..bf86531 100644
      std::vector<char *> envp; for (auto & x : env) envp.push_back(&x[0]); envp.push_back(nullptr);
      const auto t0 = clk::now(); pid_t pid = 0; int st = 0;
      const int sp = posix_spawn(&pid, exe.c_str(), &fa, nullptr, argv.data(), envp.data());
-@@ -2259,7 +2269,7 @@ Child run_clc(const std::string & exe, const std::string & src, const std::strin
+@@ -2259,7 +2270,7 @@ Child run_clc(const std::string & exe, const std::string & src, const std::strin
      if (sp != 0) { c.rc = -1000; c.log = "posix_spawn errno " + std::to_string(sp); return c; }
      bool to = false;
      while (waitpid(pid, &st, WNOHANG) == 0) {
@@ -92,7 +100,7 @@ index 2198080..bf86531 100644
          usleep(20000);
      }
      c.s = secs(t0, clk::now());
-@@ -2360,7 +2370,7 @@ cl_int mkx(Gpu & g, XIn & xi, int kin) {   // activations f32 as IMAGE1D_BUFFER
+@@ -2360,7 +2371,7 @@ cl_int mkx(Gpu & g, XIn & xi, int kin) {   // activations f32 as IMAGE1D_BUFFER
      xi.img = g.cl.CreateImage(g.ctx, 1 << 2, &f, &ds, nullptr, &e); return xi.img ? 0 : (e ? e : -1);
  }
  // one gemv, upstream's arguments and sizes (ggml_cl_mul_mat_q4_0_f32_adreno, ne1 == 1): global {CEIL(M/2, 64) * 64, 4, 1}, local {64, 4, 1}
@@ -101,7 +109,7 @@ index 2198080..bf86531 100644
      const uint64_t z = 0; const int kk = m.kin, mm = m.M, one = 1; cl_int e = 0;
      e |= g.cl.SetKernelArg(k, 0, sizeof(H), &m.img); e |= g.cl.SetKernelArg(k, 1, sizeof(H), &m.d); e |= g.cl.SetKernelArg(k, 2, sizeof(H), &x.img);
      e |= g.cl.SetKernelArg(k, 3, 8, &z); e |= g.cl.SetKernelArg(k, 4, sizeof(H), &dst); e |= g.cl.SetKernelArg(k, 5, 8, &z);
-@@ -2369,7 +2379,7 @@ cl_int launch(Gpu & g, H k, const GMat & m, const XIn & x, H dst, H q, H * ev) {
+@@ -2369,7 +2380,7 @@ cl_int launch(Gpu & g, H k, const GMat & m, const XIn & x, H dst, H q, H * ev) {
      e |= g.cl.SetKernelArg(k, 14, 4, &one);
      if (e) return e;
      const size_t gws[3] = { (size_t)((mm / 2 + 63) / 64) * 64, 4, 1 }, lws[3] = { 64, 4, 1 };
@@ -110,13 +118,14 @@ index 2198080..bf86531 100644
  }
  double evs(Gpu & g, H ev, cl_uint a = 0x1282, cl_uint b = 0x1283) {   // seconds between two profiling points (default START -> END)
      uint64_t t0 = 0, t1 = 0; g.cl.GetEventProfilingInfo(ev, a, 8, &t0, nullptr); g.cl.GetEventProfilingInfo(ev, b, 8, &t1, nullptr); return t1 >= t0 ? (t1 - t0) * 1e-9 : -1;
-@@ -2384,9 +2394,14 @@ const char * KG = "/sys/class/kgsl/kgsl-3d0/";
+@@ -2384,15 +2395,23 @@ const char * KG = "/sys/class/kgsl/kgsl-3d0/";
  std::string kg(const char * f) { return rdl((std::string(KG) + f).c_str()); }
  long gpu_mhz(const char * f) { int e = 0; const long v = rd1((std::string(KG) + f).c_str(), e); return v > 0 ? v / 1000000 : -1; }
  bool gpu_at_max() { const long c = gpu_mhz("gpuclk"), m = gpu_mhz("max_gpuclk"); return c < 0 || m < 0 || c >= m; }
 -struct GClk { long lo = LONG_MAX, hi = LONG_MIN; int n = 0, e = 0;
 -    void sample() { const long v = rd1((std::string(KG) + "gpuclk").c_str(), e); if (v > 0) { lo = std::min(lo, v / 1000000); hi = std::max(hi, v / 1000000); n++; } }
 -    std::string str() const { if (!n) return "e" + std::to_string(e); char b[64]; snprintf(b, sizeof b, "%ld..%ld,n=%d", lo, hi, n); return b; } };
++long gpu_max_mhz() { const long m = gpu_mhz("max_gpuclk"); return m > 0 ? m : gpu_mhz("devfreq/max_freq"); }   // r35: kgsl max_gpuclk, else devfreq max (Hz)
 +// r35: R74 read gpuclk as EACCES; the first readable of gpuclk (Hz), devfreq/cur_freq (Hz), clock_mhz (MHz) is used, named by src
 +struct GClk { long lo = LONG_MAX, hi = LONG_MIN; int n = 0, e = 0; const char * src = "none";
 +    void sample() {
@@ -126,9 +135,20 @@ index 2198080..bf86531 100644
 +    }
 +    std::string str() const { if (!n) return "e" + std::to_string(e); char b[96]; snprintf(b, sizeof b, "%ld..%ld,n=%d,src=%s", lo, hi, n, src); return b; } };
  struct Therm {   // AThermal_getThermalHeadroom (NDK, API 31) through dlopen; "na" where it is missing, "nan" when rate-limited
-     void * mgr = nullptr; float (*get)(void *, int) = nullptr; void (*rel)(void *) = nullptr;
+-    void * mgr = nullptr; float (*get)(void *, int) = nullptr; void (*rel)(void *) = nullptr;
++    void * mgr = nullptr; float (*get)(void *, int) = nullptr; void (*rel)(void *) = nullptr; int (*cs)(void *) = nullptr;   // cs: r35, API 30
      Therm() { if (void * l = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL)) { auto acq = (void * (*)()) dlsym(l, "AThermal_acquireManager");
-@@ -2547,13 +2562,13 @@ void identity(Gpu & g, Out & o, Kset & ks, int M, int kin, bool general, const X
+-              *(void **) &get = dlsym(l, "AThermal_getThermalHeadroom"); *(void **) &rel = dlsym(l, "AThermal_releaseManager"); if (acq && get) mgr = acq(); } }
++              *(void **) &get = dlsym(l, "AThermal_getThermalHeadroom"); *(void **) &rel = dlsym(l, "AThermal_releaseManager");
++              *(void **) &cs = dlsym(l, "AThermal_getCurrentThermalStatus"); if (acq && (get || cs)) mgr = acq(); } }
+     ~Therm() { if (mgr && rel) rel(mgr); }
+-    std::string hr() { if (!mgr) return "na"; char b[24]; snprintf(b, sizeof b, "%.3f", get(mgr, 0)); return b; } };
++    std::string hr() { if (!mgr || !get) return "na"; char b[24]; snprintf(b, sizeof b, "%.3f", get(mgr, 0)); return b; }
++    std::string status() { if (!mgr || !cs) return "na"; return std::to_string(cs(mgr)); } };   // 0 none .. 6 shutdown, -1 error
+ std::string maxstr() {   // policy p: scaling_max / cpuinfo_max (MHz), the parser's max_mhz format
+     std::string s; for (int p : { 0, 4, 7 }) { char b[48]; snprintf(b, sizeof b, "%sp%d:%ld/%ld", s.empty() ? "" : ",", p, maxkhz(p, "scaling_max_freq") / 1000, maxkhz(p, "cpuinfo_max_freq") / 1000); s += b; }
+     return s;
+@@ -2547,13 +2566,13 @@ void identity(Gpu & g, Out & o, Kset & ks, int M, int kin, bool general, const X
  }
  
  // ---- x3g
@@ -145,7 +165,7 @@ index 2198080..bf86531 100644
      Arm a; a.gpu = [&] { return batch(g, p->k, r, x, dst); }; a.warm = 0.5; a.meas = 1.0;
      const ARes s = run_arm(a, th);
      double dg = -1, du = -1; devpass(g, p->k, r, x, dst, 0.3, dg, du);
-@@ -2561,6 +2576,7 @@ void alone(Gpu & g, Out & o, Therm & th, Kset & ks, const HMat & h, bool general
+@@ -2561,6 +2580,7 @@ void alone(Gpu & g, Out & o, Therm & th, Kset & ks, const HMat & h, bool general
      o.line("x3 alone kern=%s m=%d k=%d regime=%s copies=%d mb=%.1f gemvs=%.0f secs=%.3f gbs=%.2f gw_per_s=%.3f us_per_gemv=%.1f dev_gbs=%.2f dev_us=%.1f err=%d %s",
             id, h.M, h.kin, rg, n, r.bytes / 1048576.0, gem, s.gpu_s, s.ggbs(), gem * h.M * h.kin / s.gpu_s / 1e9, s.gpu_s / gem * 1e6, dg, du, r.err, astr(s).c_str());
      release(g, r);
@@ -153,7 +173,7 @@ index 2198080..bf86531 100644
  }
  void roundtrip(Gpu & g, Out & o, Kset & ks, int M, int kin, const XIn & x, H dst) {   // launch + clFinish per call, from a thread on 0-3
      const char * id = "general"; Prog * p = ks.pick(M, kin, false, &id);
-@@ -2727,23 +2743,23 @@ void split(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4, H dst) {
+@@ -2727,23 +2747,23 @@ void split(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4, H dst) {
  // ---- x3r: residency with the lane's GPU buffers allocated (memo-09-gap §10.7): 0.9 GB on the GPU, read by it throughout,
  // while 3 A78 (4-6) read a 2.6 GB anonymous arena (the CPU's share of a 3.4 GB body) for 15 s (at most 200 passes); anon34's
  // counters per pass, and a sum line over the read phase
@@ -183,7 +203,7 @@ index 2198080..bf86531 100644
      const auto set = cores("4-6"); long f0 = majflt(); auto a0 = clk::now();
      { std::vector<std::thread> th;
        for (int i = 0; i < 3; i++) th.emplace_back([&, i] {
-@@ -2751,7 +2767,7 @@ void res(Gpu & g, Out & o, Kset & ks, const XIn & x4, H dst) {
+@@ -2751,7 +2771,7 @@ void res(Gpu & g, Out & o, Kset & ks, const XIn & x4, H dst) {
            for (size_t k = 0; k < c; k++) { s ^= s << 13; s ^= s >> 7; s ^= s << 17; q[k] = s; }
        });
        for (auto & t : th) t.join(); }
@@ -192,14 +212,15 @@ index 2198080..bf86531 100644
      mem("anon_fill");
      std::atomic<int> stop{0}; std::atomic<double> gbytes{0};
      std::thread feeder([&] { pin_cpus({ 0, 1, 2, 3 }); while (!stop.load()) gbytes = gbytes.load() + batch(g, p->k, r, x4, dst); });
-@@ -2765,27 +2781,30 @@ void res(Gpu & g, Out & o, Kset & ks, const XIn & x4, H dst) {
+@@ -2765,27 +2785,30 @@ void res(Gpu & g, Out & o, Kset & ks, const XIn & x4, H dst) {
          });
          for (auto & t : th) t.join();
          const double sec = secs(s0, clk::now()); rusage r1; getrusage(RUSAGE_SELF, &r1); rates.push_back(an / sec / 1e9);
 -        o.line("x3 res pass=%d s=%.3f gbs=%.2f gpu_gbs=%.2f majflt=%ld minflt=%ld memavail=%ld cached=%ld swapfree=%ld vmswap=%ld vmrss=%ld mhz=%s gpu_mhz=%ld", pass, sec,
-+        o.line("%s res pass=%d s=%.3f gbs=%.2f gpu_gbs=%.2f majflt=%ld minflt=%ld memavail=%ld cached=%ld swapfree=%ld vmswap=%ld vmrss=%ld mhz=%s gpu_mhz=%ld", T, pass, sec,
++        o.line("%s res pass=%d s=%.3f gbs=%.2f gpu_gbs=%.2f majflt=%ld minflt=%ld memavail=%ld cached=%ld swapfree=%ld vmswap=%ld vmrss=%ld mhz=%s gpu_mhz=%ld gpu_max_mhz=%ld", T, pass, sec,
                 an / sec / 1e9, (gbytes.load() - b0) / sec / 1e9, majflt() - g0, r1.ru_minflt - r0.ru_minflt, kv("/proc/meminfo", "MemAvailable"), kv("/proc/meminfo", "Cached"),
-                kv("/proc/meminfo", "SwapFree"), kv("/proc/self/status", "VmSwap"), kv("/proc/self/status", "VmRSS"), mhz().c_str(), gpu_mhz("gpuclk"));
+-               kv("/proc/meminfo", "SwapFree"), kv("/proc/self/status", "VmSwap"), kv("/proc/self/status", "VmRSS"), mhz().c_str(), gpu_mhz("gpuclk"));
++               kv("/proc/meminfo", "SwapFree"), kv("/proc/self/status", "VmSwap"), kv("/proc/self/status", "VmRSS"), mhz().c_str(), gpu_mhz("gpuclk"), gpu_max_mhz());
      }
      const double ps = secs(p0, clk::now()); stop = 1; feeder.join();
      std::sort(rates.begin(), rates.end());
@@ -230,7 +251,7 @@ index 2198080..bf86531 100644
      const bool fresh = !strcmp(blk, "x3b");
      if (fresh) {
          o.line("x3 src file=gemv_noshuffle_q4_0_f32.cl bytes=%zu sha256=%s", strlen(SRC_GENERAL), sha256(SRC_GENERAL).c_str());
-@@ -2819,6 +2838,912 @@ void x3(Out & o, const char * blk, const char * dir) {
+@@ -2819,6 +2842,961 @@ void x3(Out & o, const char * blk, const char * dir) {
  
  } // namespace r34
  
@@ -321,9 +342,9 @@ index 2198080..bf86531 100644
 +}
 +std::string tail(Samp & s, Therm & th, const Ramp & rp, const Lc & l, double lcpu_s, double wall_s, long calls, const Place & pl) {
 +    char b[1100];
-+    snprintf(b, sizeof b, "lcpu=%s lcpu_us=%.1f lcpu_over_wall=%.3f lplace=%s thr=%s mhz_range=%s max_mhz=%s gpu_mhz=%s hr=%s ramp_s=%.2f ramp_ok=%d", l.name,
++    snprintf(b, sizeof b, "lcpu=%s lcpu_us=%.1f lcpu_over_wall=%.3f lplace=%s thr=%s mhz_range=%s max_mhz=%s gpu_mhz=%s gpu_max_mhz=%ld hr=%s ramp_s=%.2f ramp_ok=%d", l.name,
 +             calls > 0 ? lcpu_s / calls * 1e6 : -1, wall_s > 0 ? lcpu_s / wall_s : -1, pl.str().c_str(), s.tm.thr().c_str(), s.mz.str().c_str(), maxstr().c_str(),
-+             s.gc.str().c_str(), th.hr().c_str(), rp.s, rp.ok);
++             s.gc.str().c_str(), gpu_max_mhz(), th.hr().c_str(), rp.s, rp.ok);
 +    return b;
 +}
 +bool has(const std::string & ext, const char * e) { return (" " + ext + " ").find(std::string(" ") + e + " ") != std::string::npos; }
@@ -821,7 +842,7 @@ index 2198080..bf86531 100644
 +    const size_t nsg = mm < 4096 ? 8 : 4, gws[3] = { (size_t)((mm / 2 + 63) / 64) * 64, nsg, 1 }, lws[3] = { 64, nsg, 1 };
 +    return g.cl.EnqueueNDRangeKernel(q, k, 3, nullptr, gws, lws, 0, nullptr, ev);
 +}
-+const char * mc(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4) {   // returns why n_cols 2 cannot run, or nullptr
++const char * mc(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4, int * okout) {   // returns why n_cols 2 cannot run, or nullptr; okout[n] = identity passed
 +    const int M = 11008, K = 4096;
 +    if (!ks.p[0].k || !ks.p[0].prg) { o.line("x4 mc ok=0 reason=no_general_program"); return "no_general_program"; }
 +    cl_int e = 0; H kmc = g.cl.CreateKernel(ks.p[0].prg, "kernel_gemv_noshuffle_q4_0_f32_mc3", &e);
@@ -872,38 +893,48 @@ index 2198080..bf86531 100644
 +        o.line("x4 mcsum n_cols=%d dev_us_1=%.1f dev_us_n=%.1f dev_ratio=%.3f wall_us_1=%.1f wall_us_n=%.1f wall_ratio=%.3f", n, d1, dn, d1 > 0 ? dn / d1 : -1, w1, wn, w1 > 0 ? wn / w1 : -1);
 +    }
 +    done();
++    for (int n = 0; n < 5; n++) okout[n] = okn[n];
 +    return okn[2] ? nullptr : "identity";
 +}
 +
 +// ---- x4m together cell (after the cg cell): x3c's ABBA (cpu, gpu, both, both, gpu, cpu) at two columns on both sides, then at one
-+// column. CPU: ggml Q4_0 mul_mat with x [4096, n], 64 copies of 4096 x 4096 (600 MB), pool on 4-7. GPU: 11008 x 4096 cold ring (512 MB),
-+// 8 gemvs then clFinish per call on the profiling queue (one event per gemv: dev_us). mc3 at n 2, the general kernel at n 1.
-+// cpu_gbs / gpu_gbs are weight bytes per second (a gemv of n columns reads its weights once), not per column.
-+void tog(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4, const char * why) {
++// column, then the mixed arm (Bonnie r5): CPU at one column beside the GPU at four (three if four failed its identity). CPU: ggml
++// Q4_0 mul_mat with x [4096, n], 64 copies of 4096 x 4096 (576 MB), pool on 4-7. GPU: 11008 x 4096 cold ring (532 MB), 8 gemvs
++// then clFinish per call on the profiling queue (one event per gemv: dev_us; R74's x3c used the plain queue). mc3 at n >= 2, the
++// general kernel at n 1. cpu_gbs / gpu_gbs are weight bytes per second (a gemv of n columns reads its weights once), not per column.
++void tog(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4, const char * why, const int * okn) {
 +    const int M = 11008, K = 4096;
 +    if (!ks.p[0].k) { o.line("x4 tog ok=0 reason=no_kernel"); return; }
 +    GB gb; if (!gb.init()) { o.line("x4 tog ok=0 reason=no_cpu_backend"); return; }
-+    cl_int e = 0; H kmc = nullptr, xb = nullptr, bimg = nullptr;
-+    if (!why) { kmc = g.cl.CreateKernel(ks.p[0].prg, "kernel_gemv_noshuffle_q4_0_f32_mc3", &e); if (!kmc) why = "create_kernel"; }
-+    if (!why) {
-+        std::vector<float> xs = rand_f((size_t) K * 2); xb = g.cl.CreateBuffer(g.ctx, (1 << 2) | (1 << 5), xs.size() * 4, xs.data(), &e);
-+        if (xb && !e) { ImgFmt f{ 0x10B5, 0x10DE }; ImgDesc ds{}; ds.type = 0x10F6; ds.w = (size_t) K * 2 / 4; ds.buffer = xb; bimg = g.cl.CreateImage(g.ctx, 1 << 2, &f, &ds, nullptr, &e); }
-+        if (!bimg) why = "mc_alloc";
++    int mixn = okn[4] ? 4 : okn[3] ? 3 : 0; const char * mwhy = mixn ? nullptr : "identity";
++    cl_int e = 0; H kmc = nullptr, xb = nullptr, bimg[5] = {};
++    if (!why || mixn) {
++        kmc = g.cl.CreateKernel(ks.p[0].prg, "kernel_gemv_noshuffle_q4_0_f32_mc3", &e);
++        std::vector<float> xs = rand_f((size_t) K * 4); if (kmc) xb = g.cl.CreateBuffer(g.ctx, (1 << 2) | (1 << 5), xs.size() * 4, xs.data(), &e);
++        for (int n = 2; n <= 4 && xb && !e; n++) { ImgFmt f{ 0x10B5, 0x10DE }; ImgDesc ds{}; ds.type = 0x10F6; ds.w = (size_t) K * n / 4; ds.buffer = xb; bimg[n] = g.cl.CreateImage(g.ctx, 1 << 2, &f, &ds, nullptr, &e); }
++        if (!kmc || !bimg[4]) { const char * w = !kmc ? "create_kernel" : "mc_alloc"; if (!why) why = w; if (mixn) mwhy = w; mixn = 0; e = 0; }
 +    }
-+    H dst = g.cl.CreateBuffer(g.ctx, 1, (size_t) M * 2 * 4, nullptr, &e);
++    H dst = g.cl.CreateBuffer(g.ctx, 1, (size_t) M * 4 * 4, nullptr, &e);
 +    HMat h; make_hmat(h, M, K); Ring r; if (dst && !e) e = mkring(g, r, h, (int) std::ceil((512.0 * 1048576) / h.bytes()));
-+    auto done = [&] { release(g, r); for (H b : { dst, bimg, xb }) if (b) g.cl.ReleaseMemObject(b); if (kmc) g.cl.ReleaseKernel(kmc); };
++    auto done = [&] { release(g, r); for (H b : bimg) if (b) g.cl.ReleaseMemObject(b); for (H b : { dst, xb }) if (b) g.cl.ReleaseMemObject(b); if (kmc) g.cl.ReleaseKernel(kmc); };
 +    if (!dst || e) { o.line("x4 tog ok=0 reason=gpu_alloc err=%d", e); done(); return; }
 +    if (why) o.line("x4 tog2 ok=0 reason=%s then=n_cols_1_only", why);
++    o.line("x4 togmix choice gpu_n_cols=%d n4_ok=%d n3_ok=%d%s%s", mixn, okn[4], okn[3], mwhy ? " ok=0 reason=" : "", mwhy ? mwhy : "");
 +    const std::vector<int> set = { 4, 5, 6, 7 };
 +    EnvSet e1("VOLLIE_POOL", "1"), e2("VOLLIE_CPUMASK", cpumask(set));
 +    if (gb.set_nt) gb.set_nt(gb.be, (int) set.size());
 +    const std::vector<uint8_t> tq = templ(GGML_TYPE_Q4_0, K, 64);
-+    for (int n = 2; n >= 1; n--) {
-+        if (n == 2 && why) continue;
-+        WSet ws; if (!make_wset(gb, ws, GGML_TYPE_Q4_0, K, K, 64, tq, 64, n)) { o.line("x4 tog n_cols=%d ok=0 reason=cpu_alloc", n); continue; }
-+        o.line("x4 tog setup n_cols=%d cpu=ggml_q4_0 cpu_buft=%s cpu_mb=%.0f gpu_kern=%s gpu_m=%d gpu_k=%d gpu_copies=%zu gpu_mb=%.0f set=4,5,6,7 feeder=0-3 queue=profiling backend=%s", n,
-+               ws.buft.c_str(), ws.bytes / 1048576.0, n == 1 ? "general" : "mc3", M, K, r.m.size(), r.bytes / 1048576.0, gb.desc().c_str());
++    double tog1_both_cpu = -1;
++    struct Part { int nc, ng; };
++    for (const Part pt : { Part{ 2, 2 }, Part{ 1, 1 }, Part{ 1, mixn } }) {
++        const int nc = pt.nc, ng = pt.ng;
++        if (ng == 0 || (ng == 2 && why)) continue;
++        const bool mx = nc == 1 && ng > 1;   // the mixed arm
++        WSet ws; if (!make_wset(gb, ws, GGML_TYPE_Q4_0, K, K, 64, tq, 64, nc)) { o.line("x4 %s n_cols=%d ok=0 reason=cpu_alloc", mx ? "togmix" : "tog", nc); continue; }
++        if (mx) o.line("x4 togmix setup cpu_n_cols=1 gpu_n_cols=%d cpu=ggml_q4_0 cpu_buft=%s cpu_mb=%.0f gpu_kern=mc3 gpu_m=%d gpu_k=%d gpu_copies=%zu gpu_mb=%.0f set=4,5,6,7 feeder=0-3 queue=profiling backend=%s",
++                       ng, ws.buft.c_str(), ws.bytes / 1048576.0, M, K, r.m.size(), r.bytes / 1048576.0, gb.desc().c_str());
++        else o.line("x4 tog setup n_cols=%d cpu=ggml_q4_0 cpu_buft=%s cpu_mb=%.0f gpu_kern=%s gpu_m=%d gpu_k=%d gpu_copies=%zu gpu_mb=%.0f set=4,5,6,7 feeder=0-3 queue=profiling backend=%s", nc,
++                    ws.buft.c_str(), ws.bytes / 1048576.0, ng == 1 ? "general" : "mc3", M, K, r.m.size(), r.bytes / 1048576.0, gb.desc().c_str());
 +        const char * arms[3] = { "cpu", "gpu", "both" }; const int order[6] = { 0, 1, 2, 2, 1, 0 }; double cs[3] = {}, gs[3] = {}, cm[3] = {}, du[3] = {};
 +        for (int k = 0; k < 6; k++) {
 +            const int arm = order[k]; Arm a; a.set = set; a.warm = 0.5; a.meas = 1.5; double dev = 0; long nd = 0;
@@ -912,7 +943,7 @@ index 2198080..bf86531 100644
 +                double b = 0; H ev[8] = {};
 +                for (int j = 0; j < 8; j++) {
 +                    GMat & m = r.m[r.i]; r.i = (r.i + 1) % r.m.size();
-+                    const cl_int x1 = n == 1 ? launch(g, ks.p[0].k, m, x4, dst, g.qp, &ev[j]) : launch_mc(g, kmc, m, bimg, n, dst, g.qp, &ev[j]);
++                    const cl_int x1 = ng == 1 ? launch(g, ks.p[0].k, m, x4, dst, g.qp, &ev[j]) : launch_mc(g, kmc, m, bimg[ng], ng, dst, g.qp, &ev[j]);
 +                    if (x1) { ev[j] = nullptr; if (!r.err) r.err = x1; } b += m.bytes;
 +                }
 +                const cl_int x2 = g.cl.Finish(g.qp); if (x2 && !r.err) r.err = x2;
@@ -922,18 +953,25 @@ index 2198080..bf86531 100644
 +            const ARes s = run_arm(a, th);
 +            const double cms = s.cpu_n ? s.cpu_s * 1e3 / s.cpu_n : -1, dus = nd ? dev / nd * 1e6 : -1;
 +            cs[arm] += s.cgbs() / 2; gs[arm] += s.ggbs() / 2; cm[arm] += cms / 2; du[arm] += dus / 2;
++            char id[48]; if (mx) snprintf(id, sizeof id, "cpu_n_cols=1 gpu_n_cols=%d", ng); else snprintf(id, sizeof id, "n_cols=%d", nc);
 +            // cpu_ms_per_graph: one graph = 64 mat-vecs of 4096 x 4096; gpu_dev_us: mean END - START per gemv over the arm (warm-up included)
-+            o.line("x4 tog pos=%d n_cols=%d arm=%s set=4,5,6,7 cpu_gbs=%.2f gpu_gbs=%.2f sum_gbs=%.2f cpu_ms_per_graph=%.3f gpu_dev_us=%.1f gpu_dev_gbs=%.2f cpu_calls=%ld gpu_batches=%ld err=%d %s",
-+                   k, n, arms[arm], s.cgbs(), s.ggbs(), s.cgbs() + s.ggbs(), arm != 1 ? cms : -1, arm != 0 ? dus : -1, arm != 0 && dus > 0 ? h.bytes() / (dus * 1e-6) / 1e9 : -1,
-+                   s.cpu_n, s.gpu_n, r.err, astr(s).c_str());
++            o.line("x4 %s pos=%d %s arm=%s set=4,5,6,7 cpu_gbs=%.2f gpu_gbs=%.2f sum_gbs=%.2f cpu_ms_per_graph=%.3f gpu_dev_us=%.1f gpu_dev_gbs=%.2f cpu_calls=%ld gpu_batches=%ld err=%d %s",
++                   mx ? "togmix" : "tog", k, id, arms[arm], s.cgbs(), s.ggbs(), s.cgbs() + s.ggbs(), arm != 1 ? cms : -1, arm != 0 ? dus : -1,
++                   arm != 0 && dus > 0 ? h.bytes() / (dus * 1e-6) / 1e9 : -1, s.cpu_n, s.gpu_n, r.err, astr(s).c_str());
 +        }
-+        o.line("x4 tog%dsum cpu_alone_gbs=%.2f gpu_alone_gbs=%.2f both_cpu_gbs=%.2f both_gpu_gbs=%.2f sum_gbs=%.2f sum_vs_cpu_alone=%.3f cpu_loss_gbs=%.2f gpu_loss_gbs=%.2f "
-+               "cpu_alone_ms=%.3f both_cpu_ms=%.3f gpu_alone_dev_us=%.1f both_gpu_dev_us=%.1f err=%d", n, cs[0], gs[1], cs[2], gs[2], cs[2] + gs[2], cs[0] > 0 ? (cs[2] + gs[2]) / cs[0] : -1,
-+               cs[0] - cs[2], gs[1] - gs[2], cm[0], cm[2], du[1], du[2], r.err);
++        if (mx) o.line("x4 togmixsum cpu_n_cols=1 gpu_n_cols=%d cpu_alone_gbs=%.2f gpu_alone_gbs=%.2f both_cpu_gbs=%.2f both_gpu_gbs=%.2f both_cpu_vs_tog1_both_cpu=%.3f sum_gbs=%.2f "
++                       "sum_vs_cpu_alone=%.3f cpu_alone_ms=%.3f both_cpu_ms=%.3f gpu_alone_dev_us=%.1f both_gpu_dev_us=%.1f err=%d", ng, cs[0], gs[1], cs[2], gs[2],
++                       tog1_both_cpu > 0 ? cs[2] / tog1_both_cpu : -1, cs[2] + gs[2], cs[0] > 0 ? (cs[2] + gs[2]) / cs[0] : -1, cm[0], cm[2], du[1], du[2], r.err);
++        else {
++            if (nc == 1) tog1_both_cpu = cs[2];
++            o.line("x4 tog%dsum cpu_alone_gbs=%.2f gpu_alone_gbs=%.2f both_cpu_gbs=%.2f both_gpu_gbs=%.2f sum_gbs=%.2f sum_vs_cpu_alone=%.3f cpu_loss_gbs=%.2f gpu_loss_gbs=%.2f "
++                   "cpu_alone_ms=%.3f both_cpu_ms=%.3f gpu_alone_dev_us=%.1f both_gpu_dev_us=%.1f err=%d", nc, cs[0], gs[1], cs[2], gs[2], cs[2] + gs[2], cs[0] > 0 ? (cs[2] + gs[2]) / cs[0] : -1,
++                   cs[0] - cs[2], gs[1] - gs[2], cm[0], cm[2], du[1], du[2], r.err);
++        }
 +    }
 +    done();
 +}
-+void x4m(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4) { const char * why = mc(g, o, th, ks, x4); tog(g, o, th, ks, x4, why); }
++void x4m(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4) { int okn[5] = {}; const char * why = mc(g, o, th, ks, x4, okn); tog(g, o, th, ks, x4, why, okn); }
 +
 +// ---- x4s hand-off cell (Ebony E-J9): the data moves of one GPU join at lead share 0.30 (6656 rows x 4096, 4-copy ring, general
 +// kernel), on the lead thread alone (cpu 4; no CPU rows, the split arms above price those): before the launch the CPU puts the f32
@@ -1103,9 +1141,41 @@ index 2198080..bf86531 100644
 +    handoff(g, o, th, ks);
 +}
 +
++// ---- x4k (child, from x4i): which KleidiAI Q4_0 kernel the CPU module picks. In a fresh process the module's first extra-buffer
++// lookup runs init_kleidiai_context, which logs "kleidiai: primary q4 kernel feature <F>"; the probe catches ggml's log while
++// it loads the CPU backend. features = the CPU's HWCAP bits kleidiai reads (dotprod, i8mm, sve, sme, fp16).
++void kai_cb(ggml_log_level, const char * t, void * u) { if (t && strstr(t, "kleidiai")) *(std::string *) u += t; }
++void kai(Out & o) {
++    std::string lg; ggml_log_callback pc = nullptr; void * pu = nullptr; ggml_log_get(&pc, &pu); ggml_log_set(kai_cb, &lg);
++    GB gb; const bool ok = gb.init();
++    const std::string bt = ok ? ggml_backend_buft_name(gb.pick(GGML_TYPE_Q4_0, 4096, 4096)) : "none";
++    ggml_log_set(pc, pu);
++    std::string kern = "unseen"; const char * key = "primary q4 kernel feature "; const size_t a = lg.find(key);
++    if (a != std::string::npos) { const size_t b = a + strlen(key); kern = lg.substr(b, lg.find_first_of(" \n", b) - b); }
++    std::string ft;
++#if defined(__linux__) && defined(__aarch64__)
++    const unsigned long h1 = getauxval(AT_HWCAP), h2 = getauxval(AT_HWCAP2);
++    const struct { const char * n; bool on; } fs[] = { { "dotprod", !!((h1 >> 20) & 1) }, { "fp16", !!((h1 >> 10) & 1) }, { "sve", !!((h1 >> 22) & 1) }, { "i8mm", !!((h2 >> 13) & 1) }, { "sme", !!((h2 >> 23) & 1) } };
++    for (const auto & f : fs) if (f.on) ft += (ft.empty() ? "" : "+") + std::string(f.n);
++#endif
++    o.line("x4 kai kernel=%s features=%s q4_buft=%s backend=%s cpu_ok=%d", kern.c_str(), ft.empty() ? "none" : ft.c_str(), bt.c_str(), ok ? gb.desc().c_str() : "none", ok);
++    o.line("x4 kai log text=%s", lg.empty() ? "none" : san(lg, 1500, '_').c_str());
++}
++void x4body(Out & o, const char * blk, const char * dir);
++// every parent block: Android thermal status and kgsl thermal_pwrlevel before and after (Bonnie r5 rider)
 +void x4(Out & o, const char * blk, const char * dir) {
 +    const bool kid = strstr(blk, "_c") != nullptr;
++    auto tl = [&](const char * when) { Therm t; o.line("x4 therm blk=%s when=%s status=%s thermal_pwrlevel=%s gpu_max_mhz=%ld gpu_mhz=%ld", blk, when, t.status().c_str(),
++                                                    kg("thermal_pwrlevel").c_str(), gpu_max_mhz(), gpu_mhz("gpuclk")); };
++    if (!kid) tl("before");
++    x4body(o, blk, dir);
++    if (!kid) tl("after");
++}
++void x4body(Out & o, const char * blk, const char * dir) {
++    const bool kid = strstr(blk, "_c") != nullptr;
 +    if (!kid) cond(o);
++    if (!strcmp(blk, "x4k_c")) { kai(o); return; }
++    if (!strcmp(blk, "x4i")) child(o, "x4k_c", dir, 15);   // before the parent opens its GPU context
 +    if (!strcmp(blk, "x4d")) { child(o, "x4d_c", dir, 30); return; }
 +    if (!strcmp(blk, "x4e")) { child(o, "x4e1_c", dir, 9); child(o, "x4e2_c", dir, 9); child(o, "x4e3_c", dir, 12); return; }
 +    Gpu g; if (!g.init()) { o.line("x4 error=%s", g.err.c_str()); return; }
@@ -1143,7 +1213,7 @@ index 2198080..bf86531 100644
  } // namespace
  
  extern "C" int llama_vollie_probe(const char * block, const char * dir, char * out, size_t cap);
-@@ -2826,8 +3751,10 @@ extern "C" int llama_vollie_probe(const char * block, const char * dir, char * o
+@@ -2826,8 +3804,10 @@ extern "C" int llama_vollie_probe(const char * block, const char * dir, char * o
      const char * on = getenv("VOLLIE_PROBE");
      if (!on || !*on || !strcmp(on, "0") || !out || cap < 2) return -1;
      out[0] = 0; Out o{out, cap};
@@ -1151,11 +1221,11 @@ index 2198080..bf86531 100644
      auto t0 = clk::now();
 -    static const char * const known[] = { "hdr", "p2", "p2d", "x1", "x2", "p1", "a", "l1", "l4", "l23", "l5", "l6", "l7", "anon34", "anon42", "x3b", "x3g", "x3c", "x3r" };
 +    static const char * const known[] = { "hdr", "p2", "p2d", "x1", "x2", "p1", "a", "l1", "l4", "l23", "l5", "l6", "l7", "anon34", "anon42", "x3b", "x3g", "x3c", "x3r",
-+                                          "x4i", "x4a", "x4b", "x4f", "x4c", "x4d", "x4e", "x4m", "x4s", "x4r", "x4d_c", "x4e1_c", "x4e2_c", "x4e3_c" };
++                                          "x4i", "x4a", "x4b", "x4f", "x4c", "x4d", "x4e", "x4m", "x4s", "x4r", "x4d_c", "x4e1_c", "x4e2_c", "x4e3_c", "x4k_c" };
      bool ok = false; for (const char * k : known) ok |= !strcmp(block, k);
      if (!ok) return -2;
      hdr(o);
-@@ -2846,6 +3773,7 @@ extern "C" int llama_vollie_probe(const char * block, const char * dir, char * o
+@@ -2846,6 +3826,7 @@ extern "C" int llama_vollie_probe(const char * block, const char * dir, char * o
      else if (!strcmp(block, "x1")) x1(o);
      else if (!strcmp(block, "x2")) x2(o);
      else if (block[0] == 'x' && block[1] == '3') r34::x3(o, block, dir ? dir : ".");

@@ -5,24 +5,26 @@ stays reserved for the first real decode), kit r35. Design: [bonnie-joins.md](bo
 [ebony-joins.md](ebony-joins.md) §2, §7 (cells X4-a to X4-f), with the lead's block list. Added on request after the first
 build: block x4m and the x4s shares up to 0.60 ([bonnie-joins-r2.md](bonnie-joins-r2.md) §0 item 6, §2.6); the x4e C11 mode
 and the x4s hand-off cell ([ebony-joins-r2.md](ebony-joins-r2.md) E-J8, E-J9); the x4m together cell (Bonnie r3 §4 item 3,
-Ebony B.1). This file describes the final build, which has all of them. Not committed, not uploaded. The pre-registration is
+Ebony B.1); last, after [bonnie-joins-r5.md](bonnie-joins-r5.md) §2 and §3, the mixed arm in the together cell and the
+riders (`gpu_max_mhz` in the launcher tail and `x4 res pass`, thermal status before and after every block, the KleidiAI
+kernel line). r35 is frozen with this build. This file describes the final build, which has all of them. Not committed, not uploaded. The pre-registration is
 the lead's; the APK goes up only after it is pushed.
 
 ## Contents
 
 | item | file | sha256 |
 |---|---|---|
-| runtime patch | `patches/llama.cpp-c3/0007-x4-join-probe.patch` (1,165 lines, only `src/llama-vollie-probe.cpp`, on 0005) | `e4e061ffa413ce029d4f10f3a54c15103438e03c4ccaf4e054224a52b0987fae` |
+| runtime patch | `patches/llama.cpp-c3/0007-x4-join-probe.patch` (1,235 lines, only `src/llama-vollie-probe.cpp`, on 0005) | `fcd6c1e8c7a71f57224239e248c380ea189e4ca346412a17c20d44f4bcc60a8a` |
 | app patch | `patches/app-c3/0005-kit-r35-probe.patch` (100 lines, on 0004) | `14c96c38faad7e01959beb793b6087d64b8580920ae157e975943b17c654fad0` |
 | child process source | `tools/c3_x4child.c` (new) | `d75cf8ca58252f85fdc55667395e297fd738d8fbb4f92656d339eb2edae38469` |
 | parser | `tools/c3_probe_parse.py` (`x4report`, `x4selftest`) | (tracked file) |
-| APK | `lab/dist-c3/r35/vollie-c3-probe-r35.apk`, 16,619,478 B, versionCode 35, versionName 1.35.0, package `com.insaneutils.vollie.c2`, debug certificate SHA-256 `c49dde85…1716` (same as r34) | `089ab530c9bc17dca382260f848660fe251a572abf0c8d0363ca3a732e324c62` |
-| build record | `lab/dist-c3/r35/BUILD-r35.txt` | `e91a99c2f18ac6a710449057f4ce3fedf553241b33a4049ef9239d1a70615dff` |
-| sums | `lab/dist-c3/r35/SHA256SUMS` | `4efafdc1942858eccd6518ca0d3efb2c8d615d1d864f1058e97bbaa48dc22e7b` |
+| APK | `lab/dist-c3/r35/vollie-c3-probe-r35.apk`, 16,621,998 B, versionCode 35, versionName 1.35.0, package `com.insaneutils.vollie.c2`, debug certificate SHA-256 `c49dde85…1716` (same as r34) | `465d97bb7932fc4c9b7c675e1b3e2b78536466f9dec3442d4b8c59405f558af5` |
+| build record | `lab/dist-c3/r35/BUILD-r35.txt` | `5211ba23acf957ee42d288e466a98ebd35583c2c9b7d7a1455704dc56b29e91f` |
+| sums | `lab/dist-c3/r35/SHA256SUMS` | `1eb6cdffa9e1ce5a84f703b740f7709dca14cc726f8ef8d6a2c4d52f3a01d321` |
 
 Libraries in the APK, against r34:
 - `libggml-cpu-android_armv8.2_2.so` byte-identical to r33 and r34: `46e0735d2824ba6f3a156e219e058a701f6024fdbecbb2ef937b3127115a9694`.
-- `libllama.so` rebuilt from c3 0001, 0002, 0003, 0005, 0007: `0db48e404aa2ad3ecdfb6f42bbf55a9db318e019a7cf5e69ca961a4abe7bffd1`.
+- `libllama.so` rebuilt from c3 0001, 0002, 0003, 0005, 0007: `eb67f4bc0d5a1af77070d929f6562bfb602bf59ac264ba8f47a06882e87a2e96`.
 - `libvollie_x4c.so` is new, 5,184 B, `fb61545acea9990c3bff418682f46970eba24fd92b56af2b256368302779315f` after the gradle strip. The jniLibs source is
   `de6ae452…facfe`, built with NDK 28.2 `aarch64-linux-android28-clang -O2 -s -Wl,-z,max-page-size=16384 tools/c3_x4child.c -ldl`.
 - `libapp.so` (Dart) changed.
@@ -46,19 +48,21 @@ Libraries in the APK, against r34:
   - Because the child tees, a killed child keeps the lines it printed before the kill.
   - Inside the child, every x4e host wait gives up after 2 s (`PK_DEADLINE`). Every kernel loop has an iteration cap, so a
     flag that is never seen ends the kernel instead of hanging the queue.
+- x4i also spawns `x4k_c` (timeout 15 s) before it opens its GPU context: the KleidiAI line below.
 - No GPU context is open in the parent while a child runs.
 
 ## Run order and blocks (button "Run c3 probe r35 (GPU joins). Cool start: do not run any other probe before this")
 
 Order: x4i, x4a, x4b, x4f, x4c, x4d, x4e, x4m, x4s, x4r. Each block runs after the r16 gate (up to 180 s). The report is saved
-before and after every block. Every parent block (not the children) starts with x3's `x3 cond` lines and then `x4 info`,
+before and after every block. Every parent block (not the children) starts with an `x4 therm ... when=before` line and ends
+with `x4 therm ... when=after` (just before `<blk> end s=`). In between it starts with x3's `x3 cond` lines and then `x4 info`,
 whose fields are x3 info's. Each block except x4d and x4e then loads the four kernels from x4i's binaries. Those loads
 print x3's `x3 load` lines, plus `x3 loadlog` where the driver gives a log. x4i compiles the kernels fresh and prints
 `x3 src` and `x3 build` / `x3 buildlog` as x3b did. The parser reports x3-tagged lines from x4 blocks under R75, not R74.
 
 ### Common tail of every timed launcher cell (`tl`, `rt`, `la`, `rtargs` lines): written `<tail>` below
 
-`lcpu=<0-3|4|7> lcpu_us= lcpu_over_wall= lplace=<off>/<checks>@<last other cpu> thr= mhz_range= max_mhz= gpu_mhz= hr= ramp_s= ramp_ok=`
+`lcpu=<0-3|4|7> lcpu_us= lcpu_over_wall= lplace=<off>/<checks>@<last other cpu> thr= mhz_range= max_mhz= gpu_mhz= gpu_max_mhz= hr= ramp_s= ramp_ok=`
 
 - `lcpu_us` is the launcher thread's CPU time (`CLOCK_THREAD_CPUTIME_ID`) per call over the cell's kept calls. `lcpu_over_wall`
   is that CPU time divided by the kept window.
@@ -71,6 +75,13 @@ print x3's `x3 load` lines, plus `x3 loadlog` where the driver gives a log. x4i 
   on its own cpu, then until the policy reads `scaling_max_freq` (at most 2 s more). In x4a, the 0-3 launcher does not spin
   (as R74): `ramp_s` about 0, and `ramp_ok` is the at-max check at the start.
 - `max_mhz` is `p<policy>:<scaling_max>/<cpuinfo_max>` for 0, 4 and 7.
+- `gpu_max_mhz` is kgsl `max_gpuclk` (Hz ÷ 1e6), else kgsl `devfreq/max_freq`, else -1; read once when the line is printed.
+
+### Lines in every parent block
+
+| line | fields |
+|---|---|
+| `x4 therm` | `blk= when=<before\|after> status=<AThermal_getCurrentThermalStatus: 0 none, 1 light, 2 moderate, 3 severe, 4 critical, 5 emergency, 6 shutdown, -1 error; na if the call is missing> thermal_pwrlevel=<kgsl, or e<errno>> gpu_max_mhz= gpu_mhz=<kgsl gpuclk, -1 unreadable>` |
 
 Cells that run through x3's `run_arm` (x4c `x3 alone`, x4d `x4 rec`, x4m `x4 mc` and `x4 tog`, x4s `x4 split` and
 `x4 handoffarm`) end with x3's `astr` tail instead:
@@ -86,6 +97,9 @@ Cells that run through x3's `run_arm` (x4c `x3 alone`, x4d `x4 rec`, x4m `x4 mc`
 | `x4 recq` | present: `present=1 max_size=<CL_DEVICE_RECORDABLE_QUEUE_MAX_SIZE, param 0x41DE> ret_bytes= err= entry=<dlsym\|extaddr\|none>`; absent: `present=0 entry=` |
 | `x4 entry` | `flush= wait_for_events= event_info= user_event= map_buffer= svm_alloc= svm_arg= ext_addr= recording=<dlsym\|extaddr\|none>` (1 = the entry point resolved) |
 | `x3 src`, `x3 build`, `x3 buildlog`, `x3 load`, `x3 loadlog` | as x3b (fresh compile in the clc child) |
+| `x4 kai` | from child `x4k_c`: `kernel=<the F of "kleidiai: primary q4 kernel feature F", e.g. DOTPROD; unseen if no such log line> features=<HWCAP bits: dotprod, fp16, sve, i8mm, sme joined by +; none> q4_buft=<buffer type ggml picks for a Q4_0 4096 x 4096 tensor> backend=<GB desc> cpu_ok=` |
+| `x4 kai log` | `text=<every ggml log line containing "kleidiai" during the CPU backend's load, sanitised, cap 1500; none>` |
+| `x4 child` | `blk=x4k_c ...` as in x4d |
 | `x3 identity` | as x3b, general kernel at 2816 x 4096 (a sanity check that the fresh binaries run) |
 
 ### x4a launch timeline (profiling queue)
@@ -292,11 +306,13 @@ wrong parameter count would at worst crash the child; the parent then prints `rc
   runs one column only.
 
 **Together cell** (after the cg cell):
-- **Arms:** x3c's ABBA (cpu, gpu, both, both, gpu, cpu), first at two columns, then at one column.
+- **Arms:** x3c's ABBA (cpu, gpu, both, both, gpu, cpu), first at two columns, then at one column, then the mixed arm:
+  CPU at one column beside GPU mc3 at four columns (three if the n = 4 identity failed; none if both failed).
 - **CPU:** ggml Q4_0 mul_mat with x [4096, n], 64 copies of 4096 x 4096 (576 MB, repacked), `VOLLIE_POOL` on 4-7, 4 threads.
-- **GPU:** 11008 x 4096 cold ring (532 MB). mc3 with n_cols 2 at two columns, the general kernel at one. The feeder on 0-3
-  runs 8 launches then `clFinish` per call, on the profiling queue (one event per launch, for `gpu_dev_us`). x3c used the
-  plain queue.
+- **GPU:** 11008 x 4096 cold ring (532 MB). mc3 with n_cols 2 at two columns, the general kernel at one, mc3 at 4 (or 3)
+  in the mixed arm; the input image holds 4 columns and the output 4 x 11008 floats. The feeder on 0-3
+  runs 8 launches then `clFinish` per call, on the profiling queue (one event per launch, for `gpu_dev_us`). R74's x3c
+  (`x3 tog`) used the plain queue, so a comparison with R74's `x3 togsum` includes that difference.
 - **Rates:** `cpu_gbs` and `gpu_gbs` are weight bytes per second. A gemv of n columns reads its weights once, so the rates
   are not per column.
 - **If mc3 failed** (no kernel, work-group limit, allocation, or the n = 2 identity), the two-column part prints
@@ -314,6 +330,11 @@ wrong parameter count would at worst crash the child; the parent then prints `rc
 | `x4 tog2sum`, `x4 tog1sum` | `cpu_alone_gbs= gpu_alone_gbs= both_cpu_gbs= both_gpu_gbs= sum_gbs= sum_vs_cpu_alone= cpu_loss_gbs= gpu_loss_gbs= cpu_alone_ms= both_cpu_ms= gpu_alone_dev_us= both_gpu_dev_us= err=` |
 | `x4 tog2` (skip) | `ok=0 reason=<identity\|create_kernel\|wg_max\|alloc\|no_general_program\|mc_alloc> then=n_cols_1_only` |
 | `x4 tog` (failure) | `ok=0 reason=<no_kernel\|no_cpu_backend>`, `ok=0 reason=gpu_alloc err=`, `n_cols= ok=0 reason=cpu_alloc` |
+| `x4 togmix choice` | `gpu_n_cols=<4\|3\|0> n4_ok= n3_ok=` (the x4m identities) + `ok=0 reason=<identity\|create_kernel\|mc_alloc>` when 0 (then no mixed arm) |
+| `x4 togmix setup` | `cpu_n_cols=1 gpu_n_cols= cpu=ggml_q4_0 cpu_buft= cpu_mb= gpu_kern=mc3 gpu_m=11008 gpu_k=4096 gpu_copies= gpu_mb= set=4,5,6,7 feeder=0-3 queue=profiling backend=` |
+| `x4 togmix` | `pos=<0..5> cpu_n_cols=1 gpu_n_cols= arm=<cpu\|gpu\|both>` + the `x4 tog` fields from `set=` to the astr tail |
+| `x4 togmixsum` | `cpu_n_cols=1 gpu_n_cols= cpu_alone_gbs= gpu_alone_gbs= both_cpu_gbs= both_gpu_gbs= both_cpu_vs_tog1_both_cpu= sum_gbs= sum_vs_cpu_alone= cpu_alone_ms= both_cpu_ms= gpu_alone_dev_us= both_gpu_dev_us= err=` |
+| `x4 togmix` (failure) | `n_cols=1 ok=0 reason=cpu_alloc` |
 
 Definitions (together):
 - `cpu_ms_per_graph` is the mean wall time of one graph (64 mat-vecs of 4096 x 4096) over the measured window; -1 in gpu
@@ -322,6 +343,8 @@ Definitions (together):
   `gpu_dev_gbs` = 11008 x 4096 weight bytes ÷ `gpu_dev_us`.
 - Summary fields are means of the two arms of each kind: `cpu_alone` from the cpu arms, `gpu_alone` from the gpu arms,
   `both_*` from the both arms. `sum_vs_cpu_alone` = (both_cpu + both_gpu) ÷ cpu_alone, as x3c.
+- `both_cpu_vs_tog1_both_cpu` = the mixed arm's `both_cpu_gbs` ÷ `x4 tog1sum`'s `both_cpu_gbs` in the same block (-1 if
+  the one-column part did not run). Both have the CPU at one column; only the GPU's column count differs.
 
 ### x4s split of the fused [gate;up] (22016 x 4096, batch 1)
 
@@ -392,8 +415,8 @@ Definitions (hand-off):
 ### x4r residency
 
 x3r's arm with 1.5 GB of GPU buffers: round(1.5e9 ÷ 25.4 MB) = 59 copies of 11008 x 4096. The lines are x3's with the tag
-`x4`: `x4 res stage=...`, `x4 res pass=...`, `x4 res sum ...`, `x4 res done err=`; every field is as in x3r. The
-per-pass `gpu_mhz` there still reads `gpuclk` only.
+`x4`: `x4 res stage=...`, `x4 res pass=...`, `x4 res sum ...`, `x4 res done err=`; every field is as in x3r, and `x4 res
+pass` ends with `gpu_max_mhz=` (as in the tail). The per-pass `gpu_mhz` there still reads `gpuclk` only.
 
 ### Other lines
 
@@ -426,16 +449,22 @@ per-pass `gpu_mhz` there still reads `gpuclk` only.
   - x4e: all three children returned rc=0. Flag and counter ran in all three modes (hostptr, svm, svm_c11) with ok=1 and
     `visible_during_run=1`; the gemv gave `same_rows=1`. PoCL reports OpenCL C 1.2: the C11 program failed with
     `-cl-std=CL2.0` and built with `-cl-std=CL3.0` (`opt=-cl-std=CL3.0 err=0`), so the fallback path is exercised.
-  - x4m: identity ok=1 on all 9 columns (n 2, 3, 4); all 8 rate arms and both together parts (12 arms, `x4 tog2sum` and
-    `x4 tog1sum`) printed with err=0.
+  - x4m: identity ok=1 on all 9 columns (n 2, 3, 4); all 8 rate arms, both together parts (12 arms, `x4 tog2sum` and
+    `x4 tog1sum`) and the mixed arm (`gpu_n_cols=4`, 6 arms, `x4 togmixsum`) printed with err=0.
+  - Every block printed its two `x4 therm` lines (20 in all). On the host `status=na`, `thermal_pwrlevel=e2` and
+    `gpu_max_mhz=-1` (no Android, no kgsl): only the no-data path is exercised.
+  - `x4 kai`: `kernel=unseen features=dotprod+fp16 q4_buft=CPU_REPACK`. The host build has no KleidiAI, so the log
+    capture found nothing to catch; the phone's CPU module has it (`CPU_KLEIDIAI`, *device*, R74). Not checked on the
+    phone; if the module logs before the probe's callback is set, the line says `unseen`.
   - x4s: all 22 split arms and the 10 hand-off arms printed with err=0; every hand-off mode with reads matched its
     reference bitwise (`match=1`), `ahp_persist` included (PoCL's memory is the host's, so that says nothing for Adreno).
   - x4r ran 200 passes with err=0.
   - With the probe knob unset, the child got no lines (the entry returned -1).
 - `python3 -I tools/c3_probe_parse.py --selftest`: `selftest r72 ok`, `selftest x3 ok`, `selftest x4 ok`, `selftest ok`.
-  The x4 selftest has 53 synthetic lines, including svm_c11 (a build failure and the c11 line), x4m mc / mcid / mcsum,
+  The x4 selftest has 61 synthetic lines, including therm, kai, togmix / togmixsum, svm_c11 (a build failure and the c11 line), x4m mc / mcid / mcsum,
   tog / tog2sum / tog1sum, and handoff / handoffarm. `x4report` also ran on the host outputs of all ten blocks.
-- The kill-line inputs printed by `x4report` gained two lines: `together sum_vs_cpu_alone n_cols 2 .., n_cols 1 ..` and
+- The kill-line inputs printed by `x4report` gained four lines: `mixed (CPU 1 col, GPU n cols) both_cpu_vs_tog1_both_cpu ..`,
+  `kleidiai q4 kernel ..`, `together sum_vs_cpu_alone n_cols 2 .., n_cols 1 ..` and
   `hand-off extra_us <mode>:<value>/...`; the X4-e line now lists svm_c11 beside hostptr and svm.
 - The APK is versionCode 35, versionName 1.35.0, package `com.insaneutils.vollie.c2`, and has the same signing
   certificate digest as r34 (`apksigner`).
@@ -444,19 +473,22 @@ per-pass `gpu_mhz` there still reads `gpuclk` only.
 
 | block | estimate |
 |---|---|
-| x4i | 2 to 5 s |
+| x4i | 3 to 6 s (with the x4k child) |
 | x4a | 5 to 10 s |
 | x4b | 15 to 35 s (10 cells, each a 0.5 to 2.5 s spin + 0.9 s) |
 | x4f | 6 to 10 s |
 | x4c | 25 to 40 s (8 cold cells with 512 MB rings) |
 | x4d | 8 to 16 s (timeout 30) |
 | x4e | 5 to 12 s (worst 30 s by the timeouts 9 + 9 + 12) |
-| x4m | 45 to 85 s (8 cg arms of 1.8 to 3.8 s; 12 together arms of 2 to 4 s; two 576 MB CPU sets and a 532 MB ring to fill) |
-| x4s | 70 to 135 s (22 split arms, a ring built per arm; 10 hand-off arms of 1.3 to 3.3 s) |
+| x4m cg cell | 15 to 30 s (identity, then 8 arms of 1.8 to 3.8 s) |
+| x4m together, two and one column | 28 to 55 s (12 arms of 2 to 4 s; two 576 MB CPU sets and the 532 MB ring to fill) |
+| x4m mixed arm | 14 to 28 s (6 arms of 2 to 4 s; one more CPU set) |
+| x4s split | 55 to 110 s (22 arms of 2.5 to 5 s, rings built per arm) |
+| x4s hand-off | 15 to 35 s (references, then 10 arms of 1.3 to 3.3 s) |
 | x4r | 25 to 35 s |
 
-That is about 3.5 to 6.5 min of blocks, plus ten r16 gates of up to 180 s each. Total about 6 to 37 min, depending on the
-gates. For scale (*host*, PoCL, not a phone figure): x4m took 50 s and x4s 61 s in Docker.
+That is about 3.6 to 7 min of blocks, plus ten r16 gates of up to 180 s each. Total about 4 to 37 min, depending on the
+gates. For scale (*host*, PoCL, not a phone figure): x4m took 63 s and x4s 61 s in Docker.
 
 Memory peak (*estimated*):
 - x4c: about 0.8 GB.
@@ -476,7 +508,7 @@ Memory peak (*estimated*):
   cluster, as labelled. Compare them with R74's `x3 rt` only with the clocks beside them.
 - **x4f `rtargs`:** `args=2` alternates two matrices, while `args=15` reuses one (6.5 MB, larger than the GPU caches). Read
   `enq_us` and `lcpu_us` for the cut, not `ovh_us`.
-- **x4m together** uses the profiling queue for the GPU (one event per launch), where x3c used the plain queue. Within the
+- **x4m together** (and its mixed arm) uses the profiling queue for the GPU (one event per launch), where R74's x3c used the plain queue. Within the
   cell the two widths are measured the same way; against R74's `x3 togsum` read the difference as including that.
 - **x4m cg** uses the upstream mc3 kernel as it is at 620d2225c. It is the kernel ggml would run for 2 to 4 columns on Adreno;
   it is not tuned here.

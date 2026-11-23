@@ -106,3 +106,46 @@ build of libllama recompiles only `llama-vollie-probe.cpp.o` (559 of 560 objects
 CPU module ships byte-identical from kit r33. All four blocks ran on arm64 Linux (Docker) against PoCL as a functional
 test; identity passed on all six pairs there with a host-only scale shim (`VOLLIE_X3_HOST_TEST`, never set in a kit).
 Parser: `tools/c3_probe_parse.py` (`--selftest`).
+
+## 0006-x3-emu.patch: host emulation of the Adreno Q4_0 gemv's arithmetic (declared numerics change, host check only)
+
+Changes `ggml/src/ggml-cpu/ggml-cpu.c` and `repack.cpp`, adds `ggml/src/ggml-cpu/vollie-x3emu.h` (on 0005; applies with or
+without 0004). For memo-12 T-N1, the perplexity check of the GPU lane; not meant for a kit. Results and design:
+`campaigns/03-dense15-5pct/reports/memo-12-work/tom-numerics.md`.
+
+| knob | meaning |
+|---|---|
+| `VOLLIE_X3_EMU` | unset, `0` or any other value = off. `1` or `2`: every `MUL_MAT` with Q4_0 weights and f32 activations, at any batch size, computes each output as upstream's `gemv_noshuffle_q4_0_f32.cl` / `_spec.cl` do: `((q & 0xF) - 8) * d` rounded to half, times the f32 activation (no Q8_0), summed in f32 into four partials (block index mod 4, weights in order inside a block), then `((p0 + p1) + p2) + p3`. `2` = multiply and add rounded separately (reproduces R74's six device identity lines to every printed digit); `1` = fused multiply-add. With the knob set, the repack buffer type declines Q4_0 so the weights stay plain (Q6_K and the other types repack as before) |
+| `VOLLIE_X3_EMU_Q6K` | same values, for Q6_K weights (the output head): upstream's `gemv_noshuffle_q6_k_f32.cl`, same work split and reduction; its weight is `((q - 32) * sc) * d` in f32 (the kernel promotes to float before the scales, so nothing is rounded to half). The repack buffer type then declines Q6_K. Independent of `VOLLIE_X3_EMU` |
+
+Self-check: `tools/c3_x3emu_check.c` (the NEON tile equals the scalar reference bit for bit, Q4_0 and Q6_K; the Q6_K unpack
+follows ggml's `dequantize_row_q6_K` order; the Q4_0 reference replays R74's x3 identity lines). Knob unset: per-chunk PPL identical to the stock build at `-b 512`, `-ub 32` (4 chunks) and `-ub 1`
+(2 chunks), Llama-2-7B and Yi-1.5-6B (*host*).
+
+## 0007-x4-join-probe.patch: kit r35 x4 blocks for R75, the GPU join cost (no numerics change)
+
+Changes only `src/llama-vollie-probe.cpp` (on 0005; independent of 0004 and 0006). Still off unless `VOLLIE_PROBE` is set,
+and nothing outside the file calls it. Design: campaign 3 memo-12 work (`bonnie-joins.md` §5, `ebony-joins.md` §7.1); line
+formats, checks and limits: `campaigns/03-dense15-5pct/reports/memo-12-work/tom-r35-build.md`. Kit r35 is built from 0001,
+0002, 0003, 0005 and 0007.
+
+| block | what it runs |
+|---|---|
+| `x4i` | `CL_DEVICE_EXTENSIONS` in full, SVM capabilities, `CL_DEVICE_RECORDABLE_QUEUE_MAX_SIZE` (qcom), optional entry points; compiles the four upstream kernels (x3b's clc child) |
+| `x4a` | launch timeline on the profiling queue: 8 x 2816x4096 then one `clFinish`, one Llama-2 layer (7 launches), the 8 with `clFlush` after each; every event's QUEUED / SUBMIT / START / END; launcher on 0-3 and cpu 4 |
+| `x4b` | the x3 round trip at 2816 rows from 0-3, cpu 4, cpu 7 (0.5 s spin to full clock) x wait by `clFinish`, `clFlush` + event status spin, `clFlush` + `clWaitForEvents` |
+| `x4f` | launch-ahead behind a user event set 1 ms after the enqueue; round trip with 2 `SetKernelArg` calls instead of 15 |
+| `x4c` | stacked gate‖up (22016x4096) and q‖k‖v (12288x4096) on the general kernel: identity and cold rate against 11008x4096 and 4096x4096 |
+| `x4d` | recordable queue (`cl_qcom_recordable_queues`): a Llama-2 layer recorded and replayed against sync1, in a child process |
+| `x4e` | persistent kernels in child processes: CPU-to-kernel flag round trip, kernel-to-CPU counter (each with 1.x atomics on a mapped `ALLOC_HOST_PTR` buffer and on fine-grain SVM, and with C11 acquire / release atomics on fine-grain SVM), a looped row-claiming gemv |
+| `x4m` | upstream's multi-column gemv `kernel_gemv_noshuffle_q4_0_f32_mc3` on 11008x4096 cold at 2, 3, 4 columns against the one-column kernel (identity per column, ABBA); then CPU (ggml Q4_0, 4-7) and GPU together at two columns, at one column, and mixed (CPU one column, GPU mc3 four columns, three if four fails), x3c's ABBA on the profiling queue |
+| `x4s` | row split of the fused [gate;up] at batch 1, GPU share 0.20 to 0.60: launch from cpu 4, `clFlush`, CPU rows, event spin; R74's feeder mode at 0.25; then the hand-off of one join (input in, output out) by write/read, map/unmap, `ALLOC_HOST_PTR` map/unmap and kept-mapped `ALLOC_HOST_PTR` |
+| `x4r` | residency with 1.5 GB of GPU buffers beside a 2.6 GB anonymous arena (as x3r) |
+
+Small changes to 0005's code, none visible to the x3 blocks' numbers: `Out` can tee every line to a `FILE *` (child
+processes only, `VOLLIE_PROBE_TEE=1`); `run_clc`'s spawn/timeout part is `run_proc` (same behaviour); `launch()` takes an
+optional wait list; `make_wset()` takes the number of x columns (default 1); `alone()` returns its GB/s; `res()` takes the GPU GB and the line tag; the x3 info line is `info()`; `GClk`
+falls back to `devfreq/cur_freq` and `clock_mhz` when `gpuclk` is unreadable and prints `src=`. Riders on every x4 block: `x4 therm` (Android thermal status, kgsl `thermal_pwrlevel`) before and after; `gpu_max_mhz=` in the launcher tail and in `x4 res pass` (an appended field, also in x3r's line); x4i runs a child `x4k_c` that prints `x4 kai` (the KleidiAI primary Q4_0 kernel from ggml's log, the CPU's HWCAP features). `Therm` also resolves `AThermal_getCurrentThermalStatus`. The child process is
+`libvollie_x4c.so`, built from `tools/c3_x4child.c` (a loader: it opens libllama.so and calls the probe entry).
+Checked (*host*): `clang -fsyntax-only -Wall -Wextra` clean on macOS; Android build without new warnings, libllama only
+recompiled; every x4 block ran on arm64 Linux (Docker, PoCL) as a functional test, including the child processes.
