@@ -128,3 +128,8 @@ memo-09: a small next-token guess head, trained on a host, used only to propose 
 *Owner decision 2026-11-22 (later):* "GPU 측정은 예외로 허용합니다. x3 프로브 준비하세요." The x3 GPU probe (design:
 `reports/memo-09-work/tom-host.md` §1.5) may run on the phone as an exception to the device hold. It is the round after
 R73's number: **R74** (R73 stays reserved for the held first real decode). Scope is the GPU lane only; no model is loaded.
+
+*Owner decision 2026-11-23:* "측정 시도 허락합니다" (in answer to the lead's report of memo-12: the GPU join cost, with
+device cells listed in `reports/memo-12-work/bonnie-joins.md` §5 and `ebony-joins.md` §7.1). The X4 join probe may run
+on the phone as a second exception to the device hold: **R75**, kit r35. Scope is the GPU lane's launch and join cost
+(and its residency at a larger GPU share); no model is loaded. R73 stays reserved for the held first real decode.
