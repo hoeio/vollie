@@ -195,7 +195,7 @@ cg 1.45 and at cg 1.2 (K cost in ms taken from the committed model; approximate 
 | 150 | 9.32 / 8.66 / 8.45 | 11.27 / 11.03 / 10.67 | 11.58 / 11.36 / 10.97 | 12.41 / 12.21 / 11.73 |
 | 200 | 9.03 / 8.41 / 8.22 | 10.98 / 10.78 / 10.44 | 11.28 / 11.09 / 10.72 | 12.06 / 11.90 / 11.45 |
 | 300 | 8.53 / 7.98 / 7.83 | 10.51 / 10.37 / 10.06 | 10.79 / 10.65 / 10.32 | 11.50 / 11.40 / 11.00 |
-| 360 | – | 10.36 / 10.17 / 9.88 | 10.61 / 10.44 / 10.13 | 11.30 / 11.15 / 10.78 |
+| 360 | – | 10.35 / 10.17 / 9.88 | 10.61 / 10.44 / 10.13 | 11.30 / 11.15 / 10.78 |
 | 452 | 8.12 / 7.50 / 7.40 | 10.13 / 9.87 / 9.60 | – | – |
 | 500 | 8.01 / 7.36 / 7.27 | 10.01 / 9.72 / 9.47 | 10.26 / 9.97 / 9.70 | 10.90 / 10.62 / 10.29 |
 
@@ -311,8 +311,10 @@ Notes:
 3. **Gap-free lane factor.** Bounded 0.57 to 0.63 (§3.3); x4s decides.
 4. **Which core runs the kernel side** (§1.3 item 2). Predicted in §2.1; x4b decides.
 5. **Head on the lane.** Priced (§3.3). Open: Q6_K kernel numerics; whether `q6_K_f32_tiled_mc3` covers two columns.
-6. **Yi at width 1.** 11.97 at a perfect lane with C7, C5, O 5.2 and no trained head. Open: the same at finite K
-   (not priced; the width-1 lane has cg = 1 by definition, so its K line may be easier than width 2's on Yi).
+6. **Yi at width 1 (no trained head).** Done (*estimated*, lane + C7 + C5 + O 5.2): 11.97 / 10.73 / 10.84 at K 0;
+   11.68 at K 30, 11.04 at K 100, 9.02 at K 500 on Yi. No K reaches 12 at lane 0.621. With the gap-free lane at
+   0.590 Yi reaches 12.00 at K ≤ 50 µs (12.52 at K 0); at 0.571, 12.32 at K 50. So Yi without a guesser needs the
+   same class of join as F; width 2 with a cheap second column (§3.2) is the easier line on every subject.
 7. **O.** Still an allowance (8 ms, unmeasured; R73 held). Each ms of O is 0.11 to 0.15 tok/s near 12.
 8. **Residency at 1.6 to 1.9 GB of GPU buffers** for Llama-2 and DeepSeek: x4r covers 1.5 GB.
 
@@ -342,12 +344,47 @@ External:
   HTTP 429 when fetched):
   https://gitlab.e.foundation/e/devices/android_kernel_fairphone_FP3/-/commit/4edfb6b4b99533f3fb92fd162f91bbf4be587d54
 - Upstream IFPC patches for drm/msm, 2025 (search summary): https://lists.freedesktop.org/archives/freedreno/2025-July/039839.html
-- llama.cpp release notes naming the Q6_K Adreno kernels and "decode GEMV and medium-batch GEMM optimizations
-  (speculative decoding/MTP)" (search summary): https://newreleases.io/project/github/ggml-org/llama.cpp/release/b8493 ,
-  https://newreleases.io/project/github/ggml-org/llama.cpp/release/b10791
+- llama.cpp release notes naming the Q6_K Adreno gemm and gemv kernels (#20089) (search summary):
+  https://newreleases.io/project/github/ggml-org/llama.cpp/release/b8493 . The search summary also listed an entry
+  "decode GEMV and medium-batch GEMM optimizations (speculative decoding/MTP) (#26477)"; I did not open its page.
+  The kernels themselves were read locally (*source*).
 - Kim, Oh, Yi, "Minimizing GPU Kernel Launch Overhead in Deep Learning Inference on Mobile GPUs", HotMobile 2021
   (abstract only; no per-launch figure found): https://pure.uos.ac.kr/en/publications/minimizing-gpu-kernel-launch-overhead-in-deep-learning-inference-/
 - Khronos registry, qcom extensions (no recordable-queue text): https://registry.khronos.org/OpenCL/extensions/qcom/
 
 Searched and not found: the `cl_qcom_recordable_queues` specification; a measured Adreno submit→start latency; a
 measured cost of a two-column gemv on an Adreno 6xx.
+
+## 8. After Ebony's round-2 review (her part A, read after §0 to §7 were written; her parts B to D do not exist yet)
+
+We reached the same four things independently: the launch gap is counted twice (her A.2, my §3.3 lane note), the
+split cell holds a join-slack term (her A.3, my §1.2), the width-2 lane term is wrong (her A.6, my §3.1), and
+upstream's `_mc3` kernel is already in the built program (her A.5, my §3.2). What is left:
+
+| item | mine (this file) | hers (A.2 to A.7) | position |
+|---|---|---|---|
+| in-situ K at R74 | 480 (GPU time × 1.10 beside the CPU) | 445 (her definition) | same quantity, two contention factors. Use 445 to 480 |
+| join slack | about 0.107 × K (scales with the join) | 40 to 80 µs per split stage, does not shrink with K | **Open.** If hers holds, every K in §2.5 below about 300 is too kind by 40 to 80 µs. x4b's p90 − p50 in the spin cells decides: my band 90 (30 to 250); under 50 supports mine |
+| width-2 body factor at the centre | 0.764 (cg 1.45) | 0.63 (pair model, C 40) | see the bridge below. **I take hers as the centre and mine as the floor** |
+| stack at the measured K | 10.26 / 9.97 / 9.70 (K 500, cg 1.45) | 11.65 / 11.66 / 11.23 (K 452); 11.2 / 11.15 / 10.8 with slack | the gap is the bridge, not K |
+| join line for 12 on all three | 104 µs at cg 1.2; 184 at cg 1.08; none at cg 1.45 | 150 to 300 µs at C 35 to 40; none at C 24 | agree in kind: a line exists, its place is cg and the bus model |
+| kill line for the mailbox cell | 100 µs | 100 µs (she withdrew 50) | agreed |
+| B+ worker cost | 0.92 × L_h (all four threads start after the launch, as x4s does it) | L_h ÷ 4 (only the launching thread is late) | both right for their case; a real lane gives the launching thread fewer rows (§1.3 item 1) |
+
+Bridge from 0.764 to 0.63 (*estimated*; each step is one assumption):
+
+| step | CPU + GPU, GB/s per pass at width 2 | body factor |
+|---|---|---|
+| mine: CPU bus share fixed at its W 1 value, GPU wall rate, cg 1.45 | 18.73 + 14.85 | 0.764 |
+| GPU at its device-time rate 24.6 (K carries all the dead time) | 18.3 + 17.0 | 0.73 |
+| GPU compute ceiling 28.3 GB/s, so cg = 24.6 ÷ 19.5 = 1.26 | 18.3 + 19.5 | 0.68 |
+| one shared bus of 46.1 GB/s: the GPU's slow-down frees bus for the CPU | 21.4 + 19.5 | 0.63 |
+
+- Step 2 is right by definition once K is "all GPU dead time" (§3.3 says the same).
+- Step 3 is her centre for cg (1.26); mine is 1.2 (1.05 to 1.7). No disagreement.
+- Step 4 is the one I had left out as "second order, in favour". It is worth 0.05 of the body. It holds if the
+  CPU's loss beside the GPU is bus sharing and nothing else; R72's read sum (46.5, *device*) supports the constant.
+- **Joint statement for the lead:** the stack column of R74-result §4 is low by 0.3 to 2 tok/s depending on cg
+  and on the shared-bus step. Both of us name the same deciding cell: `_mc3` at N = 2 against N = 1 (device time,
+  alone and beside the CPU), and the CPU's width-2 kernel beside it. It is not in R75 as briefed.
+- Her point on clocks stands for both models: at C 24 (L4 caps with the X1 thread on a small core) no line exists.
