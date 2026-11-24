@@ -150,3 +150,25 @@ falls back to `devfreq/cur_freq` and `clock_mhz` when `gpuclk` is unreadable and
 `libvollie_x4c.so`, built from `tools/c3_x4child.c` (a loader: it opens libllama.so and calls the probe entry).
 Checked (*host*): `clang -fsyntax-only -Wall -Wextra` clean on macOS; Android build without new warnings, libllama only
 recompiled; every x4 block ran on arm64 Linux (Docker, PoCL) as a functional test, including the child processes.
+
+## 0008-x4f-fix.patch: kit r36 for R75 amendment 1, the x4f hang fix (no numerics change)
+
+Changes only `src/llama-vollie-probe.cpp` (on 0007). Still off unless `VOLLIE_PROBE` is set. Cause: R75's x4f spun 2.5 h in its
+`gate` arm on the phone. The gated command was flushed before its user event was released and not flushed after, and the
+event spin had no deadline. Under a host emulation of "a released command is not submitted until the next flush" (an OpenCL
+shim on PoCL), r35's x4f hangs and r36's completes. Details: `campaigns/03-dense15-5pct/reports/memo-12-work/tom-r36-build.md`.
+
+| change | where |
+|---|---|
+| `clFlush` right after `clSetUserEventStatus` | x4f gate arm |
+| every event spin (`spin_ev`) gives up after 2 s with err -2001 | x4b / x4f `rt` waits, x4f gate and plain, x4s lead joins, x4s hand-off |
+| the same deadline on x4s feeder mode's wait for the feeder | x4s (x3's split is unchanged) |
+| rtcell's 100 profiled calls stop at the first deadline | x4b, x4f `rtargs` |
+| a deadline stops its x4f mode (gate: one more `clFlush`, `flush_recovered=`); `x4 la` gains `dl= stopped_at= flush_recovered=` | x4f |
+| `x4 la nf`: three gated launches released without a flush (2 s), then flushed (2 s): tests the cause on the device | x4f, after the gate/plain arm |
+| `x4 dl blk= n=`: the block's deadline count | every parent x4 block |
+| parent x4 blocks also write every line to `<dir>/x4-live-<blk>.txt` as it is printed (the app keeps it if the block hangs) | every parent x4 block |
+| `x4 pin cpu4= .. cpu7=`: can the thread pin to each big cpu at idle (R75's x4b cpu 7 cells ran on cpu 4) | x4i |
+
+The x3 blocks and every block's cell order and timing windows are unchanged. Kit r36 is built from 0001, 0002, 0003, 0005,
+0007, 0008.

@@ -3,7 +3,9 @@
 # l2/l3, l5, l6, l7, anon and x2r / x2info, under "R72 rows"; per-thread labels M / U / P / C on l1-l4, see thr_labels; kit r34,
 # 0005-x3-gpu-probe: the R74 x3 blocks x3b / x3g / x3c / x3r under "R74 x3 GPU lane", see x3report; kit r35, 0007-x4-join-probe:
 # the R75 x4 blocks x4i / x4a / x4b / x4f / x4c / x4d / x4e / x4s / x4r under "R75 x4 GPU join", see x4report; x3-tagged lines
-# printed inside an x4 block (build, load, identity, alone, cond) are reported there, not under R74).
+# printed inside an x4 block (build, load, identity, alone, cond) are reported there, not under R74); kit r36, 0008-x4f-fix:
+# x4 la dl= / stopped_at= / flush_recovered=, the x4f no-flush check (x4 la nf), x4 dl per block, x4 pin (x4i), x4 hang and the
+# block's 'hang' flag (the app's per-block timeout).
 # usage: python3 -I tools/c3_probe_parse.py <vollie-c3probe-r29-*.json>      python3 -I tools/c3_probe_parse.py --selftest
 # Every number it prints is *device* (from the phone's lines); the ratios are arithmetic on them. A cell whose workers did
 # not all stay on their cpu (cpu_ok < n) is marked '*' and should not be used for a claim.
@@ -33,6 +35,8 @@ def parse(rep):
         out['gates'].append((b.get('block'), g.get('timeout'), (g.get('series') or [[None, None]])[-1], b.get('ms'), b.get('rc')))
         if 'error' in b:
             out['errors'].append('%s: %s' % (b.get('block'), b['error']))
+        if b.get('hang'):   # kit r36: the app's per-block timeout; lines are what the block wrote to x4-live-<blk>.txt
+            out['errors'].append('%s: hung (block did not return; lines from the live file)' % b.get('block'))
         for line in b.get('lines', []):
             if 'c3-probe:' not in line:
                 continue
@@ -382,6 +386,8 @@ def x4report(x4):
             L.append('  %s: ' % k + ', '.join('%s=%s' % kv_ for kv_ in f.items() if kv_[0] != 'block'))
     for f in by.get('ext', [])[:1]:
         L.append('  extensions (%s): %s' % (f.get('n'), f.get('text')))
+    for f in by.get('pin', []):   # kit r36: can the x4i thread pin to each big cpu at idle (ok@<cpu seen> or e<errno>)
+        L.append('  pin (x4i, idle): ' + ', '.join('%s=%s' % kv_ for kv_ in f.items() if kv_[0] != 'block'))
     for f in by.get('kai', []):
         L.append('  kleidiai (x4k child): ' + ', '.join('%s=%s' % kv_ for kv_ in f.items() if kv_[0] != 'block'))
     if 'therm' in by:
@@ -406,9 +412,18 @@ def x4report(x4):
         table(L, labelled(by['rt']), ['rep', 'lcpu', 'wait', 'calls', 'wall_us', 'p50_us', 'p90_us', 'enq_us', 'dev_us', 'ovh_us', 'queued_to_start_us',
                                       'submit_to_start_us', 'queued_to_submit_us', 'err'] + tail)
     if 'la' in by:
-        L.append('\nx4f launch-ahead (gate: behind a user event set ahead_us after the enqueue; set_to_start = set_to_done - dev, host clock)')
-        table(L, labelled(by['la']), ['mode', 'n', 'ahead_us', 'set_to_done_p50_us', 'dev_us', 'set_to_start_p50_us', 'set_to_start_p90_us', 'queued_to_submit_p50_us',
-                                      'submit_to_start_p50_us', 'enq_us', 'err'] + tail)
+        las = [f for f in by['la'] if 'try' not in f]; nf = [f for f in by['la'] if 'try' in f]
+        L.append('\nx4f launch-ahead (gate: behind a user event set ahead_us after the enqueue; set_to_start = set_to_done - dev, host clock;'
+                 ' r36: dl = 2 s event-wait deadlines, stopped_at = iteration where the mode stopped, -1 none)')
+        table(L, labelled(las), ['mode', 'n', 'ahead_us', 'set_to_done_p50_us', 'dev_us', 'set_to_start_p50_us', 'set_to_start_p90_us', 'queued_to_submit_p50_us',
+                                 'submit_to_start_p50_us', 'enq_us', 'err', 'dl', 'stopped_at', 'flush_recovered'] + tail)
+        if nf:
+            L.append('\nx4f no-flush check (r36: gate released without a clFlush after it; 2 s wait, then clFlush and 2 s more)')
+            table(L, nf, ['try', 'done_without_flush', 'wait_us', 'done_after_flush', 'after_flush_us', 'ok', 'err'])
+    if 'dl' in by:
+        L.append('\nevent-wait deadlines per block (r36; 2 s each)'); table(L, by['dl'], ['blk', 'n'])
+    for f in by.get('hang', []):
+        L.append('\nHANG: block %s did not return within %s s (%s lines kept from the live file)' % (f.get('blk'), f.get('s'), f.get('lines')))
     if 'rtargs' in by:
         L.append('\nx4f SetKernelArg: all 15 per call against the 2 that change (wait spin, cpu 4)')
         table(L, labelled(by['rtargs']), ['pos', 'args', 'calls', 'wall_us', 'p50_us', 'enq_us', 'dev_us', 'ovh_us', 'err'] + tail)
@@ -518,6 +533,9 @@ def x4report(x4):
         '/'.join('%s:%s' % (f.get('mode'), f.get('visible_during_run', f.get('reason'))) for f in by.get('pk', []) if f.get('test') == 'counter' and 'mode' in f) or '-',
         pks.get('q4p48_vs_q4n', '-')))
     L.append('  X4-f gate set_to_start_p50_us %s (plain %s)' % (g(pick(by.get('la', []), mode='gate'), 'set_to_start_p50_us'), g(pick(by.get('la', []), mode='plain'), 'set_to_start_p50_us')))
+    nf = [f for f in by.get('la', []) if 'try' in f]
+    if nf:
+        L.append('  X4-f no-flush check done_without_flush %s, done_after_flush %s' % ('/'.join(f.get('done_without_flush', '-') for f in nf), '/'.join(f.get('done_after_flush', '-') for f in nf)))
     L.append('  cg (x4m dev_ratio) n_cols 2 %s, 3 %s, 4 %s' % tuple(g([f for f in by.get('mcsum', []) if f.get('n_cols') == str(n)], 'dev_ratio') for n in (2, 3, 4)))
     L.append('  together sum_vs_cpu_alone n_cols 2 %s%s, n_cols 1 %s' % (g(by.get('tog2sum', []), 'sum_vs_cpu_alone'),
              (' (skip: %s)' % by['tog2'][0].get('reason')) if by.get('tog2') else '', g(by.get('tog1sum', []), 'sum_vs_cpu_alone')))
@@ -637,6 +655,7 @@ def selftest():
         print('selftest r72 ok')
     x3selftest()
     x4selftest()
+    x4r36selftest()
     print('selftest ok')
 
 
@@ -797,6 +816,33 @@ def x4selftest():
     assert '  mixed (CPU 1 col, GPU 3 cols) both_cpu_vs_tog1_both_cpu 0.914, sum_vs_cpu_alone 1.200' in r and '  kleidiai q4 kernel DOTPROD (features dotprod+fp16, q4_buft CPU_KLEIDIAI)' in r, r
     assert '  gpu_max_mhz over the passes: -,840' in r and 'mixed: choice=' not in r and 'gpu_n_cols=3, n4_ok=0, n3_ok=1' in r, r
     print('selftest x4 ok')
+
+
+X4T36 = ' lcpu=4 lcpu_us=150.0 lcpu_over_wall=0.300 lplace=0/50@-1 thr=4:0.95:10:0:0/5@-1 mhz_range=1804/2419/2841..1804/2419/2841,n=5 max_mhz=p0:1804/1804,p4:2419/2419,p7:2841/2841 gpu_mhz=840..840,n=5,src=devfreq/cur_freq gpu_max_mhz=840 hr=0.6 ramp_s=0.5 ramp_ok=1'
+X4TEST36 = {'kit': 'r36', 'blocks': [
+    {'block': 'x4i', 'rc': 100, 'ms': 900, 'gate': {'timeout': False, 'series': []}, 'lines': [
+        'c3-probe: x4 pin cpu4=ok@4 cpu5=ok@5 cpu6=ok@6 cpu7=e22',
+        'c3-probe: x4 dl blk=x4i n=0', 'c3-probe: x4i end s=1.0']},
+    {'block': 'x4f', 'rc': 100, 'ms': 900, 'gate': {'timeout': False, 'series': []}, 'lines': [
+        'c3-probe: x4 la mode=gate n=3 ahead_us=1000.0 set_to_done_p50_us=400.0 set_to_done_p90_us=450.0 dev_us=240.0 set_to_start_p50_us=160.0 set_to_start_p90_us=200.0 queued_to_submit_p50_us=1050.0 submit_to_start_p50_us=150.0 enq_us=80.0 err=-2001 dl=1 stopped_at=7 flush_recovered=1' + X4T36,
+        'c3-probe: x4 la mode=plain n=50 ahead_us=0.0 set_to_done_p50_us=640.0 set_to_done_p90_us=700.0 dev_us=240.0 set_to_start_p50_us=400.0 set_to_start_p90_us=460.0 queued_to_submit_p50_us=190.0 submit_to_start_p50_us=195.0 enq_us=100.0 err=-2001 dl=0 stopped_at=-1 flush_recovered=-1' + X4T36,
+        'c3-probe: x4 la nf try=0 done_without_flush=0 wait_us=2000100.0 done_after_flush=1 after_flush_us=300.0 err=0',
+        'c3-probe: x4 la nf try=1 done_without_flush=1 wait_us=500.0 done_after_flush=-1 after_flush_us=-1.0 err=0',
+        'c3-probe: x4 dl blk=x4f n=1']},
+    {'block': 'x4c', 'hang': True, 'gate': {'timeout': False, 'series': []}, 'lines': [
+        'c3-probe: x4 therm blk=x4c when=before status=0 thermal_pwrlevel=0 gpu_max_mhz=840 gpu_mhz=-1',
+        'c3-probe: x4 hang blk=x4c s=600 lines=1']}]}
+
+
+def x4r36selftest():
+    p = parse(X4TEST36)
+    assert p['errors'] == ['x4c: hung (block did not return; lines from the live file)'], p['errors']
+    r = report(p)
+    assert '| gate | 3 | 1000.0 | 400.0 | 240.0 | 160.0 | 200.0 | 1050.0 | 150.0 | 80.0 | -2001 | 1 | 7 | 1 |' in r, r
+    assert '| 0 | 0 | 2000100.0 | 1 | 300.0 |  | 0 |' in r and '| x4f | 1 |' in r and 'pin (x4i, idle): cpu4=ok@4, cpu5=ok@5, cpu6=ok@6, cpu7=e22' in r, r
+    assert 'HANG: block x4c did not return within 600 s (1 lines kept from the live file)' in r, r
+    assert '  X4-f no-flush check done_without_flush 0/1, done_after_flush 1/-1' in r, r
+    print('selftest r36 ok')
 
 
 if __name__ == '__main__':

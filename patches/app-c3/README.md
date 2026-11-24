@@ -111,3 +111,14 @@ then `LIBS_FROM=<dir> APP_SERIES="$(cd patches/app-c2 && ls 00[01][0-9]-kit-r[12
 sh tools/c2_build_kit.sh lab/llama.cpp-c3r35 lab/app-c3 patches/llama.cpp patches/llama.cpp-c1-olmoe <dir with c3 0001 0002 0003 0005 0007>`
 (new files in the tree marked with `git add -N` so the script's file check sees them), then the APK is copied to a plain
 name. Details: `campaigns/03-dense15-5pct/reports/memo-12-work/tom-r35-build.md`.
+
+## 0006-kit-r36-probe.patch
+
+Kit r36 (version 1.36.0+36, versionCode 36), applied after 0005; installs over r35 (same package and debug key). The button
+"Run c3 probe r36 (GPU joins, resume)" runs the R75 blocks x4i, x4f, x4c, x4d, x4e, x4m, x4s, x4r (`patches/llama.cpp-c3/0008`;
+x4a and x4b were measured in R75), each after the r16 gate (up to 180 s). New: a block that has not returned after 600 s is
+recorded with `hang: true` and the lines it wrote to `<dir>/x4-live-<blk>.txt`, plus `c3-probe: x4 hang blk= s= lines=`, and
+the run goes on (the native call stays behind in its isolate). File name `vollie-c3probe-r36-<time>.json`.
+
+Build: as r35, with libllama.so from c3 0001, 0002, 0003, 0005, 0007, 0008 and the CPU module unzipped from the r35 APK. Details:
+`campaigns/03-dense15-5pct/reports/memo-12-work/tom-r36-build.md`.

@@ -1,0 +1,132 @@
+diff --git a/src/llama-vollie-probe.cpp b/src/llama-vollie-probe.cpp
+index a67b486..b707483 100644
+--- a/src/llama-vollie-probe.cpp
++++ b/src/llama-vollie-probe.cpp
+@@ -34,6 +34,8 @@
+ // 0005-x3-gpu-probe (kit r34, R74): blocks x3b, x3g, x3c, x3r, the GPU lane probe with upstream's Adreno Q4_0 gemv (see r34 below).
+ // 0007-x4-join-probe (kit r35, R75): blocks x4i, x4a, x4b, x4f, x4c, x4d, x4e, x4m, x4s, x4r, the GPU join cost (see r35 below); x4d and
+ // x4e run in a child process (libvollie_x4c.so, which calls this entry with VOLLIE_PROBE_TEE=1: every line also goes to stdout).
++// 0008-x4f-fix (kit r36, R75 amendment 1): x4f flushes after releasing its user event (R75 hung there); every event wait gives up
++// after 2 s (err -2001, `x4 dl` per block); parent x4 blocks tee their lines to <dir>/x4-live-<blk>.txt; x4i prints `x4 pin`.
+ #if defined(VOLLIE_PROBE_STUB)
+ #include <cstddef>
+ extern "C" int llama_vollie_probe(const char *, const char *, char *, size_t) { return -1; }
+@@ -2903,7 +2905,18 @@ double mean(const std::vector<double> & v) { double s = 0; for (double x : v) s
+ 
+ // waits: 0 clFinish (as R74), 1 clFlush + spin on CL_EVENT_COMMAND_EXECUTION_STATUS, 2 clFlush + clWaitForEvents
+ const char * WNAME[3] = { "finish", "spin", "wfe" };
+-cl_int spin_ev(H ev) { cl_int st = 1, e = 0; do { e = XC.GetEventInfo(ev, 0x11D3, sizeof st, &st, nullptr); } while (!e && st > 0); return e ? e : st; }
++// r36 (0008): every event spin gives up after EV_DEADLINE s and returns EV_DL; R75's x4f spun 2.5 h on a gated command that was
++// released but, without a further clFlush, never submitted. The clock is read every 256 polls only. G_DL counts the deadlines of
++// the block (printed as `x4 dl` at the block's end); count = false for the x4f no-flush check, which expects them.
++const double EV_DEADLINE = 2.0; const cl_int EV_DL = -2001; std::atomic<int> G_DL{0};
++cl_int spin_ev(H ev, bool count = true) {
++    cl_int st = 1, e = 0; unsigned it = 0; const auto t0 = clk::now();
++    do {
++        e = XC.GetEventInfo(ev, 0x11D3, sizeof st, &st, nullptr);
++        if (!e && st > 0 && !(++it & 255) && secs(t0, clk::now()) > EV_DEADLINE) { if (count) G_DL++; return EV_DL; }
++    } while (!e && st > 0);
++    return e ? e : st;
++}
+ cl_int wait1(Gpu & g, H q, H ev, int w) {
+     if (w == 0 || !ev) return g.cl.Finish(q);
+     const cl_int e = XC.Flush(q); if (e) return e;
+@@ -3030,7 +3043,8 @@ Rt rtcell(Gpu & g, H k, GMat * m2, const XIn & x, H dst, int w, int args, Place
+     double dv = 0, q2b = 0, s2b = 0, q2s = 0; int n = 0;
+     for (int j = 0; j < 100; j++) {
+         H ev = nullptr; if (launch(g, k, m2[0], x, dst, g.qp, &ev) || !ev) continue;
+-        wait1(g, g.qp, ev, w); const St t = stamps(g, ev); g.cl.ReleaseEvent(ev);
++        if (wait1(g, g.qp, ev, w) == EV_DL) { g.cl.ReleaseEvent(ev); if (!r.err) r.err = EV_DL; break; }   // r36: no 100 x 2 s
++        const St t = stamps(g, ev); g.cl.ReleaseEvent(ev);
+         if (t.ok()) { dv += (t.e - t.b) * 1e-3; q2b += (t.b - t.q) * 1e-3; s2b += (t.b - t.s) * 1e-3; q2s += (t.s - t.q) * 1e-3; n++; }
+     }
+     r.calls = (long) wl.size(); r.wall = mean(wl); r.p50 = pct(wl, 0.5); r.p90 = pct(wl, 0.9); r.enq = mean(eq);
+@@ -3063,14 +3077,21 @@ void x4f(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4, H dst) {
+     { // (1) gate (behind a user event set about 1 ms after the enqueue) and plain, alternating, 50 each after 5 unprinted pairs
+         Samp sm; sm.start(); Place pl; pl.set = L4.set; const double c0 = tcpu(); const auto w0 = clk::now();
+         std::vector<double> sd[2], d2b[2], dv[2], q2s[2], s2b[2], enq[2], ahead; cl_int le = 0; long calls = 0;
++        int dl[2] = { 0, 0 }, stop_at[2] = { -99, -99 }, rec = -1;   // r36: deadlines per mode; iteration where the mode stopped; gate: a later clFlush completed it
+         for (int i = -10; i < 100; i++) {
+             const int gate = i & 1; H uev = nullptr, ev = nullptr; cl_int x1 = 0;
++            if (stop_at[gate] != -99) continue;
+             if (gate) { uev = XC.CreateUserEvent(g.ctx, &x1); if (!uev) { if (!le) le = x1 ? x1 : -1; continue; } }
+             const auto a = clk::now();
+             x1 = launch(g, ks.p[0].k, m2[0], x4, dst, g.qp, &ev, gate ? 1 : 0, gate ? &uev : nullptr); const bool queued = !x1; if (!x1) x1 = XC.Flush(g.qp);
+             const auto b = clk::now(); clk::time_point s = b;
+-            if (gate) { while (us(a, clk::now()) < 1000) {} s = clk::now(); const cl_int x3 = XC.SetUserEventStatus(uev, queued ? 0 : -1); if (!x1) x1 = x3; }   // always released
++            if (gate) { while (us(a, clk::now()) < 1000) {} s = clk::now(); const cl_int x3 = XC.SetUserEventStatus(uev, queued ? 0 : -1); if (!x1) x1 = x3;   // always released
++                        if (!x1) x1 = XC.Flush(g.qp); }   // r36: submit the released command (R75 hung here without this flush)
+             const cl_int x2 = x1 || !ev ? 0 : spin_ev(ev); const auto d = clk::now(); pl.check(); calls++;
++            if (x2 == EV_DL) {   // r36: stop this mode, keep what it has; gate: one more clFlush, then wait again
++                dl[gate]++; stop_at[gate] = i;
++                if (gate) { const cl_int f = XC.Flush(g.qp); rec = !f && spin_ev(ev) == 0; }
++            }
+             if ((x1 || x2) && !le) le = x1 ? x1 : x2;
+             if (ev && !x1 && !x2 && i >= 0) {
+                 const St t = stamps(g, ev);
+@@ -3083,9 +3104,27 @@ void x4f(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4, H dst) {
+         const double ws = secs(w0, clk::now()), lc_s = tcpu() - c0; sm.end();
+         for (int gate = 1; gate >= 0; gate--)
+             o.line("x4 la mode=%s n=%zu ahead_us=%.1f set_to_done_p50_us=%.1f set_to_done_p90_us=%.1f dev_us=%.1f set_to_start_p50_us=%.1f set_to_start_p90_us=%.1f "
+-                   "queued_to_submit_p50_us=%.1f submit_to_start_p50_us=%.1f enq_us=%.1f err=%d %s", gate ? "gate" : "plain", sd[gate].size(), gate ? pct(ahead, 0.5) : 0.0,
++                   "queued_to_submit_p50_us=%.1f submit_to_start_p50_us=%.1f enq_us=%.1f err=%d dl=%d stopped_at=%d flush_recovered=%d %s", gate ? "gate" : "plain", sd[gate].size(), gate ? pct(ahead, 0.5) : 0.0,
+                    pct(sd[gate], 0.5), pct(sd[gate], 0.9), mean(dv[gate]), pct(d2b[gate], 0.5), pct(d2b[gate], 0.9), pct(q2s[gate], 0.5), pct(s2b[gate], 0.5), mean(enq[gate]), le,
+-                   tail(sm, th, rp, L4, lc_s, ws, calls, pl).c_str());
++                   dl[gate], stop_at[gate] == -99 ? -1 : stop_at[gate], gate ? rec : -1, tail(sm, th, rp, L4, lc_s, ws, calls, pl).c_str());
++    }
++    // r36 cause check: R75's gate without the flush after the release. Three tries; each waits 2 s, then flushes and waits 2 s more.
++    for (int t = 0; t < 3; t++) {
++        cl_int x1 = 0; H uev = XC.CreateUserEvent(g.ctx, &x1), ev = nullptr;
++        if (!uev) { o.line("x4 la nf try=%d ok=0 err=%d", t, x1 ? x1 : -1); break; }
++        const auto a = clk::now();
++        x1 = launch(g, ks.p[0].k, m2[0], x4, dst, g.qp, &ev, 1, &uev); const bool queued = !x1; if (!x1) x1 = XC.Flush(g.qp);
++        while (us(a, clk::now()) < 1000) {}
++        const auto s = clk::now(); const cl_int x3 = XC.SetUserEventStatus(uev, queued ? 0 : -1); if (!x1) x1 = x3;
++        int wo = -1, af = -1; double wo_us = -1, af_us = -1;
++        if (!x1 && ev) {
++            const cl_int x2 = spin_ev(ev, false); wo_us = us(s, clk::now()); wo = x2 == 0;
++            if (x2 == EV_DL) { const auto f = clk::now(); x1 = XC.Flush(g.qp); const cl_int x5 = x1 ? 0 : spin_ev(ev, false); af = !x1 && x5 == 0; af_us = us(f, clk::now()); if (!x1 && x5 != EV_DL) x1 = x5; }
++            else x1 = x2;
++        }
++        o.line("x4 la nf try=%d done_without_flush=%d wait_us=%.1f done_after_flush=%d after_flush_us=%.1f err=%d", t, wo, wo_us, af, af_us, x1);
++        if (ev) g.cl.ReleaseEvent(ev);
++        g.cl.ReleaseEvent(uev);
+     }
+     // (2) rt with all 15 arguments set per call against only the 2 that change; wait = spin; ABBA
+     const int order[4] = { 15, 2, 2, 15 };
+@@ -3701,7 +3740,8 @@ void x4s(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4, H dst2) {
+         else a.cpu = [&] {
+             const long q = ++idx; go = q;
+             const auto a0 = clk::now(); ggml_backend_graph_compute(gb.be, cr->gf[q % NR]); const auto a1 = clk::now();
+-            while (done.load() != q) {}
++            unsigned it = 0;   // r36: the same deadline as spin_ev (a feeder stuck in clFinish would hold this spin forever)
++            while (done.load() != q) if (!(++it & 255) && secs(a1, clk::now()) > EV_DEADLINE) { G_DL++; if (!ferr.load()) ferr = EV_DL; break; }
+             cpu_s += secs(a0, a1); wait_s += secs(a1, clk::now());
+             return full.bytes;
+         };
+@@ -3754,14 +3794,24 @@ void x4(Out & o, const char * blk, const char * dir) {
+     const bool kid = strstr(blk, "_c") != nullptr;
+     auto tl = [&](const char * when) { Therm t; o.line("x4 therm blk=%s when=%s status=%s thermal_pwrlevel=%s gpu_max_mhz=%ld gpu_mhz=%ld", blk, when, t.status().c_str(),
+                                                     kg("thermal_pwrlevel").c_str(), gpu_max_mhz(), gpu_mhz("gpuclk")); };
++    // r36: a parent block also writes its lines to <dir>/x4-live-<blk>.txt as they are printed, so that the app can keep them
++    // when the block does not return (the app's per-block timeout); G_DL counts the block's event-wait deadlines
++    FILE * live = nullptr;
++    if (!kid) { G_DL = 0; if (!o.tee && (live = fopen((std::string(dir) + "/x4-live-" + blk + ".txt").c_str(), "w"))) o.tee = live; }
+     if (!kid) tl("before");
+     x4body(o, blk, dir);
+-    if (!kid) tl("after");
++    if (!kid) { o.line("x4 dl blk=%s n=%d", blk, G_DL.load()); tl("after"); }
++    if (live) { o.tee = nullptr; fclose(live); }
+ }
+ void x4body(Out & o, const char * blk, const char * dir) {
+     const bool kid = strstr(blk, "_c") != nullptr;
+     if (!kid) cond(o);
+     if (!strcmp(blk, "x4k_c")) { kai(o); return; }
++    if (!strcmp(blk, "x4i")) {   // r36: R75's x4b "cpu 7" cells ran on cpu 4 (pin result was not recorded); can this thread pin to each big cpu at idle?
++        std::string r; Aff aff;
++        for (int c = 4; c < 8; c++) { errno = 0; const bool ok = pin_cpus({ c }); const int e = errno; sleep_s(0.001); r += " cpu" + std::to_string(c) + "=" + (ok ? "ok@" + std::to_string(where()) : "e" + std::to_string(e)); }
++        o.line("x4 pin%s", r.c_str());
++    }
+     if (!strcmp(blk, "x4i")) child(o, "x4k_c", dir, 15);   // before the parent opens its GPU context
+     if (!strcmp(blk, "x4d")) { child(o, "x4d_c", dir, 30); return; }
+     if (!strcmp(blk, "x4e")) { child(o, "x4e1_c", dir, 9); child(o, "x4e2_c", dir, 9); child(o, "x4e3_c", dir, 12); return; }
