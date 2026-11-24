@@ -222,3 +222,33 @@ Collected here; the owner asked not to be asked until the R68 JSON arrives.
 2. KleidiAI stock result pending (Tom, above).
 3. Tom's 0006 numerics pending.
 | 2026-11-23 | 8 (annie) | Books from git (`7765cf8..463ee88`): Bonnie r9, r10; owner decision `219bb1b` (stock PPL option (a) carries over; host KleidiAI stock runs allowed); tag `prereg-R75` verified; kit r35 on HF (`433fdd2e`, sha re-checked). Correction note on the S3 freeze rows' build column (repack build, KleidiAI off), appended in results.csv notes, cells not rewritten. Memo index: Bonnie r9, r10, bonnie_pack_time.c. Open: R75 run after 08:30 KST 11-24, KleidiAI stock, 0006 numerics. |
+
+## Current state and next actions (appended 2026-11-24 by Annie from git `df08456..513b734`; supersedes the blocks above where they differ)
+
+**The team is paused by the owner (2026-11-24): "do what is assigned so far, then rest". The hourly researcher keep-alive task is disabled. No device round runs until the owner runs R75.**
+
+**R75** (X4 GPU join probe, kit r35): prereg commit `2588f40`, tag `prereg-R75` exists, kit r35 is on HF (APK `465d97bb...f8af5`, kit commit `b4b9168`). Awaiting the owner's run per prereg §8 (after 08:30 KST on 2026-11-24, true 30 minute cool start, no other probe first). Nothing measured yet.
+
+**KleidiAI-build stock (*host*, 40 chunks, `lab/llama.cpp-c3/build-kai`, freeze flags + `GGML_CPU_KLEIDIAI=ON`, KleidiAI v1.31.0, `GGML_KLEIDIAI_SME=0`; memo-12-work/tom-kai-stock.md).** Shift against the repack build at chunk 40, `-b 512` / `-ub 1`: Yi +0.495 / +0.453 %, Llama-2 +0.069 / -0.055 %, DeepSeek +0.688 / +0.669 %. Scored against Bonnie r11 (Yi +0.3..+1.0, Llama-2 within +-0.05, DeepSeek 0.0..+1.0 %) and Ebony r7: direction and ranking as predicted (Yi and DeepSeek up, Llama-2 flat); Yi and DeepSeek inside both bands; Llama-2 just outside both +-0.05 % bands at 40 chunks (+0.069 at `-b 512`). Not a budget event (option (a), CAMPAIGN.md 2026-11-23 decision); rows in results.csv. Full-set KleidiAI runs are not made; the lead decides if they are asked.
+
+**T-N1** (patch 0006, `VOLLIE_X3_EMU=2`, lane share 1.0 emulated, *host*, repack build, commit `2788606`; memo-12-work/tom-numerics.md): full set `-b 512` Yi 8.3804 (-0.085 % vs served 8.3875), Llama-2 7.7448 (+0.017 % vs 7.7435), both inside budget; `-ub 1` only on a 40-chunk subset; knob-unset identity holds; unfused mode reproduces the 12 R74 device identity values. Not measured on the KleidiAI path. Rows in results.csv.
+
+**S-T1** (*host*, memo-12-work/tom-st1.md, commit `11f2e1f`): upstream ngram-simple drafts nothing at M<N; at N=M=2 it matches Bonnie's length>=2 lookup within one pass on 17 of 18 prompts; rule T's gain comes from the trained head; 106 of 108 speculative runs give the plain text, 2 Yi near-tie flips at token 30 from batched-verify numerics.
+
+**Research findings (all work files, no verdict; *estimated* unless marked).**
+- Body load choices A/B/C: bonnie-joins-r16.md, bonnie-joins-r17.md; choice C design: bonnie-joins-r20.md, r21.
+- Honest stack ladder: bonnie-joins-r13.md, r14 (no stack reaches 12 on all three inside R75's K band, DeepSeek binds); coupling term refit on 17 device cells (0.25 to 0.17): bonnie-joins-r32.md.
+- Official-prompt findings: bonnie-joins-r23.md to r26; ebony-joins-r11.md to r13.
+- Cap and prefill heat: bonnie-joins-r31.md to r33 (P(cap lowered in a dense claim run) about 0.35, likely step 2,150 MHz); ebony-joins-r17.md (cap ladder; differs from Bonnie on depth).
+
+**Open owner questions (each with its memo).**
+1. Body load path A / B / C: bonnie-joins-r17.md.
+2. DeepSeek prompt start a / b / c: ebony-joins-r14.md.
+3. Yi `<|im_start|>` marker: ebony-joins-r14.md.
+4. Scoring of the official prompt versus the fixed set, option B: bonnie-joins-r26.md, ebony-joins-r13.md.
+5. Prefix reuse in the claim protocol: ebony-joins-r17.md.
+6. Whether campaign 2 gets a dated note on OLMoE's stray `<s>` prompt: ebony-joins-r15.md.
+
+**Queued Tom tasks (not started; team paused).** H1 head-repack stock; E-T23 DeepSeek dump (after the owner answers question 2); U4; E-T15; E-T19; host decode profile; KV screen; E-T24.
+
+| 2026-11-24 | 9 (annie) | Books from git (`df08456..513b734`): Bonnie r11 to r33, Ebony r6 to r17, Tom 0006 + T-N1 (`2788606`), S-T1 (`11f2e1f`), KleidiAI-build stock (`513b734`). results.csv: six KleidiAI stock rows and two T-N1 rows (*host*); memo index extended; state block above. Team paused by the owner. Open: R75 run, six owner questions, queued Tom tasks. |
