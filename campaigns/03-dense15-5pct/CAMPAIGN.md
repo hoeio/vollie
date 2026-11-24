@@ -141,3 +141,11 @@ stock is measured a second time on a host build with KleidiAI (the phone's Q4_0 
 printed side by side; a numerics setting must be at or below same-build stock × 1.05 at both batch settings and at or
 below the existing absolute budget. A stock shift between the two builds is a recorded fact, not a budget event. The
 lead may run the KleidiAI-build stock runs on the owner's laptop (label *host*); the run plan is r9 §3.
+
+*Owner decisions 2026-11-24* (answers to the open questions in STATUS.md's 2026-11-24 block; recorded by Annie from the owner's words relayed by the lead):
+- Body load path: choice A (plain) is adopted (`reports/memo-12-work/bonnie-joins-r17.md`). Owner: "A를 채택합니다."
+- Yi `<|im_start|>`: treated as one token (`ebony-joins-r14.md`). Owner: "im_start도 토큰 1개로 다룹니다."
+- Scoring: on the official prompt, option B (`bonnie-joins-r26.md`, `ebony-joins-r13.md`). Owner: "공식 프롬프트로 채점합니다."
+- Prefix reuse in the claim protocol: allowed (`ebony-joins-r17.md`). Owner: "재사용을 허용합니다"
+- Campaign 2 gets no dated note on OLMoE's stray `<s>` prompt (`ebony-joins-r15.md`). Owner: "정정 메모를 붙이지 않습니다."
+- Still open: DeepSeek prompt start a / b / c (`ebony-joins-r14.md`); the owner has not answered it.

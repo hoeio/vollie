@@ -252,3 +252,13 @@ Collected here; the owner asked not to be asked until the R68 JSON arrives.
 **Queued Tom tasks (not started; team paused).** H1 head-repack stock; E-T23 DeepSeek dump (after the owner answers question 2); U4; E-T15; E-T19; host decode profile; KV screen; E-T24.
 
 | 2026-11-24 | 9 (annie) | Books from git (`df08456..513b734`): Bonnie r11 to r33, Ebony r6 to r17, Tom 0006 + T-N1 (`2788606`), S-T1 (`11f2e1f`), KleidiAI-build stock (`513b734`). results.csv: six KleidiAI stock rows and two T-N1 rows (*host*); memo index extended; state block above. Team paused by the owner. Open: R75 run, six owner questions, queued Tom tasks. |
+
+## Update 2026-11-24 (later, Annie): R75 ran; owner decisions
+
+**The team is no longer paused: the owner resumed work with the R75 run (supersedes "team is paused" above).**
+
+**R75 ran** (kit r35, started 2026-11-24 10:35 KST, saved by the owner about 13:14 after a force stop). The run hung in block x4f; blocks x4i, x4a and x4b completed. Device JSON committed: `reports/device/vollie-c3probe-r35-2026-11-24T1035.json` (*device*). The partial result (`reports/R75-result.md`) and the amendment (`prereg/R75-amendment-1.md`) with kit r36 (patch 0008) are in progress by the lead and Tom; no number from this run is scored here.
+
+**Owner decisions 2026-11-24** (full text in CAMPAIGN.md): open questions 1, 3, 4, 5, 6 answered. (1) body load path A (plain); (3) Yi `<|im_start|>` is one token; (4) scoring on the official prompt (option B); (5) prefix reuse allowed in the claim protocol; (6) no dated note on campaign 2's stray `<s>`. **Still open: question 2, DeepSeek prompt start a / b / c (ebony-joins-r14.md).** E-T23 (DeepSeek dump) stays waiting on it.
+
+| 2026-11-24 | 10 (annie) | R75 device JSON committed (hung in x4f; x4i/x4a/x4b complete); owner decisions 2026-11-24 recorded; team resumed. Open: question 2, R75 result and amendment, kit r36. |
