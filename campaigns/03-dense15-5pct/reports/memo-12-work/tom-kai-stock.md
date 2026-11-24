@@ -1,15 +1,16 @@
-# c3 memo-12 work: stock perplexity on a host build with KleidiAI (40 chunks), partial
+# c3 memo-12 work: stock perplexity on a host build with KleidiAI (40 chunks)
 
 - **Date:** 2026-11-24 (started 2026-11-23). **Author:** tom, `claude-opus-5-5`. Not committed. Plan:
   [bonnie-joins-r9.md](bonnie-joins-r9.md) §1 and §3; host run allowed by the owner on 2026-11-23 (end of
   [../../CAMPAIGN.md](../../CAMPAIGN.md)).
 - **Labels.** Every perplexity value and timing here is *host* (owner's Apple M4 Pro laptop). Shifts are arithmetic
   on *host* values. Nothing ran on the phone.
-- **Status: 1 of 6 runs finished** (Yi `-b 512`). The host was shared with another agent's perplexity chain
-  (`lab/llama.cpp-c3x6`, two 8-thread jobs on 12 cores, load average 24 to 45). Yi `-ub 1` ran at 166 to 320 s per
-  chunk against the freeze's 9.1 to 11.0 s, about 3.3 h per `-ub 1` run, which is longer than an agent's 2 h
-  background-task limit. It was killed once by that limit (2026-11-24 01:2x, at chunk 18) and stopped by me
-  the second time (05:13, at chunk 9). The five missing runs need the resume command in §5.
+- **Status: 6 of 6 runs finished.** Yi `-b 512` ran on 2026-11-23 on a shared laptop. The other five ran on
+  2026-11-24, 09:27 to 10:32, one job at a time, after the laptop was free (load average about 2; Yi `-ub 1` at
+  8.4 s per chunk). Two earlier Yi `-ub 1` attempts on the shared laptop (another agent's two 8-thread perplexity
+  jobs, load average 24 to 45, 166 to 320 s per chunk) did not finish: one was killed by the agent's 2 h
+  background-task limit at chunk 18, and I stopped the other at chunk 9. `tools/ppl.sh` overwrote that partial
+  log; the log kept is the complete 2026-11-24 run.
 
 ## 1. Build
 
@@ -46,13 +47,12 @@ cmake --build lab/llama.cpp-c3/build-kai -j 8 --target llama-perplexity
 
 Invocation as in r9 §3 (`tools/ppl.sh`, so `-c 512 -b 512 -t 8 -ngl 0`, wikitext text `lab/c3/text/wiki.test.raw`,
 the same as `tools/c3_freeze.sh`), with `GGML_KLEIDIAI_SME=0`, `--chunks 40`, plus `-ub 1` for the ub1 tag. The
-served file's sha256 was checked before each run against `results.csv` (Yi `702cc2ebaa3b…` ok, 3 times).
+served file's sha256 was checked before each run against `results.csv` (Yi `702cc2ebaa3b…`, Llama-2
+`8eb4952f2592…`, DeepSeek `f403ddc29802…`: all ok). The five 2026-11-24 runs used the same command, without `nice` or
+`DYLD_LIBRARY_PATH`. All six wiki logs print `KLEIDIAI = 1`.
 
-| run | tag | log | state |
-|---|---|---|---|
-| Yi `-b 512` | `c3k40-yi15-6b-q4_0-b512` | `lab/logs/p/ppl-c3k40-yi15-6b-q4_0-b512-wiki.log` (+ `-en.log`) | done |
-| Yi `-ub 1` | `c3k40-yi15-6b-q4_0-ub1` | `lab/logs/p/ppl-c3k40-yi15-6b-q4_0-ub1-wiki.log` | **partial, chunk 9; no `Final estimate`, so `tools/ppl.sh` re-runs it** |
-| Llama-2, DeepSeek, both settings | `c3k40-<m>-q4_0-<b512\|ub1>` | not yet | not started |
+Logs: `lab/logs/p/ppl-c3k40-<m>-q4_0-<b512|ub1>-wiki.log` and `-en.log` (the script's English sanity text, also
+40 chunks), for `<m>` = `yi15-6b`, `llama2-7b`, `deepseek7b`.
 
 ## 3. Kernel path and buffers
 
@@ -73,30 +73,39 @@ are loaded by the E-T13 script below (ggml's default stderr logger, `GGML_KLEIDI
 `no compatible f32 kernels`, `SME disabled`. Source agrees (`kleidiai/kernels.cpp`: with SME off, the first Q4_0
 entry whose features match is the `__APPLE__` DOTPROD entry; the first Q8_0 match is I8MM|DOTPROD).
 
-## 4. Result so far
+## 4. Result
 
 Chunk-40 values of the repack path, re-read from the freeze logs (`lab/logs/p/ppl-c3f-<m>-q4_0-<b512|ub1>-wiki.log`):
 Yi 7.6966 / 7.6817, Llama-2 7.4071 / 7.4075, DeepSeek 8.2231 / 8.2192 (`-b 512` / `-ub 1`), equal to r9's table.
 
-| subject | setting | repack `[40]` (freeze) | KleidiAI `[40]` | shift |
-|---|---|---|---|---|
-| Yi | `-b 512` | 7.6966 | **7.7347** | **+0.50 %** |
-| Yi | `-ub 1` | 7.6817 | not finished (chunk 9: 8.7217 against 8.6734, +0.56 %) | (partial) |
-| Llama-2 | both | 7.4071 / 7.4075 | not run | |
-| DeepSeek | both | 8.2231 / 8.2192 | not run | |
+| subject | setting | repack `[40]` (freeze) | KleidiAI `[40]` | shift | `[n]` where KleidiAI > repack | en.txt, 40 chunks, KleidiAI |
+|---|---|---|---|---|---|---|
+| Yi | `-b 512` | 7.6966 | 7.7347 | **+0.50 %** | 40 of 40 | 8.1805 |
+| Yi | `-ub 1` | 7.6817 | 7.7165 | **+0.45 %** | 39 of 40 | 8.1857 |
+| Llama-2 | `-b 512` | 7.4071 | 7.4122 | +0.07 % | 38 of 40 | 4.9294 |
+| Llama-2 | `-ub 1` | 7.4075 | 7.4034 | −0.06 % | 8 of 40 | 4.9324 |
+| DeepSeek | `-b 512` | 8.2231 | 8.2797 | **+0.69 %** | 36 of 40 | 7.1759 |
+| DeepSeek | `-ub 1` | 8.2192 | 8.2742 | **+0.67 %** | 39 of 40 | 7.1697 |
 
-- **Pre-stated reading (r9): Yi `-b 512` is outside ±0.1 %.** The KleidiAI path raises Yi's 40-chunk stock by
-  +0.50 % (*host*). That is inside Bonnie's band (−0.3 to +1.0 %) and close to R61's Granite (+0.57 %). Not a
-  budget event; the lead decides about full-set runs.
-- The shift is not a late jump: at `-b 512` the KleidiAI running estimate is above the repack path's at all 40
-  `[n]` values (chunk 1: 5.0354 against 5.0145). Yi English sanity at `-b 512`, 40 chunks: 8.1805 (no freeze value
-  at 40 chunks to compare with).
+All values *host*. Shifts to three decimals: +0.495, +0.453, +0.069, −0.055, +0.688, +0.669 %. The `[n]` column
+compares the running estimates of the two logs at each of the 40 chunks.
 
-## 5. To finish (resume command; run when the laptop is not shared)
+- **Pre-stated reading (r9): four of six shifts exceed ±0.1 %** (Yi and DeepSeek at both settings). Llama-2 is
+  inside ±0.1 % at both. The lead decides whether to ask for full-set runs. A shift is not a budget event.
+- Against Bonnie's band (−0.3 to +1.0 %, centre +0.3 %): all six are inside. Her P(at least one subject outside
+  ±0.3 %) = 0.5: two of three subjects are outside ±0.3 %.
+- The direction holds at both batch settings for Yi and DeepSeek (KleidiAI higher, `-b 512` and `-ub 1` within
+  0.05 percentage points of each other). Llama-2 has no consistent direction: +0.07 % at `-b 512`, −0.06 % at `-ub 1`.
+- Size only: R61's Granite moved +0.57 / +0.50 % with 541 MiB in KleidiAI. Here, with 3.2 to 3.7 GiB, the
+  movement ranges from near zero (Llama-2) to +0.69 % (DeepSeek). The amount of weight in KleidiAI does not predict
+  the shift by itself.
+- Not tested: which KleidiAI step causes it (the int8 head re-quantisation of r8 §1.2, the per-row activation
+  quantisation of the Q4_0 kernels, or float order). §6 only places the first differing recorded node.
 
-The script below verifies each sha256 and skips finished logs, so it re-runs only the five missing runs. Time
-(*estimated* from the freeze logs, unshared laptop): about 30 min for all five. Shared with one other 8-thread
-job, one `-ub 1` run took about 3.3 h.
+## 5. Reproduce
+
+The loop of r9 §3, with a sha256 check before each run; finished logs are skipped. Unshared laptop: about 4 min per
+`-b 512` run and 13 to 18 min per `-ub 1` run, each including the English text (*host*, 2026-11-24).
 
 ```
 for e in yi15-6b:702cc2ebaa3bd4933598e25b556961b95ac260ed15df74fa09df2b2b7b48a299 \
@@ -112,18 +121,3 @@ for e in yi15-6b:702cc2ebaa3bd4933598e25b556961b95ac260ed15df74fa09df2b2b7b48a29
 done
 ```
 
-## 6. E-T13 cross-build node check (Ebony's `ebony_batchdiff.py`, cross-build mode)
-
-Yi, N = 16 tokens of `wiki.test.raw`, 2 threads, `GGML_KLEIDIAI_SME=0`, `EBONY_SAVE` once with `build/bin`
-(loaded `CPU_REPACK` 3,175.08 MiB) and once with `build-kai/bin` (loaded `CPU_KLEIDIAI` 3,220.75 MiB). The
-script records the last token's column of every 2-D float node of one 16-token batch. Comparison (*host*):
-
-- 553 nodes in both, same names and order.
-- **Layer 0: every node bit-equal**, including `Qcur-0`, `Kcur-0`, `Vcur-0`, `kqv_out-0`, `attn_out-0`, the FFN
-  and `l_out-0`. Layer 1's `Qcur-1`, `Kcur-1` and `Vcur-1` are bit-equal too.
-- **First difference: `kqv_out-1`** (the attention output of layer 1, not a Q4_0 weight product): max |d| 5.5e-5,
-  relative 6e-4, all 4,096 entries. From there on 525 of 553 nodes differ; `result_output` max |d| 0.49, same
-  argmax.
-- Limit: only the last column is recorded. Layer 1's attention reads K and V of all 16 positions, so a difference
-  in earlier columns of `Kcur-1` or `Vcur-1`, which this script does not see, would also show first at
-  `kqv_out-1`. This check does not show which kernel causes the +0.50 %.
