@@ -1,0 +1,320 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index 5184802dd..097e3e5c3 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1719,6 +1719,80 @@ static void ggml_cpu_router_prep(const struct ggml_cgraph * cgraph, enum ggml_ty
+     }
+ }
+ 
++// Vollie c3 0006 (VOLLIE_X3_EMU=1 fused, =2 unfused; unset/0 off): every Q4_0 x f32 matmul, at any batch, runs the
++// emulated arithmetic of the Adreno Q4_0 gemv (vollie-x3emu.h). VOLLIE_X3_EMU_Q6K (same values) does the same for
++// Q6_K (the output head) with upstream's Q6_K gemv. Numerics check only (host); the repack buffer type then declines
++// the emulated types so their weights stay plain. Rows are split over threads; the per-row result does not depend
++// on the split.
++#include "vollie-x3emu.h"
++static int ggml_cpu_vollie_x3emu_env(const char * name, const char * what) {
++    const char * e = getenv(name);
++    const int m = e ? atoi(e) : 0;
++    if (m == 1 || m == 2) {
++        fprintf(stderr, "x3emu: %s=%d (Adreno %s gemv arithmetic on every %s matmul, %s)\n", name, m, what, what, VOLLIE_X3EMU_NEON ? "neon" : "scalar");
++        return m;
++    }
++    return 0;
++}
++int ggml_cpu_vollie_x3emu(void); // also read by repack.cpp
++int ggml_cpu_vollie_x3emu(void) {
++    static int mode = -1; // benign race: every thread computes the same value
++    if (mode < 0) { mode = ggml_cpu_vollie_x3emu_env("VOLLIE_X3_EMU", "Q4_0"); }
++    return mode;
++}
++int ggml_cpu_vollie_x3emu_q6k(void); // also read by repack.cpp
++int ggml_cpu_vollie_x3emu_q6k(void) {
++    static int mode = -1;
++    if (mode < 0) { mode = ggml_cpu_vollie_x3emu_env("VOLLIE_X3_EMU_Q6K", "Q6_K"); }
++    return mode;
++}
++
++static void ggml_compute_forward_mul_mat_x3emu(const struct ggml_compute_params * params, struct ggml_tensor * dst, int mode, int q6k) {
++    const struct ggml_tensor * src0 = dst->src[0];
++    const struct ggml_tensor * src1 = dst->src[1];
++    GGML_TENSOR_BINARY_OP_LOCALS
++    GGML_ASSERT(ne00 % (q6k ? 256 : 32) == 0 && nb10 == sizeof(float) && nb0 == sizeof(float));
++    const int nb = (int)(ne00 / 32);
++    const int64_t r2 = ne12 / ne02, r3 = ne13 / ne03;
++    const int64_t ng = ne01 / 16; // full groups of 16 rows (one chunk each) and one chunk for the rest (< 16 rows)
++    const int64_t nchunk = (ng + 1) * ne12 * ne13;
++    const int ith = params->ith, nth = params->nth;
++    if (ith == 0) {
++        ggml_threadpool_chunk_set(params->threadpool, nth); // chunks taken dynamically, as the stock mul_mat does
++    }
++    ggml_barrier(params->threadpool);
++#if VOLLIE_X3EMU_NEON
++    float * buf = malloc(sizeof(float) * 16 * 32 * VOLLIE_X3EMU_KC);
++    float32x4_t * acc = malloc(sizeof(float32x4_t) * 16 * (size_t) ne11);
++    float * tmp = malloc(sizeof(float) * 16 * (size_t) ne11);
++    GGML_ASSERT(buf && acc && tmp);
++#endif
++    for (int64_t c = ith; c < nchunk; c = ggml_threadpool_chunk_add(params->threadpool, 1)) {
++        const int64_t g = c % (ng + 1), i12 = (c / (ng + 1)) % ne12, i13 = c / (ng + 1) / ne12;
++        const char * w = (const char *) src0->data + (i12 / r2) * nb02 + (i13 / r3) * nb03;
++        const char * x = (const char *) src1->data + i12 * nb12 + i13 * nb13;
++        char * d = (char *) dst->data + i12 * nb2 + i13 * nb3;
++        const int64_t r0 = g * 16, r1 = g < ng ? r0 + 16 : ne01;
++#if VOLLIE_X3EMU_NEON
++        if (g < ng) {
++            vollie_x3emu_tile16(w + r0 * nb01, nb01, nb, (const float *) x, nb11 / sizeof(float), (int) ne11, tmp, 16, mode, buf, acc, q6k);
++            for (int64_t j = 0; j < ne11; j++) {
++                memcpy(d + j * nb1 + r0 * sizeof(float), tmp + j * 16, 16 * sizeof(float));
++            }
++            continue;
++        }
++#endif
++        for (int64_t j = 0; j < ne11; j++) {
++            for (int64_t i = r0; i < r1; i++) {
++                ((float *)(d + j * nb1))[i] = vollie_x3emu_row_ref_t(w + i * nb01, (const float *)(x + j * nb11), nb, mode, q6k);
++            }
++        }
++    }
++#if VOLLIE_X3EMU_NEON
++    free(buf); free(acc); free(tmp);
++#endif
++}
++
+ void ggml_compute_forward_mul_mat(
+         const struct ggml_compute_params * params,
+               struct ggml_tensor * dst) {
+@@ -1741,6 +1815,13 @@ void ggml_compute_forward_mul_mat(
+     const struct ggml_tensor * src0 = dst->src[0];
+     const struct ggml_tensor * src1 = dst->src[1];
+ 
++    if (src1->type == GGML_TYPE_F32 && ((src0->type == GGML_TYPE_Q4_0 && ggml_cpu_vollie_x3emu()) ||
++                                        (src0->type == GGML_TYPE_Q6_K && ggml_cpu_vollie_x3emu_q6k()))) { // Vollie c3 0006
++        const int q6k = src0->type == GGML_TYPE_Q6_K;
++        ggml_compute_forward_mul_mat_x3emu(params, dst, q6k ? ggml_cpu_vollie_x3emu_q6k() : ggml_cpu_vollie_x3emu(), q6k);
++        return;
++    }
++
+     const int32_t hint = ggml_get_op_params_i32(dst, 1);
+     if (hint == GGML_HINT_SRC0_IS_HADAMARD && !params->use_ref) {
+         ggml_compute_forward_fwht(params, dst);
+diff --git a/ggml/src/ggml-cpu/kleidiai/kleidiai.cpp b/ggml/src/ggml-cpu/kleidiai/kleidiai.cpp
+index 80c5b0a05..6dac5351a 100644
+--- a/ggml/src/ggml-cpu/kleidiai/kleidiai.cpp
++++ b/ggml/src/ggml-cpu/kleidiai/kleidiai.cpp
+@@ -3,6 +3,8 @@
+ //
+ #include <arm_neon.h>
+ #include "../vollie-release.h"
++extern "C" int ggml_cpu_vollie_x3emu(void);     // Vollie c3 0006, ggml-cpu.c
++extern "C" int ggml_cpu_vollie_x3emu_q6k(void);
+ #include <cassert>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -1800,6 +1802,12 @@ class extra_buffer_type : ggml::cpu::extra_buffer_type {
+             }
+         }
+ 
++        // Vollie c3 0006: with VOLLIE_X3_EMU / VOLLIE_X3_EMU_Q6K set, Q4_0 / Q6_K weights stay plain for the emulation.
++        if ((op->src[0]->type == GGML_TYPE_Q4_0 && ggml_cpu_vollie_x3emu()) ||
++            (op->src[0]->type == GGML_TYPE_Q6_K && ggml_cpu_vollie_x3emu_q6k())) {
++            return false;
++        }
++
+         std::array<ggml_kleidiai_kernels *, GGML_KLEIDIAI_MAX_KERNEL_SLOTS> kernel_chain;
+         const int slot_total = kleidiai_collect_kernel_chain(op, kernel_chain);
+         const bool src0_is_kleidiai =
+diff --git a/ggml/src/ggml-cpu/repack.cpp b/ggml/src/ggml-cpu/repack.cpp
+index 332de2185..3f7f92e07 100644
+--- a/ggml/src/ggml-cpu/repack.cpp
++++ b/ggml/src/ggml-cpu/repack.cpp
+@@ -18,6 +18,8 @@
+ 
+ #include "repack.h"
+ #include "vollie-release.h"
++extern "C" int ggml_cpu_vollie_x3emu(void); // Vollie c3 0006, ggml-cpu.c
++extern "C" int ggml_cpu_vollie_x3emu_q6k(void);
+ 
+ #if defined(__GNUC__)
+ #pragma GCC diagnostic ignored "-Woverlength-strings"
+@@ -4972,7 +4974,7 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
+     static const ggml::cpu::repack::tensor_traits<block_q2_K, 1, 16, GGML_TYPE_Q8_K> q2_K_16x1_q8_K;
+ #endif
+ 
+-    if (cur->type == GGML_TYPE_Q4_0) {
++    if (cur->type == GGML_TYPE_Q4_0 && !ggml_cpu_vollie_x3emu()) { // Vollie c3 0006: emulation needs plain Q4_0
+         if (ggml_cpu_has_avx2() || (ggml_cpu_has_sve() && ggml_cpu_has_matmul_int8() && ggml_cpu_get_sve_cnt() == QK8_0)) {
+             if (cur->ne[1] % 8 == 0) {
+                 return &q4_0_8x8_q8_0;
+@@ -5059,7 +5061,7 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
+                 return &q5_K_8x4_q8_K;
+             }
+         }
+-    } else if (cur->type == GGML_TYPE_Q6_K) {
++    } else if (cur->type == GGML_TYPE_Q6_K && !ggml_cpu_vollie_x3emu_q6k()) { // Vollie c3 0006
+         if (ggml_cpu_has_neon() && ggml_cpu_has_matmul_int8()) {
+             if (cur->ne[1] % 8 == 0) {
+                 return &q6_K_8x8_q8_K;
+diff --git a/ggml/src/ggml-cpu/vollie-x3emu.h b/ggml/src/ggml-cpu/vollie-x3emu.h
+new file mode 100644
+index 000000000..515c1347b
+--- /dev/null
++++ b/ggml/src/ggml-cpu/vollie-x3emu.h
+@@ -0,0 +1,158 @@
++#pragma once
++// Vollie c3 0006 (memo-12 T-N1): host emulation of the arithmetic of upstream's Adreno Q4_0 gemv
++// (ggml-opencl kernels gemv_noshuffle_q4_0_f32.cl and _spec.cl at 620d2225c), for a perplexity check only.
++// Per output row the kernel computes, with x the f32 activation (not Q8_0):
++//   w      = ((q & 0xF) - 8) * d          int * half: formed in half (round to nearest even)
++//   acc[g] += (float) w * x               f32; g = block index mod 4 (the work-group's 4 subgroups take
++//                                         blocks g, g+4, ...; inside a block weights 0..31 in order)
++//   out    = ((acc[0] + acc[1]) + acc[2]) + acc[3]   (subgroup 0 adds subgroups 1, 2, 3 from local memory)
++// mode 1: the f32 multiply-add fused (fmaf, which -cl-mad-enable would allow); mode 2: unfused (round after the
++// multiply, then after the add). Mode 2 reproduces all six R74 x3 identity lines of the phone to the printed digits
++// (max_rel_err and max_abs), mode 1 does not, so mode 2 is the one that models the device.
++// Needs block_q4_0 (ggml-common.h). The NEON tile path (fp16 vector arithmetic) and the scalar reference give
++// bit-identical results (checked by tools/c3_x3emu_check.c).
++#include <math.h>
++#include <string.h>
++#include <stdint.h>
++
++#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
++#include <arm_neon.h>
++#define VOLLIE_X3EMU_NEON 1
++static inline float vollie_x3emu_h2f(uint16_t h) { __fp16 v; memcpy(&v, &h, 2); return (float) v; }
++static inline float vollie_x3emu_hround(float f) { return (float)(__fp16) f; }
++#else
++#define VOLLIE_X3EMU_NEON 0
++static inline float vollie_x3emu_h2f(uint16_t h) { return GGML_CPU_FP16_TO_FP32(h); }
++static inline float vollie_x3emu_hround(float f) { return GGML_CPU_FP16_TO_FP32(GGML_CPU_FP32_TO_FP16(f)); }
++#endif
++
++// Q6_K arm (upstream gemv_noshuffle_q6_k_f32.cl, same work split and reduction as the Q4_0 kernel, blocks of 32 weights
++// = half a 16-weight sub-scale pair): the kernel writes ((float) q - 32.f) * scale_s * scale_d * y with scale_s a char
++// and scale_d a half, so every step is f32 (no half rounding): w = fl32(((q - 32) * sc) * d), exact product first.
++// Weight i of 32-block k of a row, in ggml's natural order (the noshuffle conversion keeps it).
++static inline float vollie_x3emu_q6k_w(const block_q6_K * row, int k, int i) {
++    const block_q6_K * B = row + k / 8;
++    const int w = (k % 8) * 32 + i, n = w / 128, l = w % 32, quarter = (w % 128) / 32;
++    const uint8_t ql = B->ql[n * 64 + (quarter & 1) * 32 + l];
++    const int q = ((quarter < 2 ? ql & 0xF : ql >> 4) | (((B->qh[n * 32 + l] >> (2 * quarter)) & 3) << 4)) - 32;
++    uint16_t dh; memcpy(&dh, &B->d, 2);
++    return (float)(q * B->scales[w / 16]) * vollie_x3emu_h2f(dh);
++}
++
++// one row of Q4_0 (q6k = 0) or Q6_K (q6k = 1): x has nb*32 floats
++static inline float vollie_x3emu_row_ref_t(const void * row, const float * x, int nb, int mode, int q6k) {
++    const block_q4_0 * b = (const block_q4_0 *) row;
++    float acc[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
++    for (int k = 0; k < nb; k++) {
++        float * a = &acc[k & 3];
++        if (q6k) {
++            for (int i = 0; i < 32; i++) {
++                const float w = vollie_x3emu_q6k_w((const block_q6_K *) row, k, i);
++                if (mode == 1) { *a = fmaf(w, x[k * 32 + i], *a); } else { const float p = w * x[k * 32 + i]; *a = *a + p; }
++            }
++            continue;
++        }
++        uint16_t dh; memcpy(&dh, &b[k].d, 2);
++        const float d = vollie_x3emu_h2f(dh);
++        for (int i = 0; i < 32; i++) {
++            const int q = i < 16 ? (b[k].qs[i] & 0xF) : (b[k].qs[i - 16] >> 4);
++            const float w = vollie_x3emu_hround((float)(q - 8) * d); // exact in f32, then one rounding to half
++            if (mode == 1) {
++                *a = fmaf(w, x[k * 32 + i], *a);
++            } else {
++                const float p = w * x[k * 32 + i]; // separate statement: never contracted
++                *a = *a + p;
++            }
++        }
++    }
++    return ((acc[0] + acc[1]) + acc[2]) + acc[3];
++}
++static inline float vollie_x3emu_row_ref(const block_q4_0 * b, const float * x, int nb, int mode) {
++    return vollie_x3emu_row_ref_t(b, x, nb, mode, 0);
++}
++
++#if VOLLIE_X3EMU_NEON
++#define VOLLIE_X3EMU_KC 8 // blocks per dequantised tile (16 rows x 8 blocks x 32 weights x 4 B = 16 KB)
++
++// 16 rows starting at row0 (src0 row stride nb01 bytes), ncols columns of x (column stride xs floats), outputs to
++// dst + j*ds (floats) + 0..15. buf: 16*32*KC floats; acc: ncols*16 float32x4_t. Same order per row as the reference.
++static void vollie_x3emu_tile16(const char * src0, size_t nb01, int nb, const float * x, size_t xs, int ncols,
++                                float * dst, size_t ds, int mode, float * buf, float32x4_t * acc, int q6k) {
++    memset(acc, 0, sizeof(float32x4_t) * 16 * (size_t) ncols);
++    const uint8x16_t m4 = vdupq_n_u8(0xF);
++    const int8x16_t  s8 = vdupq_n_s8(8);
++    for (int kb = 0; kb < nb; kb += VOLLIE_X3EMU_KC) {
++        const int n = nb - kb < VOLLIE_X3EMU_KC ? nb - kb : VOLLIE_X3EMU_KC;
++        // dequantise: buf[((b*4 + v)*32 + i)*4 + r] = half((q - 8) * d) of row 4v + r, block kb + b, weight i
++        for (int b = 0; q6k && b < n; b++) { // Q6_K: f32 weights, scalar
++            for (int v = 0; v < 4; v++) for (int i = 0; i < 32; i++) for (int r = 0; r < 4; r++) {
++                buf[((size_t)(b * 4 + v) * 32 + i) * 4 + r] = vollie_x3emu_q6k_w((const block_q6_K *)(src0 + (size_t)(4 * v + r) * nb01), kb + b, i);
++            }
++        }
++        for (int b = 0; !q6k && b < n; b++) {
++            for (int v = 0; v < 4; v++) {
++                float16x8_t h[4][4]; // row r: weights 0-7, 8-15, 16-23, 24-31 as half products (16 registers)
++                for (int r = 0; r < 4; r++) {
++                    const block_q4_0 * blk = (const block_q4_0 *)(src0 + (size_t)(4 * v + r) * nb01) + kb + b;
++                    const uint8x16_t qs = vld1q_u8(blk->qs);
++                    const int8x16_t lo = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(qs, m4)), s8);
++                    const int8x16_t hi = vsubq_s8(vreinterpretq_s8_u8(vshrq_n_u8(qs, 4)), s8);
++                    uint16_t dh; memcpy(&dh, &blk->d, 2);
++                    const float16x8_t d = vreinterpretq_f16_u16(vdupq_n_u16(dh));
++                    h[r][0] = vmulq_f16(vcvtq_f16_s16(vmovl_s8(vget_low_s8(lo))), d);
++                    h[r][1] = vmulq_f16(vcvtq_f16_s16(vmovl_high_s8(lo)), d);
++                    h[r][2] = vmulq_f16(vcvtq_f16_s16(vmovl_s8(vget_low_s8(hi))), d);
++                    h[r][3] = vmulq_f16(vcvtq_f16_s16(vmovl_high_s8(hi)), d);
++                }
++                float * o = buf + (size_t)(b * 4 + v) * 32 * 4;
++                for (int q = 0; q < 4; q++) {
++                    float32x4x4_t t0 = { { vcvt_f32_f16(vget_low_f16(h[0][q])), vcvt_f32_f16(vget_low_f16(h[1][q])),
++                                           vcvt_f32_f16(vget_low_f16(h[2][q])), vcvt_f32_f16(vget_low_f16(h[3][q])) } };
++                    vst4q_f32(o + (2 * q) * 16, t0);
++                    float32x4x4_t t1 = { { vcvt_high_f32_f16(h[0][q]), vcvt_high_f32_f16(h[1][q]),
++                                           vcvt_high_f32_f16(h[2][q]), vcvt_high_f32_f16(h[3][q]) } };
++                    vst4q_f32(o + (2 * q + 1) * 16, t1);
++                }
++            }
++        }
++        for (int j = 0; j < ncols; j++) {
++            float32x4_t a[4][4];
++            float32x4_t * aj = acc + (size_t) j * 16;
++            for (int g = 0; g < 4; g++) for (int v = 0; v < 4; v++) a[g][v] = aj[g * 4 + v];
++            const float * xj = x + (size_t) j * xs + (size_t) kb * 32;
++            for (int b = 0; b < n; b++) {
++                const int g = (kb + b) & 3;
++                const float * w = buf + (size_t) b * 4 * 32 * 4;
++                float32x4_t a0 = a[g][0], a1 = a[g][1], a2 = a[g][2], a3 = a[g][3];
++                for (int i = 0; i < 32; i += 4) {
++                    const float32x4_t y = vld1q_f32(xj + b * 32 + i);
++#define X3_STEP(L) do { \
++        const float * wi = w + (i + L) * 4; \
++        if (mode == 1) { \
++            a0 = vfmaq_laneq_f32(a0, vld1q_f32(wi + 0 * 128), y, L); \
++            a1 = vfmaq_laneq_f32(a1, vld1q_f32(wi + 1 * 128), y, L); \
++            a2 = vfmaq_laneq_f32(a2, vld1q_f32(wi + 2 * 128), y, L); \
++            a3 = vfmaq_laneq_f32(a3, vld1q_f32(wi + 3 * 128), y, L); \
++        } else { \
++            a0 = vaddq_f32(a0, vmulq_laneq_f32(vld1q_f32(wi + 0 * 128), y, L)); \
++            a1 = vaddq_f32(a1, vmulq_laneq_f32(vld1q_f32(wi + 1 * 128), y, L)); \
++            a2 = vaddq_f32(a2, vmulq_laneq_f32(vld1q_f32(wi + 2 * 128), y, L)); \
++            a3 = vaddq_f32(a3, vmulq_laneq_f32(vld1q_f32(wi + 3 * 128), y, L)); \
++        } } while (0)
++                    X3_STEP(0); X3_STEP(1); X3_STEP(2); X3_STEP(3);
++#undef X3_STEP
++                }
++                a[g][0] = a0; a[g][1] = a1; a[g][2] = a2; a[g][3] = a3;
++            }
++            for (int g = 0; g < 4; g++) for (int v = 0; v < 4; v++) aj[g * 4 + v] = a[g][v];
++        }
++    }
++    for (int j = 0; j < ncols; j++) {
++        const float32x4_t * aj = acc + (size_t) j * 16;
++        for (int v = 0; v < 4; v++) {
++            const float32x4_t s = vaddq_f32(vaddq_f32(vaddq_f32(aj[v], aj[4 + v]), aj[8 + v]), aj[12 + v]);
++            vst1q_f32(dst + (size_t) j * ds + 4 * v, s);
++        }
++    }
++}
++#endif

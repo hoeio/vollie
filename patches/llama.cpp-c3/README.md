@@ -109,7 +109,7 @@ Parser: `tools/c3_probe_parse.py` (`--selftest`).
 
 ## 0006-x3-emu.patch: host emulation of the Adreno Q4_0 gemv's arithmetic (declared numerics change, host check only)
 
-Changes `ggml/src/ggml-cpu/ggml-cpu.c` and `repack.cpp`, adds `ggml/src/ggml-cpu/vollie-x3emu.h` (on 0005; applies with or
+Changes `ggml/src/ggml-cpu/ggml-cpu.c`, `repack.cpp` and `kleidiai/kleidiai.cpp`, adds `ggml/src/ggml-cpu/vollie-x3emu.h` (on 0005; applies with or
 without 0004). For memo-12 T-N1, the perplexity check of the GPU lane; not meant for a kit. Results and design:
 `campaigns/03-dense15-5pct/reports/memo-12-work/tom-numerics.md`.
 
@@ -117,6 +117,7 @@ without 0004). For memo-12 T-N1, the perplexity check of the GPU lane; not meant
 |---|---|
 | `VOLLIE_X3_EMU` | unset, `0` or any other value = off. `1` or `2`: every `MUL_MAT` with Q4_0 weights and f32 activations, at any batch size, computes each output as upstream's `gemv_noshuffle_q4_0_f32.cl` / `_spec.cl` do: `((q & 0xF) - 8) * d` rounded to half, times the f32 activation (no Q8_0), summed in f32 into four partials (block index mod 4, weights in order inside a block), then `((p0 + p1) + p2) + p3`. `2` = multiply and add rounded separately (reproduces R74's six device identity lines to every printed digit); `1` = fused multiply-add. With the knob set, the repack buffer type declines Q4_0 so the weights stay plain (Q6_K and the other types repack as before) |
 | `VOLLIE_X3_EMU_Q6K` | same values, for Q6_K weights (the output head): upstream's `gemv_noshuffle_q6_k_f32.cl`, same work split and reduction; its weight is `((q - 32) * sc) * d` in f32 (the kernel promotes to float before the scales, so nothing is rounded to half). The repack buffer type then declines Q6_K. Independent of `VOLLIE_X3_EMU` |
+| (KleidiAI builds) | with either knob set, KleidiAI's buffer type also declines the emulated type, so the emulation runs on a KleidiAI build too (syntax-checked only; no KleidiAI build was run) |
 
 Self-check: `tools/c3_x3emu_check.c` (the NEON tile equals the scalar reference bit for bit, Q4_0 and Q6_K; the Q6_K unpack
 follows ggml's `dequantize_row_q6_K` order; the Q4_0 reference replays R74's x3 identity lines). Knob unset: per-chunk PPL identical to the stock build at `-b 512`, `-ub 32` (4 chunks) and `-ub 1`
