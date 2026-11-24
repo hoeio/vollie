@@ -266,3 +266,26 @@ Collected here; the owner asked not to be asked until the R68 JSON arrives.
 **Update 2026-11-24 (Annie): owner answers.** Question 2 answered: DeepSeek prompt start a (156 tokens), owner: "a로 합니다." E-T23 (DeepSeek dump) is unblocked and queued for Tom after kit r36. All six open owner questions are now answered. Also confirmed: the r35 APK sha256 and the 30 min rest at room temperature before the R75 start (see `reports/R75-result.md`, "Owner confirmations 2026-11-24").
 
 | 2026-11-24 | 11 (annie) | Owner answers recorded: DeepSeek prompt start a; r35 sha256 confirmed; 30 min rest confirmed. E-T23 unblocked. |
+
+## Update 2026-11-24 (evening, clyde): R75 complete and scored
+
+**R75 session 2** (kit r36, amendment 1, JSON `reports/device/r75a1-c3probe-r36-2026-11-24T1345.json`, sha256 `e46e3446…d513`) ran clean
+13:45 to 13:59: no void, no deadline, no hang. Scored in `reports/R75-result.md` ("Session 2" section, S2.1 to S2.10; not committed yet).
+- *Device:* x4f gate set→start 381.7 µs (plain 147.0); Adreno does not submit a released command without a further flush (nf 0/3, 3/3:
+  session 1's hang cause confirmed); replay 44.3 µs per launch (sync1 124.5); `svm_c11` flag 0.9 µs, counter 3.75 µs (1.x modes never see
+  it); `_mc3` dev_ratio 3.316 / 3.912 / 4.528 at 2 / 3 / 4 columns; gate‖up 0.966 of the 11008 rate; best lead split 0.923 at share 0.55;
+  hand-off 13.3 µs (`write`); x4r held (21.02 GB/s, majflt median 0). Caps: GPU 676 after x4m, 491 after x4s; battery 23 → 6 %.
+- *Estimated:* K_meas 149.0, K_eff 162.3 µs; model `pair` (at light draw); A and D killed; width-2 route to 12 closed (cg > 1.70), `_mc3`
+  dropped; F worth a build (conditional; the probe's persistent gemv runs at 1.83 GB/s, no fast persistent kernel exists); Y14, E, B, B+
+  open, not worth. **12 on all three: not priceable.** Honest ladder rung 6 at K_eff, cg 2.0: 10.7 / 10.5 / 10.1 (`linear`) to
+  11.4 / 11.2 / 10.7 (`pair`, α 0.17). The stage model predicts a split ratio of 0.663 at K 149 where the phone gave 0.923; on the
+  phone's split the lane is worth about +0.5 tok/s (7.40 / 6.68 / 6.66). Brier 0.142 to 0.163 over 39 outcomes. Session drift flag set.
+- Cells 92 scored over both sessions: 39 inside, 53 misses.
+
+**Next actions (ranked, from R75-result S2.10):** (1) Bonnie + Ebony: explain the split gap and re-run the ladder with R75's K, cg, split;
+(2) Tom host: `_mc3` launch as built against upstream's dispatch; (3) Tom host: persistent row-claiming general kernel (F); (4) lead reports
+the verdict to the owner and asks keep / realign / close; (5) R76 x5 kit r37 (Bonnie r18, body residency under choice A) only with owner
+permission and its own prereg; (6) a split re-cell only if (1) finds a probe artefact. Open: owner's r36 APK sha256 confirmation. Annie:
+commit the result and this block, results.csv rows for R75.
+
+| 2026-11-24 | 12 (clyde) | R75 session 2 scored; combined verdict: complete, no void, 12 not priceable, K_eff 162.3 µs (*estimated*), cg 3.316 (*device*), x4r held. Not committed. |
