@@ -148,4 +148,4 @@ lead may run the KleidiAI-build stock runs on the owner's laptop (label *host*);
 - Scoring: on the official prompt, option B (`bonnie-joins-r26.md`, `ebony-joins-r13.md`). Owner: "공식 프롬프트로 채점합니다."
 - Prefix reuse in the claim protocol: allowed (`ebony-joins-r17.md`). Owner: "재사용을 허용합니다"
 - Campaign 2 gets no dated note on OLMoE's stray `<s>` prompt (`ebony-joins-r15.md`). Owner: "정정 메모를 붙이지 않습니다."
-- Still open: DeepSeek prompt start a / b / c (`ebony-joins-r14.md`); the owner has not answered it.
+- DeepSeek prompt start: candidate a (`ebony-joins-r14.md`; 156 tokens). Owner: "a로 합니다." This closes the last open question of the 2026-11-24 block; E-T23 (DeepSeek dump) is unblocked.

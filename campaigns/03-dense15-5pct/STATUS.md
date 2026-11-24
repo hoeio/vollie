@@ -243,13 +243,13 @@ Collected here; the owner asked not to be asked until the R68 JSON arrives.
 
 **Open owner questions (each with its memo).**
 1. Body load path A / B / C: bonnie-joins-r17.md.
-2. DeepSeek prompt start a / b / c: ebony-joins-r14.md.
+2. DeepSeek prompt start a / b / c: ebony-joins-r14.md. **Answered 2026-11-24: a (156 tokens).**
 3. Yi `<|im_start|>` marker: ebony-joins-r14.md.
 4. Scoring of the official prompt versus the fixed set, option B: bonnie-joins-r26.md, ebony-joins-r13.md.
 5. Prefix reuse in the claim protocol: ebony-joins-r17.md.
 6. Whether campaign 2 gets a dated note on OLMoE's stray `<s>` prompt: ebony-joins-r15.md.
 
-**Queued Tom tasks (not started; team paused).** H1 head-repack stock; E-T23 DeepSeek dump (after the owner answers question 2); U4; E-T15; E-T19; host decode profile; KV screen; E-T24.
+**Queued Tom tasks (not started; team paused).** H1 head-repack stock; E-T23 DeepSeek dump (unblocked 2026-11-24 by the owner's answer a to question 2; queued for Tom after kit r36); U4; E-T15; E-T19; host decode profile; KV screen; E-T24.
 
 | 2026-11-24 | 9 (annie) | Books from git (`df08456..513b734`): Bonnie r11 to r33, Ebony r6 to r17, Tom 0006 + T-N1 (`2788606`), S-T1 (`11f2e1f`), KleidiAI-build stock (`513b734`). results.csv: six KleidiAI stock rows and two T-N1 rows (*host*); memo index extended; state block above. Team paused by the owner. Open: R75 run, six owner questions, queued Tom tasks. |
 
@@ -262,3 +262,7 @@ Collected here; the owner asked not to be asked until the R68 JSON arrives.
 **Owner decisions 2026-11-24** (full text in CAMPAIGN.md): open questions 1, 3, 4, 5, 6 answered. (1) body load path A (plain); (3) Yi `<|im_start|>` is one token; (4) scoring on the official prompt (option B); (5) prefix reuse allowed in the claim protocol; (6) no dated note on campaign 2's stray `<s>`. **Still open: question 2, DeepSeek prompt start a / b / c (ebony-joins-r14.md).** E-T23 (DeepSeek dump) stays waiting on it.
 
 | 2026-11-24 | 10 (annie) | R75 device JSON committed (hung in x4f; x4i/x4a/x4b complete); owner decisions 2026-11-24 recorded; team resumed. Open: question 2, R75 result and amendment, kit r36. |
+
+**Update 2026-11-24 (Annie): owner answers.** Question 2 answered: DeepSeek prompt start a (156 tokens), owner: "a로 합니다." E-T23 (DeepSeek dump) is unblocked and queued for Tom after kit r36. All six open owner questions are now answered. Also confirmed: the r35 APK sha256 and the 30 min rest at room temperature before the R75 start (see `reports/R75-result.md`, "Owner confirmations 2026-11-24").
+
+| 2026-11-24 | 11 (annie) | Owner answers recorded: DeepSeek prompt start a; r35 sha256 confirmed; 30 min rest confirmed. E-T23 unblocked. |

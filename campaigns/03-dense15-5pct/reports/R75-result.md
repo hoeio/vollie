@@ -189,3 +189,15 @@ reads K_meas from x4s.
   harness deadline and a parent-hang rule.
 - Tom: the x4f flush and deadline fix; the cpu-7 pinning (`lplace=@4`).
 - Owner: the APK sha256 checked for r35, and the rest time before 10:35.
+
+## Owner confirmations 2026-11-24
+
+*Dated note, appended by Annie from the owner's words relayed by the lead. No score above is changed.*
+
+1. APK checksum. Owner: "SHA 맞습니다." The r35 APK sha256 the owner checked before R75 is
+   `465d97bb7932fc4c9b7c675e1b3e2b78536466f9dec3442d4b8c59405f558af5` (as prereg section 8). This closes the open item
+   "the APK sha256 checked for r35" in section 8 (Next).
+2. Rest time. Owner: "실온에서 30분 쉬게 했습니다." The phone rested 30 min at room temperature before the 10:35 start,
+   so the prereg's 30-min cool was kept. This closes the open item "the rest time before 10:35" in section 8. The
+   first gate's 85 s wait at headroom 0.873 happened despite this rest; the note records that and explains nothing.
+
