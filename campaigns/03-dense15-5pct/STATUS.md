@@ -289,3 +289,21 @@ permission and its own prereg; (6) a split re-cell only if (1) finds a probe art
 commit the result and this block, results.csv rows for R75.
 
 | 2026-11-24 | 12 (clyde) | R75 session 2 scored; combined verdict: complete, no void, 12 not priceable, K_eff 162.3 µs (*estimated*), cg 3.316 (*device*), x4r held. Not committed. |
+
+## Update 2026-11-25 (Annie): after R75, "continue"; split gap explained; design G first
+
+**Owner, 2026-11-25:** after the R75 verdict the owner wrote "계속하죠" (continue). The owner also confirmed the r36 APK sha256 (closes the open item in the 2026-11-24 evening block). No keep / realign / close decision was asked or given beyond "continue".
+
+**Findings** (all work files in `reports/memo-12-work/`, no verdict by the lead; commits `537f99b`, `f952774`, `2dc0857`):
+- **Split gap explained** (Bonnie r34, Ebony r18). The x4s best ratio 0.923 is a mean over arms from different phone states: four states in 63 s (Bonnie), a slow stretch of about 15 s (Ebony); Ebony's reading of the cool cell is 0.82, Bonnie predicts 0.83 (0.78 to 0.86) for a cool re-run (*estimated*). The stage model's 0.663 rises to 0.749 with the serial launch (`enq_us` 214 us with all four CPU threads idle) and 0.832 with end slack (Bonnie, *estimated* from *device* lines). The join as built is about 400 us, not 149 (Ebony, *estimated*).
+- **Cool coupling as priced.** Cool CPU slowdown beside the GPU kernel: Bonnie 1.38 (1.28 to 1.54), Ebony 1.36 (1.28 to 1.45), against the committed 1.353 / 1.45 (*estimated*). Capped and throttled states are worse (Bonnie 1.57 capped, 2.2 to 2.8 throttled).
+- **Design G before F.** G is the launch inside the pool job plus a trailing done-flag kernel, upstream kernel unchanged: +0.8 to +1.0 tok/s over the lane as probed (Bonnie, Ebony; *estimated*). F over G is worth a build only at about 0.9 of the general kernel's rate (Ebony). KleidiAI chunk multiplier 16 is needed to hide the launch (Bonnie); on the host it is bit-identical on Yi (40 chunks, 7.7347 / 7.7319 / 7.7165 at `-b 512` / `-b 512 -ub 32` / `-ub 1`, *host*, Tom). The host stall cost depends on the cell (*host*): cold cell, in-op 200 us stall costs +7.2 us at multiplier 4 and +7.4 us at 16; hot cell, 12 us stall costs +11.5 us at 4 and +3.0 us at 16.
+- **P(12 tok/s on all three) about 0.002** (Bonnie; 0.0005 to 0.005, judgement). Ebony: nothing reaches 12 (F at full rate 11.86 / 11.66 / 11.24 cool, *estimated*).
+- **The `_mc3` cost is in the kernel, not the probe** (Tom, *host* check against upstream's dispatch). *Device* x4m: 889.9 us at 1 column, 2,951.0 / 3,481.9 / 4,029.7 us at 2 / 3 / 4 columns; the step from 1 to 2 columns is +2,061 us, the later ones about 540 us each. PoCL: mc3 bit-identical to the 1-column kernel at 2, 3, 4 columns (*host*). R75's rule stands (cg 3.316, `_mc3` dropped).
+- **E-T23 done** (Tom, *host*, prompt a, 156 tokens): lookup tokens per pass 1.231 / 1.185 / 1.143 (any length / 2 or more / 3 only), base check 0.9942 on 2,765 rows. Rows added to `results.csv`.
+
+**In progress:** Tom is drafting kit r37 (lane G plus an x4s re-cell with triplets and a canary) as an R76 candidate. It needs its own pre-registration, the owner's tag `prereg-R76` and the owner's permission before any device run. Nothing is pre-registered yet.
+
+**Paused:** Bonnie r35 and Ebony r19 stopped on the Fable usage limit. Their partial files (`bonnie-joins-r35.md`, `bonnie_gpuheat_r35.py`, `ebony-joins-r19.md`, `ebony_bus_r19.py`) are untracked and not committed. Both are scheduled to resume at 07:05 KST on 2026-11-26.
+
+| 2026-11-25 | 13 (annie) | Books from git (`87bd9c2..2dc0857`): Bonnie r34, Ebony r18, Tom host checks (`_mc3`, E-T23, T1/T2/G). results.csv: five *host* rows (multiplier 16 identity x3, E-T23 lookup, base check). Memo index extended. Owner: "continue", r36 sha confirmed. Open: kit r37 / R76 prereg and owner permission; Bonnie r35 and Ebony r19 resume 2026-11-26 07:05 KST. |
