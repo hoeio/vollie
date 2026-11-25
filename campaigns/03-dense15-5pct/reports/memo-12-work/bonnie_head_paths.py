@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(root, "lab/llama.cpp-c3/gguf-py"))
 from gguf import GGUFReader
 from gguf.quants import dequantize
 from gguf.constants import GGMLQuantizationType as T
-M = {"llama2": "lab/c3/models/llama2-7b-q4_0.gguf", "yi": "lab/c3/models/yi15-6b-q4_0.gguf"}
+M = {"llama2": "lab/c3/models/llama2-7b-q4_0.gguf", "yi": "lab/c3/models/yi15-6b-q4_0.gguf", "deepseek": "lab/c3/models/deepseek7b-q4_0.gguf"}
 def act_q8k(x):                      # per 256 values: scale amax / 127, round to nearest
     b = x.reshape(x.shape[0], -1, 256); a = np.abs(b).max(2, keepdims=True); s = np.where(a > 0, a / 127.0, 1.0)
     return (np.rint(b / s) * s).reshape(x.shape).astype(np.float32)
