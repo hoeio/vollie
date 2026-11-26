@@ -172,3 +172,19 @@ shim on PoCL), r35's x4f hangs and r36's completes. Details: `campaigns/03-dense
 
 The x3 blocks and every block's cell order and timing windows are unchanged. Kit r36 is built from 0001, 0002, 0003, 0005,
 0007, 0008.
+
+## 0009-r37-cells.patch: kit r37 for R76, x4s re-celled (no numerics change)
+
+Changes only `src/llama-vollie-probe.cpp` (on 0008). Still off unless `VOLLIE_PROBE` is set. No new GPU kernel; the arms reuse
+x4s's lead and feeder code, `run_arm`, the rings and the general kernel. Details:
+`campaigns/03-dense15-5pct/reports/memo-12-work/tom-r37-build.md`.
+
+| block | what |
+|---|---|
+| `x4sc` | cool pass: triplets cpu 0.5 s \| lead split 1.0 s \| cpu 0.5 s at shares 0.40, 0.45, 0.50, 0.55, then a feeder triplet at 0.25 and the stall triplet (200 us busy stall on the lead before each CPU-alone graph), then 0.55 to 0.40; 6 s rest between triplets; all rings made once |
+| `x4sg` | launch + flush of 9856 GPU rows against a host-timed idle gap of 0, 0.1, 0.2, 0.3, 0.4, 0.5, 1, 5 ms, round robin, 5 s measured |
+| `x4sh` | heat pass: lead split at 0.45 in 1 s arms without rests, every 8th arm CPU alone, until 10 s after the second CPU cap step or 45 s; 1 Hz sampler on 0-3 (caps, GPU max, thermal_pwrlevel, headroom) |
+
+Per arm: `t_ms`, p10/p50/p90 over the measured window of launch, flush, CPU rows, END to seen, wait; then a canary line (0.1 s hot
+sdot on cpu 5, 20 ms register spins on cpu 7 and 4, `dcvsh_freq_limit` of cpu 0/4/7, `isolated`, `thermal_pwrlevel`). Kit r37
+is built from 0001, 0002, 0003, 0005, 0007, 0008, 0009.

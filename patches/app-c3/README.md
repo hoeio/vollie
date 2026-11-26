@@ -122,3 +122,13 @@ the run goes on (the native call stays behind in its isolate). File name `vollie
 
 Build: as r35, with libllama.so from c3 0001, 0002, 0003, 0005, 0007, 0008 and the CPU module unzipped from the r35 APK. Details:
 `campaigns/03-dense15-5pct/reports/memo-12-work/tom-r36-build.md`.
+
+## 0007-kit-r37-probe.patch
+
+Kit r37 (version 1.37.0+37, versionCode 37), applied after 0006; installs over r36 (same package and debug key). The button
+"Run c3 probe r37 (R76: cool pass, gap sweep, heat pass)" runs the R76 blocks x4i, x4sc, x4sg, x4sh (`patches/llama.cpp-c3/0009`),
+each after the r16 gate (up to 180 s), with r36's 600 s per-block limit. r36's other blocks (x4f, x4c, x4d, x4e, x4m, x4s, x4r)
+are not run. File name `vollie-c3probe-r37-<time>.json`.
+
+Build: as r36, with libllama.so from c3 0001, 0002, 0003, 0005, 0007, 0008, 0009 and the CPU module unzipped from the r36 APK.
+Details: `campaigns/03-dense15-5pct/reports/memo-12-work/tom-r37-build.md`.

@@ -5,7 +5,7 @@
 # the R75 x4 blocks x4i / x4a / x4b / x4f / x4c / x4d / x4e / x4s / x4r under "R75 x4 GPU join", see x4report; x3-tagged lines
 # printed inside an x4 block (build, load, identity, alone, cond) are reported there, not under R74); kit r36, 0008-x4f-fix:
 # x4 la dl= / stopped_at= / flush_recovered=, the x4f no-flush check (x4 la nf), x4 dl per block, x4 pin (x4i), x4 hang and the
-# block's 'hang' flag (the app's per-block timeout).
+# block's 'hang' flag (the app's per-block timeout); kit r37, 0009-r37-cells: the R76 blocks x4sc / x4sg / x4sh under "R76", see r37report.
 # usage: python3 -I tools/c3_probe_parse.py <vollie-c3probe-r29-*.json>      python3 -I tools/c3_probe_parse.py --selftest
 # Every number it prints is *device* (from the phone's lines); the ratios are arithmetic on them. A cell whose workers did
 # not all stay on their cpu (cpu_ok < n) is marked '*' and should not be used for a claim.
@@ -56,7 +56,11 @@ def parse(rep):
             elif tag == 'p1':
                 out['p1_info'].update(f)
             elif tag in ('x4', 'x4d') or (tag == 'x3' and str(b.get('block', '')).startswith('x4')):
-                out['x4'].append((line.split('c3-probe:', 1)[1].split()[1] if tag != 'x4d' else 'x4d_' + line.split('c3-probe:', 1)[1].split()[1], f, b.get('block')))
+                w = line.split('c3-probe:', 1)[1].split()
+                kind = 'x4d_' + w[1] if tag == 'x4d' else w[1]
+                if tag == 'x4' and kind in ('sc', 'sg', 'sh') and len(w) > 2 and '=' not in w[2]:   # kit r37: 'x4 sc arm ...' -> 'sc_arm'
+                    kind += '_' + w[2]
+                out['x4'].append((kind, f, b.get('block')))
             elif tag == 'x3':
                 out['x3'].append((line.split('c3-probe:', 1)[1].split()[1], f, b.get('block')))
             elif tag in R32:
@@ -307,6 +311,7 @@ def report(p):
     L += r32report(p['r32'])
     L += x3report(p['x3'])
     L += x4report(p['x4'])
+    L += r37report(p['x4'])
     L += header(p['hdr'])
     return '\n'.join(L)
 
@@ -547,6 +552,57 @@ def x4report(x4):
     return L
 
 
+def r37report(x4):
+    """kit r37 (R76): cool pass x4sc, gap sweep x4sg, heat pass x4sh, as printed by the phone (*device*); ratios are the phone's
+    own arithmetic. Void checks of bonnie-joins-r35.md 4.3 are echoed for the lead, not scored here."""
+    by = {}
+    for kind, f, blk in x4:
+        by.setdefault(kind, []).append(dict(f, block=blk))
+    if not any(k.split('_')[0] in ('sc', 'sg', 'sh') for k in by):
+        return []
+    L = ['\nR76 (kit r37; numbers *device*; t_ms = ms since the load of the block began)']
+    for k in ('sc_setup', 'sg_setup', 'sh_setup'):
+        for f in by.get(k, []):
+            L.append('  %s: ' % k + ', '.join('%s=%s' % kv_ for kv_ in f.items() if kv_[0] != 'block'))
+    if 'sc_trip' in by:
+        L.append('\nx4sc triplets (ratio = split ms per matrix / mean of the two cpu arms; stall: excess_us = stall arm - cpu - 200 us)')
+        table(L, by['sc_trip'], ['pos', 't_ms', 'mode', 'share', 'order', 'cpu1_ms', 'split_ms', 'cpu2_ms', 'cpu_diff', 'ratio', 'excess_us'])
+    if 'sc_sum' in by:
+        L.append('\nx4sc per share (median of the two orders = their mean)'); table(L, by['sc_sum'], ['share', 'ratio_asc', 'ratio_desc', 'ratio_med', 'd_ratio'])
+    arms = by.get('sc_arm', []) + by.get('sg_arm', []) + by.get('sh_arm', [])
+    if arms:
+        L.append('\narms (p10/p50/p90 over the measured window; clk = basis of e2s and slack: mono = profiling clock is the monotonic clock)')
+        table(L, labelled(arms), ['block', 'pos', 't_ms', 'mode', 'share', 'mats', 'ms_per_mat', 'launch_us', 'flush_us', 'cpu_ms', 'wait_us', 'e2s_us', 'slack_us',
+                                  'clk', 'err', 'dl', 'labels', 'max_mhz', 'gpu_max_mhz', 'hr'])
+    cans = by.get('sc_can', []) + by.get('sg_can', []) + by.get('sh_can', [])
+    if cans:
+        L.append('\ncanary after each arm (cpu 5 hot sdot ns per weight; register spins as MHz; cur = scaling_cur / cpuinfo_cur kHz)')
+        table(L, cans, ['block', 'pos', 't_ms', 'c5_ns_per_w', 'c5_at', 'spin7_mhz', 'spin7_at', 'spin7_cur', 'spin4_mhz', 'spin4_at', 'spin4_cur', 'dcvsh', 'isolated', 'thermal_pwrlevel'])
+    if 'sg_gap' in by:
+        L.append('\nx4sg launch + flush against the idle gap (dgap = START - previous END on the device clock)')
+        table(L, by['sg_gap'], ['gap_ms', 'n', 'launch_us', 'flush_us', 'lf_us', 'wait_us', 'e2s_us', 'dgap_us', 'dev_us', 'clk'])
+    steps = [f for f in by.get('sh_samp', []) if f.get('cpu_step') == '1' or f.get('gpu_step') == '1']
+    if 'sh_samp' in by:
+        L.append('\nx4sh 1 Hz samples where a cap stepped (%d of %d samples)' % (len(steps), len(by['sh_samp'])))
+        table(L, steps, ['t_ms', 'caps', 'gpu_max_mhz', 'thermal_pwrlevel', 'hr', 'cpu_step', 'gpu_step'])
+    for f in by.get('sh_sum', []):
+        L.append('  heat pass: ' + ', '.join('%s=%s' % kv_ for kv_ in f.items() if kv_[0] != 'block'))
+    # inputs for the lead (descriptive)
+    p50 = lambda v: num(str(v).split('/')[1]) if v and '/' in str(v) else None
+    best = by.get('sc_best', [{}])[0]
+    L.append('\nR76 inputs (for the lead, not scored here):')
+    L.append('  C1 best ratio_med %s at share %s' % (best.get('ratio_med', '-'), best.get('share', '-')))
+    bad = [f['pos'] for f in by.get('sc_trip', []) if (num(f.get('cpu_diff')) or 0) > 0.03]
+    L.append('  triplets with cpu arms more than 3 %% apart: %s' % (','.join(bad) or 'none'))
+    capped = sorted({f['block'] for f in by.get('sc_can', []) + by.get('sg_can', []) if f.get('thermal_pwrlevel') not in ('0', None) and not str(f.get('thermal_pwrlevel', '')).startswith('e')})
+    L.append('  thermal_pwrlevel above 0 in C or G: %s' % (','.join(capped) or 'none'))
+    gp = {f['gap_ms']: p50(f.get('lf_us')) for f in by.get('sg_gap', [])}
+    if gp:
+        d = lambda a, b: '%.1f' % (gp[a] - gp[b]) if gp.get(a) is not None and gp.get(b) is not None else '-'
+        L.append('  G1 lf p50 at 0.5 ms - at 0.2 ms: %s us; G4 at 5 ms - at 1 ms: %s us' % (d('0.5', '0.2'), d('5.0', '1.0')))
+    return L
+
+
 MM_STAT = ('orig_data_size', 'compr_data_size', 'mem_used_total', 'mem_limit', 'mem_used_max', 'same_pages', 'pages_compacted',
            'huge_pages', 'huge_pages_since')
 
@@ -656,6 +712,7 @@ def selftest():
     x3selftest()
     x4selftest()
     x4r36selftest()
+    x4r37selftest()
     print('selftest ok')
 
 
@@ -843,6 +900,41 @@ def x4r36selftest():
     assert 'HANG: block x4c did not return within 600 s (1 lines kept from the live file)' in r, r
     assert '  X4-f no-flush check done_without_flush 0/1, done_after_flush 1/-1' in r, r
     print('selftest r36 ok')
+
+
+
+X4TEST37 = {'kit': 'r37', 'blocks': [
+    {'block': 'x4sc', 'gate': {'timeout': False, 'series': []}, 'lines': [
+        'c3-probe: x4 sc arm pos=1 t_ms=852 mode=lead share=0.40 gpu_rows=8832 cpu_rows=13184 mats=123 ms_per_mat=1.632 launch_us=57.5/65.5/78.2 flush_us=20.0/30.0/40.1 '
+        'lf_us=77.6/95.6/118.2 cpu_ms=1.227/1.265/1.366 wait_us=10.2/80.5/266.9 e2s_us=3.8/90.7/300.0 slack_us=-200.5/-51.9/400.0 e2q_us=2.9/4.4/17.8 qoff_us=20.5/21.8/23.0 '
+        'dev_us=1597.1/1683.7/1741.2 clk=mono stamps=123 gbs=31.0 err=0 dl=0 thr=4:0.990:2:0:0/30@-1 max_mhz=p4:2419/2419 gpu_max_mhz=840 hr=0.41',
+        'c3-probe: x4 sc can pos=1 t_ms=2056 c5_ns_per_w=0.0310 c5_pin=1 c5_at=5 c5_cur=2419200/2419200 spin7_mhz=2830 spin7_pin=1 spin7_at=7 spin7_cur=2841600/e13 '
+        'spin4_mhz=2410 spin4_pin=1 spin4_at=4 spin4_cur=2419200/e13 dcvsh=cpu0:e2,cpu4:2419200,cpu7:2841600 isolated=empty thermal_pwrlevel=0',
+        'c3-probe: x4 sc trip pos=0 t_ms=0 mode=lead share=0.40 order=asc cpu1_ms=1.954 split_ms=1.632 cpu2_ms=1.900 cpu_diff=0.0281 ratio=0.847 excess_us=-1.0',
+        'c3-probe: x4 sc trip pos=15 t_ms=45526 mode=stall share=0.00 order=mid cpu1_ms=1.900 split_ms=2.180 cpu2_ms=2.000 cpu_diff=0.0513 ratio=1.118 excess_us=30.0',
+        'c3-probe: x4 sc sum share=0.40 ratio_asc=0.847 ratio_desc=0.861 ratio_med=0.854 d_ratio=0.014',
+        'c3-probe: x4 sc best share=0.40 ratio_med=0.854']},
+    {'block': 'x4sg', 'gate': {'timeout': False, 'series': []}, 'lines': [
+        'c3-probe: x4 sg gap gap_ms=0.2 n=72 launch_us=61.8/69.8/79.9 flush_us=50.0/60.0/70.0 lf_us=111.8/130.0/150.2 wait_us=1858.6/1900.0/1950.1 e2s_us=10/20/30 '
+        'e2q_us=4.0/16.5/23.4 dgap_us=275.4/286.0/312.7 dev_us=1834.2/1850.3/1901.7 clk=mono',
+        'c3-probe: x4 sg gap gap_ms=0.5 n=72 launch_us=62.1/70.0/81.5 flush_us=120.0/140.0/160.0 lf_us=182.2/210.0/241.5 wait_us=1866.4/1890.4/1921.9 e2s_us=10/20/30 '
+        'e2q_us=3.0/9.6/21.0 dgap_us=575.9/593.5/623.1 dev_us=1859.0/1857.1/1869.6 clk=mono']},
+    {'block': 'x4sh', 'gate': {'timeout': False, 'series': []}, 'lines': [
+        'c3-probe: x4 sh samp t_ms=0 caps=p0:1804,p4:2419,p7:2841 gpu_max_mhz=840 thermal_pwrlevel=0 hr=0.40 cpu_step=0 gpu_step=0',
+        'c3-probe: x4 sh samp t_ms=17002 caps=p0:1804,p4:2112,p7:2841 gpu_max_mhz=840 thermal_pwrlevel=0 hr=0.85 cpu_step=1 gpu_step=0',
+        'c3-probe: x4 sh sum t_s=29.1 arms=24 first_cap_s=17.0 first_cpu_step_s=17.0 second_cpu_step_s=19.0 first_gpu_step_s=-1.0 cpu_steps=2 gpu_steps=0 stop=second_cpu_step+10s']}]}
+
+
+def x4r37selftest():
+    p = parse(X4TEST37)
+    kinds = {k for k, f, b in p['x4']}
+    assert {'sc_arm', 'sc_can', 'sc_trip', 'sc_sum', 'sc_best', 'sg_gap', 'sh_samp', 'sh_sum'} <= kinds, kinds
+    r = report(p)
+    assert '| x4sc | 1 | 852 | lead | 0.40 | 123 | 1.632 | 57.5/65.5/78.2 | 20.0/30.0/40.1 | 1.265'[:60] in r, r
+    assert '  C1 best ratio_med 0.854 at share 0.40' in r and 'more than 3 % apart: 15' in r, r
+    assert 'G1 lf p50 at 0.5 ms - at 0.2 ms: 80.0 us' in r and '(1 of 2 samples)' in r and 'stop=second_cpu_step+10s' in r, r
+    assert 'thermal_pwrlevel above 0 in C or G: none' in r and '| x4sc | 1 | 2056 | 0.0310 |' in r, r
+    print('selftest r37 ok')
 
 
 if __name__ == '__main__':

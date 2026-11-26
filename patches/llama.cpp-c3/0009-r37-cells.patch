@@ -1,0 +1,348 @@
+diff --git a/src/llama-vollie-probe.cpp b/src/llama-vollie-probe.cpp
+index b707483..e23eaa0 100644
+--- a/src/llama-vollie-probe.cpp
++++ b/src/llama-vollie-probe.cpp
+@@ -36,6 +36,8 @@
+ // x4e run in a child process (libvollie_x4c.so, which calls this entry with VOLLIE_PROBE_TEE=1: every line also goes to stdout).
+ // 0008-x4f-fix (kit r36, R75 amendment 1): x4f flushes after releasing its user event (R75 hung there); every event wait gives up
+ // after 2 s (err -2001, `x4 dl` per block); parent x4 blocks tee their lines to <dir>/x4-live-<blk>.txt; x4i prints `x4 pin`.
++// 0009-r37-cells (kit r37, R76): blocks x4sc (cool pass), x4sg (gap sweep), x4sh (heat pass): x4s's split re-celled with per-arm
++// time stamps, p10/p50/p90 per cycle and a canary line per arm (see r37 below). No new kernel; still off unless VOLLIE_PROBE is set.
+ #if defined(VOLLIE_PROBE_STUB)
+ #include <cstddef>
+ extern "C" int llama_vollie_probe(const char *, const char *, char *, size_t) { return -1; }
+@@ -70,6 +72,8 @@ extern "C" int llama_vollie_probe(const char *, const char *, char *, size_t) {
+ #include <climits>
+ #include <ctime>
+ #include <memory>
++#include <mutex>
++#include <cctype>
+ #include <cmath>
+ #include <dirent.h>
+ #include <signal.h>
+@@ -3788,6 +3792,305 @@ void kai(Out & o) {
+     o.line("x4 kai kernel=%s features=%s q4_buft=%s backend=%s cpu_ok=%d", kern.c_str(), ft.empty() ? "none" : ft.c_str(), bt.c_str(), ok ? gb.desc().c_str() : "none", ok);
+     o.line("x4 kai log text=%s", lg.empty() ? "none" : san(lg, 1500, '_').c_str());
+ }
++// ---- 0009-r37-cells (kit r37, R76; campaign 3 memo-12 work: clyde-r76-plan.md 3, bonnie-joins-r35.md 4.1 and 5, ebony-joins-r19.md 5
++// T10 / T11): kit r36's x4s split, re-celled. No new kernel, no model. Blocks, each after the app's r16 gate:
++//   x4sc  cool pass: triplets cpu (0.5 s) | lead split (1.0 s) | cpu (0.5 s) at GPU shares 0.40, 0.45, 0.50, 0.55; then the feeder
++//         triplet at 0.25 (R74's mode) and the stall triplet (cpu | cpu with a 200 us busy stall on the lead before each graph |
++//         cpu; Ebony T1); then 0.55, 0.50, 0.45, 0.40. 6 s rest between triplets; every ring is allocated once, before the first arm
++//   x4sg  gap sweep (Ebony T10): launch + flush of the 0.45 share's GPU rows on the profiling queue from cpu 4 after a host-timed
++//         idle gap of 0, 0.1, 0.2, 0.3, 0.4, 0.5, 1, 5 ms since the previous kernel was seen done; round robin, ascending and
++//         descending rounds in turn; 0.5 s warm-up, 5 s measured
++//   x4sh  heat pass: lead split at 0.45 in 1 s arms without rests (every 8th arm: CPU alone) until 10 s after the second CPU cap
++//         step or 45 s; caps, GPU max, thermal_pwrlevel and headroom sampled at 1 Hz by a thread on 0-3
++// t_ms is ms since the block's load began (after its rings are made; setup_s says how long that took). Every arm prints p10/p50/
++// p90 over its measured window of launch, flush, CPU rows, END to seen and wait, then its canary line: 0.1 s hot sdot on cpu 5,
++// 20 ms register spins on cpu 7 and cpu 4 (effective MHz against the monotonic clock), cpu0/4/7 dcvsh_freq_limit,
++// /sys/devices/system/cpu/isolated and thermal_pwrlevel (an unreadable node prints e<errno>).
++const std::vector<int> SET37 = { 4, 5, 6, 7 };
++const int M37 = 22016, NR37 = 4;
++int64_t mns(clk::time_point t) { return (int64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(t.time_since_epoch()).count(); }
++std::string pq(std::vector<double> v, const char * f = "%.1f") {   // p10/p50/p90 (nearest rank); -1/-1/-1 when empty
++    if (v.empty()) return "-1/-1/-1";
++    std::sort(v.begin(), v.end()); std::string s;
++    for (double p : { 0.1, 0.5, 0.9 }) { char b[32]; snprintf(b, sizeof b, f, v[(size_t)(p * (v.size() - 1) + 0.5)]); s += (s.empty() ? "" : "/") + std::string(b); }
++    return s;
++}
++double p50(std::vector<double> v) { if (v.empty()) return -1; std::sort(v.begin(), v.end()); return v[(v.size() - 1) / 2]; }
++
++// canary: a thread pinned to cpu c for s seconds; reg: 8 dependent adds per step (8 cycles), as MHz against the monotonic clock;
++// else the hot sdot loop of p2hot on a 256 KB working set, as ns per weight. The policy's scaling_cur_freq / cpuinfo_cur_freq
++// (kHz) are read once in the middle. A refused pin gives v=-1 (pin=0).
++std::vector<uint8_t> CAN_WS;
++struct Spin { double v = -1; int ok = 0, at = -1; std::string cur = "-", cinfo = "-"; };
++Spin spin37(int c, double s, bool reg) {
++    Spin r;
++    std::thread t([&] {
++        r.ok = pin(c); if (!r.ok) { r.at = where(); return; }   // R75a1: cpu 5 and cpu 7 refused a pin at idle (e22); no number then
++        const int p = policy_of(c); char a[96], b[96];
++        snprintf(a, sizeof a, "/sys/devices/system/cpu/cpufreq/policy%d/scaling_cur_freq", p); snprintf(b, sizeof b, "/sys/devices/system/cpu/cpufreq/policy%d/cpuinfo_cur_freq", p);
++        const auto t0 = clk::now(); double el = 0, w = 0; uint64_t n = 0, v = 0; bool mid = false; size_t gi = 0; const size_t ng = CAN_WS.size() / G4;
++        for (;;) {
++            if (reg) {
++                for (int i = 0; i < 4096; i++) {
++#if defined(__aarch64__)
++                    __asm__ volatile("add %0, %0, #1\n\tadd %0, %0, #1\n\tadd %0, %0, #1\n\tadd %0, %0, #1\n\t"
++                                     "add %0, %0, #1\n\tadd %0, %0, #1\n\tadd %0, %0, #1\n\tadd %0, %0, #1" : "+r"(v));
++#else
++                    for (int j = 0; j < 8; j++) { __asm__ volatile("" : "+r"(v)); v++; }
++#endif
++                }
++                n += 4096;
++            } else {
++                float y[4];
++                for (int k = 0; k < 16; k++) { vst1q_f32(y, group4((const bq4x4 *)(CAN_WS.data() + gi * G4), X, nullptr, 0)); gi = (gi + 1) % ng; }
++                volatile float sink = y[0]; (void) sink; w += 16.0 * 4 * K;
++            }
++            el = secs(t0, clk::now());
++            if (!mid && el >= s / 2) { r.cur = rdl(a); r.cinfo = rdl(b); mid = true; }
++            if (el >= s) break;
++        }
++        r.v = reg ? n * 8.0 / el / 1e6 : el * 1e9 / w; r.at = where();
++    });
++    t.join();
++    return r;
++}
++void canary(Out & o, const char * tag, int pos, clk::time_point t0) {
++    const double t = secs(t0, clk::now()) * 1e3;
++    const Spin c5 = spin37(5, 0.1, false), s7 = spin37(7, 0.02, true), s4 = spin37(4, 0.02, true);
++    std::string dv;
++    for (int c : { 0, 4, 7 }) { char p[80]; snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/dcvsh_freq_limit", c); dv += (dv.empty() ? "cpu" : ",cpu") + std::to_string(c) + ":" + rdl(p); }
++    o.line("x4 %s can pos=%d t_ms=%.0f c5_ns_per_w=%.4f c5_pin=%d c5_at=%d c5_cur=%s/%s spin7_mhz=%.0f spin7_pin=%d spin7_at=%d spin7_cur=%s/%s spin4_mhz=%.0f spin4_pin=%d spin4_at=%d "
++           "spin4_cur=%s/%s dcvsh=%s isolated=%s thermal_pwrlevel=%s", tag, pos, t, c5.v, c5.ok, c5.at, c5.cur.c_str(), c5.cinfo.c_str(), s7.v, s7.ok, s7.at, s7.cur.c_str(), s7.cinfo.c_str(),
++           s4.v, s4.ok, s4.at, s4.cur.c_str(), s4.cinfo.c_str(), dv.c_str(), rdl("/sys/devices/system/cpu/isolated").c_str(), kg("thermal_pwrlevel").c_str());
++}
++
++struct Lane { double sh = 0; int gm = 0; std::unique_ptr<CRing> cr; Ring gr; };
++struct Cx {
++    Gpu & g; Out & o; Therm & th; Kset & ks; const XIn & x4; H dst; const char * tag; clk::time_point t0 = clk::now(); int pos = 0;
++    GB gb; std::vector<uint8_t> tq; CRing full; std::vector<std::unique_ptr<Lane>> ln;
++    Cx(Gpu & g_, Out & o_, Therm & th_, Kset & ks_, const XIn & x_, H d_, const char * t_) : g(g_), o(o_), th(th_), ks(ks_), x4(x_), dst(d_), tag(t_) {}
++    ~Cx() { for (auto & l : ln) release(g, l->gr); }
++    bool init(bool cpu) {   // CPU backend and the CPU-alone ring (cpu), entry points, canary arena
++        if (!ks.p[0].k || !XC.Flush || !XC.GetEventInfo) { o.line("x4 %s ok=0 reason=%s", tag, ks.p[0].k ? "no_entry" : "no_kernel"); return false; }
++        if (CAN_WS.empty()) { CAN_WS.resize((size_t) 256 << 10); fill_q4x4(CAN_WS.data(), CAN_WS.size()); init_x(); }
++        if (!cpu) return true;
++        if (!gb.init()) { o.line("x4 %s error=no_cpu_backend", tag); return false; }
++        tq = templ(GGML_TYPE_Q4_0, 4096, 64);
++        if (!make_cring(gb, full, 4096, M37, NR37, tq, 64)) { o.line("x4 %s error=cpu_alloc share=0", tag); return false; }
++        return true;
++    }
++    Lane * lane(double sh, bool cpu) {
++        auto L = std::make_unique<Lane>(); L->sh = sh; L->gm = (int) std::lround(sh * M37 / 128) * 128;
++        if (cpu) { L->cr.reset(new CRing); if (!make_cring(gb, *L->cr, 4096, M37 - L->gm, NR37, tq, 64)) { o.line("x4 %s error=cpu_alloc share=%.2f", tag, sh); return nullptr; } }
++        HMat h; make_hmat(h, L->gm, 4096); const cl_int e = mkring(g, L->gr, h, NR37);
++        ln.push_back(std::move(L));
++        if (e) { o.line("x4 %s ok=0 err=%d reason=gpu_alloc share=%.2f", tag, e, sh); return nullptr; }
++        return ln.back().get();
++    }
++    double mb(bool gpu) const { double b = 0; for (auto & l : ln) b += gpu ? l->gr.bytes : l->cr ? l->cr->bytes * NR37 : 0; return (b + (gpu ? 0 : full.bytes * NR37)) / 1048576.0; }
++};
++
++// one cycle's times (us; cpu ms): l launch (EnqueueNDRange), f flush, c CPU rows, w wait (spin to seen), from the event's stamps:
++// e2s END to seen on the monotonic clock, e2q the same with QUEUED placed at the launch call, sl / slq the CPU rows' end minus END
++// (positive: the GPU ended first) on each basis, qoff QUEUED minus the launch call on the monotonic clock, dev END - START, dg
++// START minus the previous kernel's END (x4sg); st: the stamps were read
++struct Cy { double l = -1, f = -1, c = -1, w = -1, e2s = 0, e2q = 0, sl = 0, slq = 0, qoff = 0, dev = 0, dg = -1; bool st = false; long rd = 0; };
++void stamp(Cx & x, Cy & c, H ev, clk::time_point a0, clk::time_point rows, clk::time_point seen) {
++    const St t = stamps(x.g, ev); if (!t.ok()) return;
++    c.st = true; c.dev = (t.e - t.b) * 1e-3; c.qoff = ((int64_t) t.q - mns(a0)) * 1e-3;
++    c.e2s = (mns(seen) - (int64_t) t.e) * 1e-3; c.e2q = secs(a0, seen) * 1e6 - (t.e - t.q) * 1e-3;
++    c.sl = (mns(rows) - (int64_t) t.e) * 1e-3; c.slq = secs(a0, rows) * 1e6 - (t.e - t.q) * 1e-3;
++}
++// field strings over cycles m: mono basis when |p50 qoff| < 2 ms (the profiling clock is the monotonic clock), else queued
++struct Fs { std::string l, f, lf, c, w, e2s, sl, e2q, qoff, dev, dg, clk; long st = 0; };
++Fs fields(const std::vector<Cy> & m) {
++    std::vector<double> v[11];
++    for (auto & c : m) {
++        if (c.l >= 0) { v[0].push_back(c.l); v[1].push_back(c.f); v[2].push_back(c.l + c.f); }
++        if (c.c >= 0) v[3].push_back(c.c);
++        if (c.w >= 0) v[4].push_back(c.w);
++        if (c.st) { v[5].push_back(c.e2s); v[6].push_back(c.sl); v[7].push_back(c.e2q); v[8].push_back(c.qoff); v[9].push_back(c.dev); v[10].push_back(c.slq); }
++    }
++    Fs s; s.st = (long) v[5].size(); const bool mono = s.st && std::fabs(p50(v[8])) < 2000;
++    s.l = pq(v[0]); s.f = pq(v[1]); s.lf = pq(v[2]); s.c = pq(v[3], "%.3f"); s.w = pq(v[4]); s.e2q = pq(v[7]); s.qoff = pq(v[8]); s.dev = pq(v[9]);
++    s.e2s = mono ? pq(v[5]) : s.e2q; s.sl = pq(mono ? v[6] : v[10]); s.clk = !s.st ? "none" : mono ? "mono" : "queued";
++    std::vector<double> d; for (auto & c : m) if (c.dg >= 0) d.push_back(c.dg); s.dg = pq(d);
++    return s;
++}
++
++enum { K_CPU, K_LEAD, K_FEED, K_STALL };
++const char * KN37[4] = { "cpu", "lead", "feeder", "stall" };
++// one arm through run_arm (pool on 4-7, the lead on cpu 4): returns ms per matrix over the measured window, prints the arm line
++// and its canary line. Measured window = the last cpu_n cycles (run_arm counts every call after its warm-up).
++double arm(Cx & x, int kind, Lane * L, double warm, double meas) {
++    Gpu & g = x.g; const int pos = x.pos++; const double t_ms = secs(x.t0, clk::now()) * 1e3; const int dl0 = G_DL.load();
++    std::vector<Cy> cy; cy.reserve(1 << 14); long idx = 0; std::atomic<int> ferr{0};
++    std::atomic<long> go{0}, done{0}; std::atomic<int> stop{0}; std::thread feeder;
++    if (kind == K_FEED) feeder = std::thread([&] {   // R74's feeder (as x4s): a thread on 0-3 launches + clFinish on the plain queue
++        pin_cpus({ 0, 1, 2, 3 }); long seen = 0;
++        while (!stop.load()) {
++            const long q = go.load(); if (q == seen) continue;
++            seen = q; GMat & m = L->gr.m[q % NR37];
++            const cl_int x1 = launch(g, x.ks.p[0].k, m, x.x4, x.dst, g.q, nullptr), x2 = g.cl.Finish(g.q); if ((x1 || x2) && !ferr.load()) ferr = x1 ? x1 : x2;
++            done = q;
++        }
++    });
++    Arm a; a.set = SET37; a.warm = warm; a.meas = meas;
++    if (kind == K_CPU || kind == K_STALL) a.cpu = [&] {
++        Cy c; const auto s0 = clk::now();
++        if (kind == K_STALL) while (secs(s0, clk::now()) < 200e-6) {}   // Ebony T1: 200 us busy stall on the lead (not in cpu_ms)
++        const auto a1 = clk::now(); ggml_backend_graph_compute(x.gb.be, x.full.gf[idx++ % NR37]); c.c = secs(a1, clk::now()) * 1e3;
++        cy.push_back(c); return x.full.bytes;
++    };
++    else if (kind == K_LEAD) a.cpu = [&] {
++        const long q = ++idx; GMat & m = L->gr.m[q % NR37]; H ev = nullptr; Cy c;
++        const auto a0 = clk::now(); cl_int x1 = launch(g, x.ks.p[0].k, m, x.x4, x.dst, g.qp, &ev); const auto a1 = clk::now(); if (!x1) x1 = XC.Flush(g.qp);
++        const auto a2 = clk::now(); ggml_backend_graph_compute(x.gb.be, L->cr->gf[q % NR37]); const auto a3 = clk::now();
++        const cl_int x2 = ev && !x1 ? spin_ev(ev) : 0; const auto a4 = clk::now();
++        if ((x1 || x2) && !ferr.load()) ferr = x1 ? x1 : x2;
++        if (ev) { if (!x2) stamp(x, c, ev, a0, a3, a4); g.cl.ReleaseEvent(ev); }
++        c.l = secs(a0, a1) * 1e6; c.f = secs(a1, a2) * 1e6; c.c = secs(a2, a3) * 1e3; c.w = secs(a3, a4) * 1e6;
++        cy.push_back(c); return x.full.bytes;
++    };
++    else a.cpu = [&] {
++        const long q = ++idx; go = q; Cy c;
++        const auto a0 = clk::now(); ggml_backend_graph_compute(x.gb.be, L->cr->gf[q % NR37]); const auto a1 = clk::now();
++        unsigned it = 0;   // r36's deadline on the feeder wait
++        while (done.load() != q) if (!(++it & 255) && secs(a1, clk::now()) > EV_DEADLINE) { G_DL++; if (!ferr.load()) ferr = EV_DL; break; }
++        c.c = secs(a0, a1) * 1e3; c.w = secs(a1, clk::now()) * 1e6;
++        cy.push_back(c); return x.full.bytes;
++    };
++    const ARes s = run_arm(a, x.th);
++    if (feeder.joinable()) { stop = 1; feeder.join(); }
++    const long n = s.cpu_n; const double ms = n ? s.cpu_s * 1e3 / n : -1;
++    const std::vector<Cy> m(cy.end() - std::min<size_t>(cy.size(), (size_t) n), cy.end());
++    const Fs f = fields(m); const int gm = L ? L->gm : 0;
++    x.o.line("x4 %s arm pos=%d t_ms=%.0f mode=%s share=%.2f gpu_rows=%d cpu_rows=%d mats=%ld ms_per_mat=%.3f launch_us=%s flush_us=%s lf_us=%s cpu_ms=%s wait_us=%s e2s_us=%s slack_us=%s "
++             "e2q_us=%s qoff_us=%s dev_us=%s clk=%s stamps=%ld gbs=%.2f err=%d dl=%d %s", x.tag, pos, t_ms, KN37[kind], L ? L->sh : 0.0, gm, M37 - gm, n, ms, f.l.c_str(), f.f.c_str(), f.lf.c_str(),
++             f.c.c_str(), f.w.c_str(), f.e2s.c_str(), f.sl.c_str(), f.e2q.c_str(), f.qoff.c_str(), f.dev.c_str(), f.clk.c_str(), f.st, s.cgbs(), ferr.load(), G_DL.load() - dl0, astr(s).c_str());
++    canary(x.o, x.tag, pos, x.t0);
++    return ms;
++}
++void setup_env(Cx & x, std::unique_ptr<EnvSet> & e1, std::unique_ptr<EnvSet> & e2) {
++    e1.reset(new EnvSet("VOLLIE_POOL", "1")); e2.reset(new EnvSet("VOLLIE_CPUMASK", cpumask(SET37)));
++    if (x.gb.set_nt) x.gb.set_nt(x.gb.be, (int) SET37.size());
++}
++
++void x4sc(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4, H dst) {
++    Cx x(g, o, th, ks, x4, dst, "sc"); if (!x.init(true)) return;
++    Lane * L[4], * F = nullptr;
++    for (int i = 0; i < 4; i++) if (!(L[i] = x.lane(0.40 + 0.05 * i, true))) return;
++    if (!(F = x.lane(0.25, true))) return;
++    std::unique_ptr<EnvSet> e1, e2; setup_env(x, e1, e2);
++    const double su = secs(x.t0, clk::now()); x.t0 = clk::now();
++    o.line("x4 sc setup m=%d k=4096 batch=1 copies=%d cpu_buft=%s gpu_kern=general set=4,5,6,7 lead=cpu4_flush_spin_profiling feeder=0-3_finish_plain shares=0.40,0.45,0.50,0.55 "
++           "feeder_share=0.25 stall_us=200 rest_s=6 arm_s=0.5,1.0,0.5 warm_s=0.2 cpu_mb=%.0f gpu_mb=%.0f setup_s=%.1f", M37, NR37, x.full.buft.c_str(), x.mb(false), x.mb(true), su);
++    struct T { int kind; Lane * l; const char * ord; };
++    const T ts[10] = { { K_LEAD, L[0], "asc" }, { K_LEAD, L[1], "asc" }, { K_LEAD, L[2], "asc" }, { K_LEAD, L[3], "asc" }, { K_FEED, F, "mid" }, { K_STALL, nullptr, "mid" },
++                       { K_LEAD, L[3], "desc" }, { K_LEAD, L[2], "desc" }, { K_LEAD, L[1], "desc" }, { K_LEAD, L[0], "desc" } };
++    double rt[2][4] = { { -1, -1, -1, -1 }, { -1, -1, -1, -1 } };
++    for (int i = 0; i < 10; i++) {
++        if (i) sleep_s(6.0);
++        const T & t = ts[i]; const double t_ms = secs(x.t0, clk::now()) * 1e3; const int p0 = x.pos;
++        const double c1 = arm(x, K_CPU, nullptr, 0.2, 0.5), sp = arm(x, t.kind, t.l, 0.2, 1.0), c2 = arm(x, K_CPU, nullptr, 0.2, 0.5);
++        const double cm = (c1 + c2) / 2, r = c1 > 0 && c2 > 0 && sp > 0 ? sp / cm : -1;
++        if (t.kind == K_LEAD) rt[i > 5][(int) std::lround((t.l->sh - 0.40) / 0.05)] = r;
++        o.line("x4 sc trip pos=%d t_ms=%.0f mode=%s share=%.2f order=%s cpu1_ms=%.3f split_ms=%.3f cpu2_ms=%.3f cpu_diff=%.4f ratio=%.3f excess_us=%.1f", p0, t_ms, KN37[t.kind], t.l ? t.l->sh : 0.0,
++               t.ord, c1, sp, c2, cm > 0 ? std::fabs(c1 - c2) / cm : -1, r, t.kind == K_STALL && r > 0 ? (sp - cm) * 1e3 - 200 : -1);
++    }
++    int bi = -1; double bm = 0;
++    for (int i = 0; i < 4; i++) {
++        const double a = rt[0][i], d = rt[1][i], md = a > 0 && d > 0 ? (a + d) / 2 : -1;   // median of two = their mean
++        if (md > 0 && (bi < 0 || md < bm)) { bi = i; bm = md; }
++        o.line("x4 sc sum share=%.2f ratio_asc=%.3f ratio_desc=%.3f ratio_med=%.3f d_ratio=%.3f", 0.40 + 0.05 * i, a, d, md, md > 0 ? std::fabs(a - d) : -1);
++    }
++    o.line("x4 sc best share=%.2f ratio_med=%.3f", bi < 0 ? -1 : 0.40 + 0.05 * bi, bi < 0 ? -1 : bm);
++}
++
++void x4sg(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4, H dst) {
++    Cx x(g, o, th, ks, x4, dst, "sg"); if (!x.init(false)) return;
++    Lane * L = x.lane(0.45, false); if (!L) return;
++    const double su = secs(x.t0, clk::now()); x.t0 = clk::now();
++    const double gaps[8] = { 0, 0.1, 0.2, 0.3, 0.4, 0.5, 1, 5 };
++    o.line("x4 sg setup gpu_rows=%d k=4096 copies=%d kern=general lead=cpu4_launch_flush_spin_profiling gaps_ms=0,0.1,0.2,0.3,0.4,0.5,1,5 gap=host_from_seen order=round_robin_asc_desc "
++           "warm_s=0.5 meas_s=5.0 gpu_mb=%.0f setup_s=%.1f", L->gm, NR37, x.mb(true), su);
++    std::vector<Cy> gs[8]; long rd = 0, idx = 0; uint64_t pend = 0; auto seen = clk::now(); std::atomic<int> err{0}; const int dl0 = G_DL.load();
++    Arm a; a.set = { 4 }; a.warm = 0.5; a.meas = 5.0;
++    a.cpu = [&] {
++        const bool up = !(rd & 1);
++        for (int j = 0; j < 8; j++) {
++            const int gi = up ? j : 7 - j; Cy c; c.rd = rd;
++            while (secs(seen, clk::now()) < gaps[gi] * 1e-3) {}
++            GMat & m = L->gr.m[idx++ % NR37]; H ev = nullptr;
++            const auto a0 = clk::now(); cl_int x1 = launch(g, ks.p[0].k, m, x4, dst, g.qp, &ev); const auto a1 = clk::now(); if (!x1) x1 = XC.Flush(g.qp);
++            const auto a2 = clk::now(); const cl_int x2 = ev && !x1 ? spin_ev(ev) : 0; seen = clk::now();
++            if ((x1 || x2) && !err.load()) err = x1 ? x1 : x2;
++            if (ev) {
++                if (!x2) { stamp(x, c, ev, a0, a2, seen); const St t = stamps(g, ev); if (t.ok()) { if (pend && t.b >= pend) c.dg = (t.b - pend) * 1e-3; pend = t.e; } }
++                g.cl.ReleaseEvent(ev);
++            }
++            c.l = secs(a0, a1) * 1e6; c.f = secs(a1, a2) * 1e6; c.w = secs(a2, seen) * 1e6;
++            gs[gi].push_back(c);
++        }
++        rd++; return 0.0;
++    };
++    const ARes s = run_arm(a, x.th);
++    const long r0 = rd - s.cpu_n; double lf50[8];
++    for (int i = 0; i < 8; i++) {
++        std::vector<Cy> m; for (auto & c : gs[i]) if (c.rd >= r0) m.push_back(c);
++        const Fs f = fields(m); std::vector<double> v; for (auto & c : m) v.push_back(c.l + c.f); lf50[i] = p50(v);
++        o.line("x4 sg gap gap_ms=%.1f n=%zu launch_us=%s flush_us=%s lf_us=%s wait_us=%s e2s_us=%s e2q_us=%s dgap_us=%s dev_us=%s clk=%s", gaps[i], m.size(), f.l.c_str(), f.f.c_str(), f.lf.c_str(),
++               f.w.c_str(), f.e2s.c_str(), f.e2q.c_str(), f.dg.c_str(), f.dev.c_str(), f.clk.c_str());
++    }
++    o.line("x4 sg arm pos=0 t_ms=0 rounds=%ld g1_step_us=%.1f g4_step_us=%.1f err=%d dl=%d %s", s.cpu_n, lf50[5] - lf50[2], lf50[7] - lf50[6], err.load(), G_DL.load() - dl0, astr(s).c_str());
++    canary(o, "sg", 0, x.t0);
++}
++
++void x4sh(Gpu & g, Out & o, Therm & th, Kset & ks, const XIn & x4, H dst) {
++    Cx x(g, o, th, ks, x4, dst, "sh"); if (!x.init(true)) return;
++    Lane * L = x.lane(0.45, true); if (!L) return;
++    std::unique_ptr<EnvSet> e1, e2; setup_env(x, e1, e2);
++    const double su = secs(x.t0, clk::now()); x.t0 = clk::now();
++    o.line("x4 sh setup share=0.45 gpu_rows=%d cpu_rows=%d copies=%d arm_s=1.0 warm_s=0 cpu_alone_every=8 stop=second_cpu_step+10s_or_45s sampler=1hz_on_0-3 cpu_mb=%.0f gpu_mb=%.0f setup_s=%.1f",
++           L->gm, M37 - L->gm, NR37, x.mb(false), x.mb(true), su);
++    struct Sm { double t; long k[3], gmax; int pl; std::string pls, hr; };
++    std::mutex mu; std::vector<Sm> sm; std::atomic<int> stop{0};
++    std::thread smp([&] {   // 1 Hz, on 0-3: caps (scaling_max_freq of policies 0 / 4 / 7), GPU max, thermal_pwrlevel, headroom
++        pin_cpus({ 0, 1, 2, 3 }); Therm t2;
++        for (int k = 0; !stop.load(); k++) {
++            Sm s; s.t = secs(x.t0, clk::now()) * 1e3; int i = 0; for (int p : { 0, 4, 7 }) s.k[i++] = maxkhz(p, "scaling_max_freq");
++            s.gmax = gpu_max_mhz(); s.pls = kg("thermal_pwrlevel"); s.pl = isdigit((unsigned char) s.pls[0]) ? atoi(s.pls.c_str()) : -1; s.hr = t2.hr();
++            { std::lock_guard<std::mutex> lk(mu); sm.push_back(s); }
++            while (!stop.load() && secs(x.t0, clk::now()) < k + 1) sleep_s(0.01);
++        }
++    });
++    size_t done = 0; int ncs = 0, ngs = 0; double first = -1, fcpu = -1, fgpu = -1, second = -1;
++    auto drain = [&] {
++        std::vector<Sm> v; { std::lock_guard<std::mutex> lk(mu); v = sm; }
++        for (; done < v.size(); done++) {
++            const Sm & s = v[done]; int cs = 0, gs = 0;
++            if (done) { const Sm & p = v[done - 1]; for (int i = 0; i < 3; i++) cs |= s.k[i] > 0 && p.k[i] > 0 && s.k[i] < p.k[i]; gs = (s.gmax > 0 && p.gmax > 0 && s.gmax < p.gmax) || (s.pl > p.pl && p.pl >= 0); }
++            const double ts = s.t / 1e3;
++            if (cs) { ncs++; if (fcpu < 0) fcpu = ts; else if (second < 0) second = ts; }
++            if (gs) { ngs++; if (fgpu < 0) fgpu = ts; }
++            if ((cs || gs) && first < 0) first = ts;
++            o.line("x4 sh samp t_ms=%.0f caps=p0:%ld,p4:%ld,p7:%ld gpu_max_mhz=%ld thermal_pwrlevel=%s hr=%s cpu_step=%d gpu_step=%d", s.t, s.k[0] / 1000, s.k[1] / 1000, s.k[2] / 1000, s.gmax,
++                   s.pls.c_str(), s.hr.c_str(), cs, gs);
++        }
++    };
++    const char * why = "45s"; int n = 0;
++    for (;; n++) {
++        const bool alone = n % 8 == 7;
++        arm(x, alone ? K_CPU : K_LEAD, alone ? nullptr : L, 0.0, 1.0);
++        drain(); const double t = secs(x.t0, clk::now());
++        if (second >= 0 && t >= second + 10) { why = "second_cpu_step+10s"; break; }
++        if (t >= 45) break;
++    }
++    stop = 1; smp.join(); drain();
++    o.line("x4 sh sum t_s=%.1f arms=%d first_cap_s=%.1f first_cpu_step_s=%.1f second_cpu_step_s=%.1f first_gpu_step_s=%.1f cpu_steps=%d gpu_steps=%d stop=%s", secs(x.t0, clk::now()), n + 1,
++           first, fcpu, second, fgpu, ncs, ngs, why);
++}
++
+ void x4body(Out & o, const char * blk, const char * dir);
+ // every parent block: Android thermal status and kgsl thermal_pwrlevel before and after (Bonnie r5 rider)
+ void x4(Out & o, const char * blk, const char * dir) {
+@@ -3840,6 +4143,9 @@ void x4body(Out & o, const char * blk, const char * dir) {
+     else if (!strcmp(blk, "x4m")) x4m(g, o, th, ks, x4);
+     else if (!strcmp(blk, "x4s")) x4s(g, o, th, ks, x4, dst);
+     else if (!strcmp(blk, "x4r")) res(g, o, ks, x4, dst, 1.5, "x4");
++    else if (!strcmp(blk, "x4sc")) x4sc(g, o, th, ks, x4, dst);   // r37 (0009)
++    else if (!strcmp(blk, "x4sg")) x4sg(g, o, th, ks, x4, dst);
++    else if (!strcmp(blk, "x4sh")) x4sh(g, o, th, ks, x4, dst);
+     if (dst) g.cl.ReleaseMemObject(dst);
+     for (XIn * x : { &x4, &x11 }) { if (x->img) g.cl.ReleaseMemObject(x->img); if (x->b) g.cl.ReleaseMemObject(x->b); }
+     for (auto & p : ks.p) release(g, p);
+@@ -3857,7 +4163,8 @@ extern "C" int llama_vollie_probe(const char * block, const char * dir, char * o
+     if (const char * t = getenv("VOLLIE_PROBE_TEE")) if (*t && strcmp(t, "0")) o.tee = stdout;
+     auto t0 = clk::now();
+     static const char * const known[] = { "hdr", "p2", "p2d", "x1", "x2", "p1", "a", "l1", "l4", "l23", "l5", "l6", "l7", "anon34", "anon42", "x3b", "x3g", "x3c", "x3r",
+-                                          "x4i", "x4a", "x4b", "x4f", "x4c", "x4d", "x4e", "x4m", "x4s", "x4r", "x4d_c", "x4e1_c", "x4e2_c", "x4e3_c", "x4k_c" };
++                                          "x4i", "x4a", "x4b", "x4f", "x4c", "x4d", "x4e", "x4m", "x4s", "x4r", "x4d_c", "x4e1_c", "x4e2_c", "x4e3_c", "x4k_c",
++                                          "x4sc", "x4sg", "x4sh" };
+     bool ok = false; for (const char * k : known) ok |= !strcmp(block, k);
+     if (!ok) return -2;
+     hdr(o);

@@ -1,0 +1,95 @@
+diff --git a/lib/research.dart b/lib/research.dart
+index 99b1a7e..a06de9d 100644
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -46,8 +46,8 @@ typedef RunSpec = ({String id, String model, String proto, String group, String
+ /// power saving and thermal status), T-D's smaps match by inode, the session label (deep-sleeping list) and the power-save
+ /// state read at the start, and T-A's cap probe ([capProbe], no model).
+ extension Research on Assistant {
+-  static const kit = 'r36';
+-  static const app = '1.36.0+36';
++  static const kit = 'r37';
++  static const app = '1.37.0+37';
+ 
+   /// r28: the owner's label for the session, chosen on the start screen before the kit can start (memo-31 §7: session A
+   /// with Samsung's deep-sleeping list, session B without). Recorded in the report and in every cap probe.
+@@ -906,7 +906,11 @@ extension Research on Assistant {
+   ///
+   /// Kit r36 (R75 amendment 1, patches/llama.cpp-c3/0008): r35 hung in x4f for 2.5 h (the gated command was released but not
+   /// flushed). The rest of R75 resumes: x4i (kernel build), x4f, x4c, x4d, x4e, x4m, x4s, x4r; x4a and x4b were measured.
+-  static const c3Blocks = ['x4i', 'x4f', 'x4c', 'x4d', 'x4e', 'x4m', 'x4s', 'x4r'];
++  ///
++  /// Kit r37 (R76, patches/llama.cpp-c3/0009): x4s's split re-celled: x4i (kernel build), x4sc (cool pass: cpu | lead split |
++  /// cpu triplets at shares 0.40 to 0.55 ascending then descending, a feeder triplet at 0.25, the stall triplet), x4sg (launch +
++  /// flush against the GPU idle gap, 0 to 5 ms), x4sh (heat pass at share 0.45, last). Every other r36 block is dropped.
++  static const c3Blocks = ['x4i', 'x4sc', 'x4sg', 'x4sh'];
+   /// r36: a block that has not returned after this long is recorded as hung (`hang`, the lines it wrote to
+   /// <dir>/x4-live-<blk>.txt plus `x4 hang blk=`) and the run goes on; the native call is left behind in its isolate.
+   static const c3BlockLimit = Duration(seconds: 600);
+@@ -958,10 +962,10 @@ extension Research on Assistant {
+           'battery_c_start': b0.tempC, 'plugged_start': b0.plugged, 'model_unloaded': unloaded,
+           'kernel_release': DeviceProfile.unameRelease(), 'probe_dir': dir,
+           'free_start': st['internalFree'],
+-          'design': 'campaign 3 R75 amendment 1 x4 GPU join probe, resume (memo-12-work/tom-r36-build.md): blocks '
++          'design': 'campaign 3 R76 x4s re-cell (memo-12-work/tom-r37-build.md): blocks '
+               '${Research.c3Blocks.join(' ')}; r16 gate before each block (up to 180 s); cool start (no other probe before it); '
+-              'launcher cells spin 0.5 s (up to 2 s more) to full clock on their cpu; x4d / x4e in child processes with timeouts; '
+-              'residency 15 s of passes at 1.5 GB of GPU buffers; event waits give up after 2 s; a block not done after '
++              'x4sc triplets cpu 0.5 s | split 1.0 s | cpu 0.5 s with 6 s rests; x4sg 5 s gap sweep; x4sh heat pass at share 0.45 '
++              'until 10 s after the second CPU cap step or 45 s; canary line after every arm; event waits give up after 2 s; a block not done after '
+               '${Research.c3BlockLimit.inSeconds} s is recorded as hung and the run goes on; report saved before and after every block',
+           'blocks': blocks,
+         };
+diff --git a/lib/settings_screen.dart b/lib/settings_screen.dart
+index 4810098..31b8bfd 100644
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -411,7 +411,7 @@ class _PerformanceCard extends StatelessWidget {
+           builder: (_, v, __) => OutlinedButton.icon(
+             onPressed: busy || optimizing || v == null ? null : assistant.capProbe,
+             icon: const Icon(Icons.speed_rounded),
+-            label: const Text('Run cap probe r36 (6 min, no model)'),
++            label: const Text('Run cap probe r37 (6 min, no model)'),
+           ),
+         ),
+       if (!assistant.researching && assistant.capProbeReport != null)
+@@ -434,7 +434,7 @@ class _PerformanceCard extends StatelessWidget {
+           builder: (_, v, __) => OutlinedButton.icon(
+             onPressed: busy || optimizing || v == null ? null : assistant.c3Probe,
+             icon: const Icon(Icons.memory_rounded),
+-            label: const Text('Run c3 probe r36 (GPU joins, resume)'),
++            label: const Text('Run c3 probe r37 (R76: cool pass, gap sweep, heat pass)'),
+           ),
+         ),
+       if (!assistant.researching && assistant.c3ProbeReport != null)
+@@ -462,7 +462,7 @@ class _PerformanceCard extends StatelessWidget {
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.downloadKitModels,
+                 icon: const Icon(Icons.download_rounded),
+-                label: Text('Download kit r36 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
++                label: Text('Download kit r37 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
+                     '(${(assistant.kitMissingBytes / 1e9).toStringAsFixed(1)} GB, Wi-Fi)'),
+               ),
+       if (assistant.kitModelReady)
+@@ -477,7 +477,7 @@ class _PerformanceCard extends StatelessWidget {
+                 builder: (_, v, __) => OutlinedButton.icon(
+                   onPressed: busy || optimizing || v == null ? null : assistant.researchRun,
+                   icon: const Icon(Icons.science_rounded),
+-                  label: Text(v == null ? 'Run research kit r36: choose the session label first' : 'Run research kit r36 (R68 run list, ~50-110 min)'),
++                  label: Text(v == null ? 'Run research kit r37: choose the session label first' : 'Run research kit r37 (R68 run list, ~50-110 min)'),
+                 ),
+               ),
+       if (assistant.kitModelReady && !assistant.researching)
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 42555c8..c097d9e 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@ name: vollie
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.36.0+36
++version: 1.37.0+37
+ 
+ environment:
+   sdk: ^3.10.7
