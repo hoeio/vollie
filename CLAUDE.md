@@ -102,6 +102,11 @@ The work is done by five subagents defined in `.claude/agents/`. The main sessio
 - Owner, 2026-11-23: the researchers never stop ("각 연구자들이 어떠한 상황에서도 연구를 멈추지 않게 해주세요. 끊임없이 연구해야
   합니다"). When Bonnie or Ebony finishes, the lead hands over the next item in the same turn; every research brief ends
   with a ranked "next questions" list and the researcher continues with the top one. Device rules are unchanged.
+  *Correction 2026-11-26 (owner): "자동으로 계속하는 것 이전의 연구 방법으로 돌아가세요. 비용이 너무 듭니다." The 2026-11-23 rule is
+  withdrawn: no keep-alive task, no automatic re-tasking. Research runs as before 2026-11-23: the lead starts a joint round
+  (Bonnie + Ebony, one memo with a test list and a try list) only when a question is open in STATUS, hands the lists to
+  Tom, and stops. A finished researcher is not relaunched by default; the "next questions" list is input to the lead's
+  plan, not a queue. The hourly keep-alive task is disabled.*
 
 ## Working in the repository
 

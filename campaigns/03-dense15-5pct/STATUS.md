@@ -307,3 +307,19 @@ commit the result and this block, results.csv rows for R75.
 **Paused:** Bonnie r35 and Ebony r19 stopped on the Fable usage limit. Their partial files (`bonnie-joins-r35.md`, `bonnie_gpuheat_r35.py`, `ebony-joins-r19.md`, `ebony_bus_r19.py`) are untracked and not committed. Both are scheduled to resume at 07:05 KST on 2026-11-26.
 
 | 2026-11-25 | 13 (annie) | Books from git (`87bd9c2..2dc0857`): Bonnie r34, Ebony r18, Tom host checks (`_mc3`, E-T23, T1/T2/G). results.csv: five *host* rows (multiplier 16 identity x3, E-T23 lookup, base check). Memo index extended. Owner: "continue", r36 sha confirmed. Open: kit r37 / R76 prereg and owner permission; Bonnie r35 and Ebony r19 resume 2026-11-26 07:05 KST. |
+
+## Update 2026-11-26 (lead): back to the earlier research method
+
+**Owner, 2026-11-26:** "연구를 이어나가되, 연구를 자동으로 계속하는 것 이전의 연구 방법으로 돌아가세요. 비용이 너무 듭니다." (continue the
+research, but return to the method used before automatic continuous research; it costs too much). The 2026-11-23 "researchers never
+stop" rule is withdrawn (correction note in CLAUDE.md). The hourly keep-alive task (`trig_01UchZud…`) is disabled, not deleted. From now
+on a joint round (Bonnie + Ebony) starts only when the lead opens one for a named question; finished researchers are not relaunched.
+
+Bonnie r35 (`bonnie-joins-r35.md`, `bonnie_gpuheat_r35.py`) and Ebony r19 (`ebony-joins-r19.md`, `ebony_bus_r19.py`) are finished
+(both end with sources and a ranked next-questions list) and are committed with this block as work files; no verdict on them yet.
+Their next-questions lists are not started.
+
+**Next (no researcher runs until the owner chooses):** (1) the lead reads r35 and r19 and folds them into the R76 plan (kit r37: lane G
+plus the x4s re-cell with triplets and a canary); (2) R76 pre-registration, then the owner's tag and permission; (3) Tom finishes kit r37.
+
+| 2026-11-26 | 14 (lead) | Owner: back to the pre-2026-11-23 method (cost). Keep-alive disabled; r35 and r19 committed as work files. |
