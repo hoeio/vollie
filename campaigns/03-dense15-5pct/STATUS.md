@@ -370,3 +370,28 @@ the `prereg-R76` tag.
 
 *Owner, 2026-11-26:* the R76 APK sha256 matched (`72541fcc…f96c`); the `prereg-R76` tag will be created later by the owner.
 This closes the R76 void check on the APK hash; the tag stays open.
+
+## Update 2026-11-27 (lead): joint round 13 (memo-13 work) done; CPU only, after the lane
+
+Owner directions during the round (2026-11-26): rethink the computation scheme itself; devise new ways to ease the memory bus (partial
+relief is fine); Bonnie checks Ebony's prices. Files in `reports/memo-13-work/` (Bonnie `bonnie-cpu-ladder.md`, `bonnie-ud-check.md`;
+Ebony `ebony-new-routes.md`; scripts). No verdict by the lead beyond this summary; all prices *estimated*, PPL screens *host*.
+- **Base correction (Bonnie):** K0 6.81 / 5.88 / 5.84 and stock 6.90 / 6.21 / 6.22 are the packed (KleidiAI) body; choice A (adopted
+  2026-11-24, plain rows) stock is about 5.1 / 4.6 / 4.5 tok/s and has never run on the phone.
+- **Cost model:** width-1 decode is bus-bound (bus term 104 / 122 / 114 ms > 79.2); a change of scheme must cut weight touches per
+  token to about 0.45 to 0.54 of the body in bytes and arithmetic at once.
+- **Closed by Ebony's host screens:** delta across tokens, reuse of the previous token's layer output, per-sequence FFN channel sets,
+  low-bit ranker two-stage FFN, activation low rank, 1-byte scale code; SVE / SME / i8mm absent on A78 / X1. More of the CPU port:
+  no lever (about 30 GB/s whatever the readers).
+- **Survives:** UD = up-first `gate`-row skip (R1) + `down` at half its columns through K1 on a column-major copy (R3); host screen
+  +2.6 / +2.1 / +2.0 % PPL (6 chunks, not the gate). Bonnie's re-price: UD −22.8 / −22.7 / −21.0 ms on path A, −19.1 / −19.0 / −17.6
+  packed. Top stacks: path A with UD 8.08 / 6.94 / 7.51 tok/s; packed with UD 9.40 / 7.55 / 8.17. Nothing reaches 12.
+- **Constraints:** R1 fits choice A as adopted; R3 needs a `down` copy (0.76 to 0.81 GB anonymous) that needs an owner reading of
+  choice A; R2 (scale index) only under choice C. UD is a numerics change: must pass +5 % at `-b 512` and `-ub 1`; P 0.55 (judgement).
+- **Host tests proposed (not started):** E-T25 (UD full-set PPL, both settings, three subjects), B-T1/B-T2 + E-T27 (Y1b decode
+  kernel identity and cost, arbitrary-row bench), E-T28 (K1 on `down` at keep 0.5, real mask, plus byte count), T-D1 closed by Ebony.
+
+Next: owner chooses which host tests Tom runs, and answers whether a head-only copy and/or a `down` copy in K1's layout still count
+as choice A. No device round, no researcher round open.
+
+| 2026-11-27 | 20 (lead) | Joint round 13 done (Bonnie ladder + UD check, Ebony new routes); proposals to the owner. |
