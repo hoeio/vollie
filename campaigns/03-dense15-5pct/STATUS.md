@@ -342,3 +342,9 @@ Nothing is built or pre-registered until the owner answers.
 3. Owner: create tag `prereg-R76`; give the HF write token for `r37/` (private repo, token not stored); run with a 30 min cool start.
 
 | 2026-11-26 | 16 (annie) | Owner "a로 가죠": R76 (kit r37) go. Decision recorded in CAMPAIGN.md; memo index extended (r35, r19, R76 plan). Hand-offs: Tom build, lead prereg, owner tag/token/run. |
+
+**Update 2026-11-26 (lead):** kit r37 committed (`a74d575`), R76 pre-registration committed (`9867014`). Kit r37 uploaded to HF
+`HoeioUser/vollie-kits` `r37/` (HF commit `75bfa32c`); the downloaded APK's sha256 re-checked against prereg §0. Open: owner tags
+`prereg-R76` on `9867014` and runs R76 per prereg §8; the JSON goes to `reports/device/`.
+
+| 2026-11-26 | 17 (lead) | Kit r37 and R76 prereg committed; r37 on HF (`75bfa32c`), sha re-checked. Waiting for the owner's tag and run. |
