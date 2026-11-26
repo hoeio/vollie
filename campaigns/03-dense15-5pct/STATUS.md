@@ -348,3 +348,13 @@ Nothing is built or pre-registered until the owner answers.
 `prereg-R76` on `9867014` and runs R76 per prereg §8; the JSON goes to `reports/device/`.
 
 | 2026-11-26 | 17 (lead) | Kit r37 and R76 prereg committed; r37 on HF (`75bfa32c`), sha re-checked. Waiting for the owner's tag and run. |
+
+## Update 2026-11-26 (annie): R76 ran and is scored
+
+R76 (kit r37) ran on 2026-11-26 (19:53, power saving off, deep-sleeping list on); JSON `reports/device/vollie-c3probe-r37-2026-11-26T1953.json` (sha256 `0e62571b...3534`), result in `reports/R76-result.md` (scored by the lead; number audit by Annie appended there). All numbers *device* unless labelled.
+
+- **x4sc void** (cap 2,150 MHz from t 45.5 s): C1 not measured, C11 miss. Gap sweep: step about 165 us between the 0.1 and 0.2 ms rows (G1 to G3 miss, G4 hit). Heat pass: first cap 14.0 s, second 24.0 s, GPU cap 34.0 s (H1 to H5, H8 hit). Brier 0.219 (*estimated*).
+- **Outcome by rule: "G not built, lane not killed."** The campaign verdict is unchanged (12 tok/s on all three not reachable, *estimated*).
+- **Open:** (a) the owner confirms the downloaded APK's sha256 was `72541fcc...f96c`; (b) the owner chooses (1) take the rule as written, (2) re-run the cool pass with kit r38 (amendment 1), or (3) build G on the descriptive reading (R76-result section 6; the lead recommends (1)); (c) tag `prereg-R76` is not on origin yet (owner).
+
+| 2026-11-26 | 18 (annie) | R76 ran and scored (kit r37): x4sc void, G not built, lane not killed; audit note, results.csv, reports index updated; JSON committed. Waiting for the owner's choice (1)/(2)/(3). |
