@@ -367,3 +367,6 @@ closing it, realigning it, or a new non-lane question is the owner's next decisi
 the `prereg-R76` tag.
 
 | 2026-11-26 | 19 (lead) | Owner: R76 option (1). GPU-lane work ended; nothing in flight. |
+
+*Owner, 2026-11-26:* the R76 APK sha256 matched (`72541fcc…f96c`); the `prereg-R76` tag will be created later by the owner.
+This closes the R76 void check on the APK hash; the tag stays open.

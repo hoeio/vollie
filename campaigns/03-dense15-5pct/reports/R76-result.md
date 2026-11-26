@@ -107,3 +107,5 @@ Every number in sections 1 to 4 was checked against `tools/c3_probe_parse.py` ou
 2. Section 4, heat pass: "split ms per matrix rose about 3 to 4 %" (1.45 to 1.52): the lead arms run 1.448 (pos 1) to 1.518 (pos 24), +4.8 % (arithmetic); the last arm (pos 27, 1.617 ms) is under the 1,420 cap and GPU 676 MHz.
 
 Also noted: section 2 H8 and section 4's 207 to 222 us were reproduced (211.2 to 230.2 us, +9.0 %; lead arms 0.40 and 0.45: 207.0 to 221.8 us).
+
+*Owner confirmation 2026-11-26:* the downloaded APK's sha256 matched prereg §0 (`72541fcc…f96c`). No void from the APK hash.
