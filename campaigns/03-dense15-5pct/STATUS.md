@@ -323,3 +323,11 @@ Their next-questions lists are not started.
 plus the x4s re-cell with triplets and a canary); (2) R76 pre-registration, then the owner's tag and permission; (3) Tom finishes kit r37.
 
 | 2026-11-26 | 14 (lead) | Owner: back to the pre-2026-11-23 method (cost). Keep-alive disabled; r35 and r19 committed as work files. |
+
+**Update 2026-11-26 (lead):** r35 and r19 read and folded into `reports/memo-12-work/clyde-r76-plan.md` (draft R76 plan, kit r37: cool
+pass, gap sweep, optional heat pass; 0 bytes, no model). Verdict input unchanged: no priced design reaches 12 on all three (best F per
+token 11.86 / 11.66 / 11.24, G 10.59 / 10.46 / 10.14, *estimated*), and no R76 outcome can change that. Owner asked: (a) build and run
+R76 for a below-goal G result, (b) stop lane work and report campaign 3 as not reachable, (c) realign. Lead recommends (b) or (c).
+Nothing is built or pre-registered until the owner answers.
+
+| 2026-11-26 | 15 (lead) | R76 plan drafted from r35/r19; keep / stop / realign question to the owner. |
