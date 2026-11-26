@@ -331,3 +331,14 @@ R76 for a below-goal G result, (b) stop lane work and report campaign 3 as not r
 Nothing is built or pre-registered until the owner answers.
 
 | 2026-11-26 | 15 (lead) | R76 plan drafted from r35/r19; keep / stop / realign question to the owner. |
+
+## Update 2026-11-26 (annie): owner chose option (a), R76
+
+**Owner, 2026-11-26:** "a로 가죠." Build and run R76 (kit r37: cool pass C, gap sweep G, optional heat pass H; kit r36 x4s code, no new kernel, no model) to decide whether design G is worth building as a below-goal result. Recorded in [CAMPAIGN.md](CAMPAIGN.md). The owner was told no R76 outcome can reach 12 tok/s on all three models; the lead recommended (b) or (c). Goal and budget unchanged. Memo index ([reports/README.md](reports/README.md)) now lists Bonnie r35, Ebony r19 (with scripts) and `clyde-r76-plan.md`.
+
+**Open hand-offs:**
+1. Tom: build kit r37 (running now); report to `reports/memo-12-work/tom-r37-build.md`.
+2. Lead: write the R76 pre-registration after the build (`prereg/`, committed before any device run).
+3. Owner: create tag `prereg-R76`; give the HF write token for `r37/` (private repo, token not stored); run with a 30 min cool start.
+
+| 2026-11-26 | 16 (annie) | Owner "a로 가죠": R76 (kit r37) go. Decision recorded in CAMPAIGN.md; memo index extended (r35, r19, R76 plan). Hand-offs: Tom build, lead prereg, owner tag/token/run. |
