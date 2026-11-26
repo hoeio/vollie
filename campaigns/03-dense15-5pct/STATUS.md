@@ -358,3 +358,12 @@ R76 (kit r37) ran on 2026-11-26 (19:53, power saving off, deep-sleeping list on)
 - **Open:** (a) the owner confirms the downloaded APK's sha256 was `72541fcc...f96c`; (b) the owner chooses (1) take the rule as written, (2) re-run the cool pass with kit r38 (amendment 1), or (3) build G on the descriptive reading (R76-result section 6; the lead recommends (1)); (c) tag `prereg-R76` is not on origin yet (owner).
 
 | 2026-11-26 | 18 (annie) | R76 ran and scored (kit r37): x4sc void, G not built, lane not killed; audit note, results.csv, reports index updated; JSON committed. Waiting for the owner's choice (1)/(2)/(3). |
+
+## Update 2026-11-26 (lead): owner chose R76 option (1); GPU-lane work ends
+
+Owner: "1로 가죠" (recorded in CAMPAIGN.md). G is not built; the lane, G, F and L5 leave the work list. Kit r38 is not built.
+No device round and no researcher round is open. Campaign 3 stays open (goal unreachable by priced levers, P about 0.002);
+closing it, realigning it, or a new non-lane question is the owner's next decision. Still open: APK sha confirmation for R76 and
+the `prereg-R76` tag.
+
+| 2026-11-26 | 19 (lead) | Owner: R76 option (1). GPU-lane work ended; nothing in flight. |

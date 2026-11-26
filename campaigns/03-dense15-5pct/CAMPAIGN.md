@@ -151,3 +151,9 @@ lead may run the KleidiAI-build stock runs on the owner's laptop (label *host*);
 - DeepSeek prompt start: candidate a (`ebony-joins-r14.md`; 156 tokens). Owner: "a로 합니다." This closes the last open question of the 2026-11-24 block; E-T23 (DeepSeek dump) is unblocked.
 
 *Owner decision 2026-11-26* (answer to the lead's keep / stop / realign question; recorded by Annie from the owner's words relayed by the lead): "a로 가죠." Option (a) of `reports/memo-12-work/clyde-r76-plan.md` §5 is adopted: build and run R76 (kit r37: cool pass C, gap sweep G, optional heat pass H; kit r36's x4s code, no new kernel, no model) to decide whether design G is worth building as a below-goal result. The owner was told that no R76 outcome can reach 12 tok/s on all three models; the lead had recommended (b) or (c). The goal and the budget are unchanged. Same day: the owner returned to the pre-2026-11-23 research method (cost), the keep-alive is disabled and researchers are not re-tasked automatically.
+
+*Owner decision 2026-11-26, after R76* (answer to `reports/R76-result.md` §6): "1로 가죠." Option (1): R76's rule is taken as
+written. Design G is not built and GPU-lane work ends (lane as probed, G, F, L5). The campaign-3 verdict stands: 12 tok/s on each
+of the three subjects is not reachable by any priced lever (best priced: F per token 11.86 / 11.66 / 11.24, unbuilt; G with a warm
+launch about 10.8 / 10.7 / 10.3; measured K0 6.81 / 5.88 / 5.84; all *estimated* except K0's *device* inputs). The goal and the
+budget are unchanged; the campaign is not closed by this decision.
