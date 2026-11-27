@@ -157,3 +157,22 @@ written. Design G is not built and GPU-lane work ends (lane as probed, G, F, L5)
 of the three subjects is not reachable by any priced lever (best priced: F per token 11.86 / 11.66 / 11.24, unbuilt; G with a warm
 launch about 10.8 / 10.7 / 10.3; measured K0 6.81 / 5.88 / 5.84; all *estimated* except K0's *device* inputs). The goal and the
 budget are unchanged; the campaign is not closed by this decision.
+
+*Owner decision 2026-11-27: arm A′ (declared before any test of a copy-using lever; the lead's proposal, owner: "좋습니다 그렇게 하죠").*
+Context: memo-13 (`reports/memo-13-work/bonnie-ud-check.md` §2) found that two priced levers need derived in-memory copies, which
+choice A as adopted (2026-11-24: the app's rule as it is, plain mapped rows, no copies) does not allow. To keep the comparison fair,
+choice A is **not** widened. Instead:
+- **Choice A is unchanged** and stays the headline: the campaign's goal is judged on A. Levers without a copy (for example the
+  up-first `gate`-row skip, Y1b in place) are A levers.
+- **Arm A′** = choice A plus at most these derived copies, built at load by the runtime from the served file (no user action, the file
+  on disk unchanged), off unless switched on by an environment variable:
+  1. the output head in the repack type (about 0.22 / 0.11 / 0.34 GB, Yi / Llama-2 / DeepSeek);
+  2. `down` in K1's column-major layout (about 0.81 / 0.81 / 0.76 GB).
+  Nothing else; a further copy needs a new dated owner decision before it is tested. The scale-index copy (whole body) is not in A′.
+- **Fair comparison:** every A′ speed number is compared with a stock measured in the same memory state (the same copies resident,
+  the lever off), on the same phone session, and reported beside choice A's stock and result.
+- **Residency gate:** no A′ speed number is reported as a result unless the run shows the body and the copies resident through the
+  block (major faults and the probe's residency lines as in R75 x4r); otherwise that block is "not resident", not a speed.
+- **Reporting:** A and A′ in separate, labelled columns; an A′ number is never quoted as an A number, and A′ is not a goal claim unless
+  the owner decides otherwise, in writing, before a claim round.
+- The +5 % budget, the both-settings rule (`-b 512` and `-ub 1`) and every other term are unchanged and apply to A′ as to A.

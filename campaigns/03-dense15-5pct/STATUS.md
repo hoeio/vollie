@@ -395,3 +395,10 @@ Next: owner chooses which host tests Tom runs, and answers whether a head-only c
 as choice A. No device round, no researcher round open.
 
 | 2026-11-27 | 20 (lead) | Joint round 13 done (Bonnie ladder + UD check, Ebony new routes); proposals to the owner. |
+
+**Update 2026-11-27 (lead):** owner approved E-T25 first (Tom running: UD as an env-gated numerics patch, full-set PPL on the three
+subjects at `-b 512` and `-ub 1`, both builds; report to `memo-13-work/tom-et25.md`). Owner adopted arm A′ (CAMPAIGN.md, end): choice A
+unchanged and headline; copy-using levers (head copy, `down` in K1 layout) form a separate, pre-declared arm with same-state stock and a
+residency gate.
+
+| 2026-11-27 | 21 (lead) | Arm A′ defined (owner); E-T25 started (Tom). |
