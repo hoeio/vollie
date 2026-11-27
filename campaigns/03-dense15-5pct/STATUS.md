@@ -422,3 +422,9 @@ residency gate, separate columns; full text at the end of CAMPAIGN.md, commit `4
 full-set `-b 512` to be filled by the lead after about 22:15 KST).
 
 | 2026-11-27 | 22 (annie) | Books: memo-13 work in the memo index, patch 0010 row, E-T25 finished cells in results.csv, audit note (two wording mismatches), arm A' recorded; root and campaigns README refreshed. |
+
+**Update 2026-11-27 22:40 (lead): E-T25 complete (*host*).** Full-set `-b 512`, UD / same-build stock: Yi 1.0179 / 1.0177, Llama-2
+1.0235 / 1.0237, DeepSeek 1.0150 / 1.0152 (repack / KleidiAI); every cell inside the kill line (× 1.035) and the budget (repack stock
+× 1.05). `-ub 1` evidence stays 40 chunks (1.0196 to 1.0250). UD passes E-T25. Next: the owner chooses the next research direction.
+
+| 2026-11-27 | 23 (lead) | E-T25 complete: UD inside on all three subjects, both builds, full set `-b 512`. |

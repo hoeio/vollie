@@ -92,14 +92,14 @@ The repack stock values equal memo-12 `tom-numerics.md` §2.1 and the first chun
 | Yi-1.5-6B | `-ub 1` | KleidiAI | 40 | 7.7165 | 7.8992 | 1.0237 | 1.0283 | no |
 | Yi-1.5-6B | `-b 512 -ub 32` | repack | 40 | 7.6839 | 7.8531 | 1.0220 | 1.0220 | no |
 | Yi-1.5-6B | `-b 512 -ub 32` | KleidiAI | 40 | 7.7319 | 7.9040 | 1.0223 | 1.0286 | no |
-| Llama-2-7B | `-b 512` | repack | 655 (all) | 7.7435 | running | – | – | – |
-| Llama-2-7B | `-b 512` | KleidiAI | 655 (all) | running | running | – | – | – |
+| Llama-2-7B | `-b 512` | repack | 655 (all) | 7.7435 | 7.9256 | **1.0235** | 7.9256 ≤ 8.1307 | no |
+| Llama-2-7B | `-b 512` | KleidiAI | 655 (all) | 7.7463 | 7.9301 | **1.0237** | 7.9301 ≤ 8.1307 | no |
 | Llama-2-7B | `-ub 1` | repack | 40 | 7.4075 | 7.5743 | 1.0225 | 1.0225 | no |
 | Llama-2-7B | `-ub 1` | KleidiAI | 40 | 7.4034 | 7.5882 | 1.0250 | 1.0244 | no |
 | Llama-2-7B | `-b 512 -ub 32` | repack | 40 | 7.4077 | 7.5746 | 1.0225 | 1.0225 | no |
 | Llama-2-7B | `-b 512 -ub 32` | KleidiAI | 40 | 7.4037 | 7.5684 | 1.0222 | 1.0217 | no |
-| DeepSeek-7B | `-b 512` | repack | 596 (all) | 8.7311 | running | – | – | – |
-| DeepSeek-7B | `-b 512` | KleidiAI | 596 (all) | running | running | – | – | – |
+| DeepSeek-7B | `-b 512` | repack | 596 (all) | 8.7311 | 8.8619 | **1.0150** | 8.8619 ≤ 9.1677 | no |
+| DeepSeek-7B | `-b 512` | KleidiAI | 596 (all) | 8.7705 | 8.9036 | **1.0152** | 8.9036 ≤ 9.1677 | no |
 | DeepSeek-7B | `-ub 1` | repack | 40 | 8.2192 | 8.3802 | 1.0196 | 1.0196 | no |
 | DeepSeek-7B | `-ub 1` | KleidiAI | 40 | 8.2742 | 8.4383 | 1.0198 | 1.0267 | no |
 | DeepSeek-7B | `-b 512 -ub 32` | repack | 40 | 8.2250 | 8.3691 | 1.0175 | 1.0175 | no |
@@ -152,3 +152,5 @@ Checked against `lab/c3/logs/et25/` (UD and same-build KleidiAI stock logs), the
   0.41 on DeepSeek `-ub 32` (1.0175 against 1.0134).
 - **Not checkable now:** the Llama-2 and DeepSeek full-set `-b 512` rows ("running"; `llama2-7b-R-ud-b512.log` was at chunk 40 when
   read); the 22:15 KST finish is an estimate in the source. The "about 22 h" for full-set `-ub 1` is an estimate in the source.
+
+*Filled by the lead 2026-11-27 22:40 KST from `lab/c3/et25_table.py` after `times.txt` read ALL DONE (22:25:59): the four Llama-2 and DeepSeek full-set `-b 512` rows above, which said "running". Budget column: same-subject repack stock × 1.05 (7.7435 → 8.1307, 8.7311 → 9.1677). Against repack stock the KleidiAI UD values are 1.0241 and 1.0198.*
