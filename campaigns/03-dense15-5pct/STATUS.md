@@ -408,3 +408,17 @@ with the knob unset). UD under the kill line (same-build stock × 1.035) and ins
 1.0179 (repack) / 1.0177 (KleidiAI); 40 chunks, three subjects, both builds, `-ub 1` and `-ub 32`: 1.0134 to 1.0250 (worst against
 repack stock 1.0286). `-ub 1` and `-ub 32` agree within 0.3 points. Full-set `-ub 1` not run (about 22 h); `-ub 1` evidence is 40 chunks.
 Still running: full-set `-b 512` for Llama-2 and DeepSeek (driver `lab/c3/et25.sh`, done about 22:15 KST). Details `memo-13-work/tom-et25.md`.
+
+**Audit note 2026-11-27 (Annie), E-T25 numbers.** The values in the block above (Yi full set 1.0179 / 1.0177; 40-chunk range 1.0134 to
+1.0250; worst against repack stock 1.0286) equal `lab/c3/logs/et25/` and the freeze stock logs (*host*). One wording does not: "`-ub 1`
+and `-ub 32` agree within 0.3 points" is 0.64 points on DeepSeek KleidiAI (1.0198 against 1.0134), 0.28 and 0.21 on Llama-2 KleidiAI and
+DeepSeek repack; Yi and Llama-2 are inside 0.3. `tom-et25.md` summary item 3 says 1.0254 for the highest cell where its own table and
+the logs give 1.0250. Details in the audit note at the end of `memo-13-work/tom-et25.md`; nothing rewritten.
+
+**Books 2026-11-27 (Annie), owner decisions index.** Owner decision 2026-11-27: arm A' (declared before any test of a copy-using
+lever; choice A unchanged and the headline; A' = choice A plus at most the head copy and `down` in K1's layout, same-state stock,
+residency gate, separate columns; full text at the end of CAMPAIGN.md, commit `4184fcb`). Memo index extended with memo-13 work and patch
+0010 (sha256 `330502f0...9908`, checked); results.csv has 16 *host* rows for E-T25 (finished cells only; Llama-2 and DeepSeek
+full-set `-b 512` to be filled by the lead after about 22:15 KST).
+
+| 2026-11-27 | 22 (annie) | Books: memo-13 work in the memo index, patch 0010 row, E-T25 finished cells in results.csv, audit note (two wording mismatches), arm A' recorded; root and campaigns README refreshed. |

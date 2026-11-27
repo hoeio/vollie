@@ -1,8 +1,8 @@
 # Vollie: fast sparse LLMs on a 2021 phone CPU
 
-Vollie is a research project with one question: **how fast can a 7B-class mixture-of-experts LLM run on an old
-phone CPU if only the runtime changes** (the model file is frozen, quality is held inside a stated perplexity
-budget, and every speed number is measured on the phone)?
+Vollie is a research project with one question: **how fast can a 7B-class LLM (a sparse mixture-of-experts one in
+campaigns 1 and 2, dense ones in campaign 3) run on an old phone CPU if only the runtime changes** (the model file is
+not changed, quality is held inside a stated perplexity budget, and every speed number is measured on the phone)?
 
 This repository is the **experiment**: runtime patches for llama.cpp, the tools that check them, and the full
 log of every measurement. The work is organised as **campaigns**, each with its own goal, budget and log:
@@ -11,7 +11,31 @@ log of every measurement. The work is organised as **campaigns**, each with its 
 |---|---|---|
 | 1 | 20 tok/s on a Snapdragon 888 phone, one frozen Granite-4.0-H-Tiny file, perplexity budget +2 % | **done**: median **20.51 tok/s** (*device*, R49). Frozen at commit `686f17d`. Described on this page |
 | 2 | 25 tok/s on the same phone, a 7B-class model, budget +5 % | **closed (owner, 2026-11-21)**: goal met on OLMoE-1B-7B, not on Granite-4.0-H-Tiny. OLMoE b5 num + touch median **27.21 tok/s**, 1 of 10 runs below 25.0 (*device*, R70; power saving off, deep-sleeping list on, warm start); Granite num 23.21 tok/s, 10 of 10 below 25.0 (*device*). Result: [CAMPAIGN.md](campaigns/02-25toks-5pct/CAMPAIGN.md), state: [STATUS.md](campaigns/02-25toks-5pct/STATUS.md) |
-| 3 | 15 tok/s (first goal) on the same phone, a **dense** 7B-class model, file not changed, budget +5 % | **research, under Amendment 1 (owner, 2026-11-21)**: 12 tok/s on **each** of three dense 7B-class models of different families, all three must pass, budget +5 %, file not changed. Subjects: Yi-1.5-6B-Chat, Llama-2-7b-chat, DeepSeek-LLM-7B-chat (reserves Mistral-7B-Instruct-v0.3, Qwen2.5-7B-Instruct). R69 (probe, no model) is scored: no void; r 28.56 GB/s and c_b 24.46 GB/s at reduced clocks (*device*); no subject reaches 12 with the priced CPU levers (*estimated*). R72 (probe, kit r33) ran all ten blocks on 2026-11-22; scoring pending. State: [STATUS.md](campaigns/03-dense15-5pct/STATUS.md), goal: [campaigns/03-dense15-5pct/](campaigns/03-dense15-5pct/CAMPAIGN.md) |
+| 3 | 12 tok/s on **each** of three dense 7B-class models of different families (Yi-1.5-6B-Chat, Llama-2-7b-chat, DeepSeek-LLM-7B-chat), file not changed, budget +5 % | **open, research; goal not reachable by any priced lever** (*estimated*). Probes only so far, no decode round. [Campaign 3 in brief](#campaign-3-in-brief) below. State: [STATUS.md](campaigns/03-dense15-5pct/STATUS.md), goal: [CAMPAIGN.md](campaigns/03-dense15-5pct/CAMPAIGN.md). *Updated 2026-11-27: this row said "15 tok/s (first goal)" and "R72 ... scoring pending"; true until Amendment 1 (2026-11-21) and the scoring of R72 (2026-11-22).* |
+
+### Campaign 3 in brief
+
+*Added 2026-11-27.* Source for every number: [STATUS.md](campaigns/03-dense15-5pct/STATUS.md), [CAMPAIGN.md](campaigns/03-dense15-5pct/CAMPAIGN.md),
+[memo index](campaigns/03-dense15-5pct/reports/README.md).
+
+- **Goal (Amendment 1, owner, 2026-11-21):** 12 tok/s, median of 10 plain runs, on each of three dense 7B-class models of different
+  families; all three must pass. Perplexity at most +5 % over each served file's stock, at `-b 512` and `-ub 1`. The files are not changed.
+  The goal was lowered from 15 tok/s after estimates were known; it is an owner decision, not a result.
+- **Device rounds so far are probes:** R69, R72, R74, R75, R76 ran with no model loaded; R73 stays held. No decode round has run.
+  The GPU lane was probed (R74 to R76) and its work was ended by the owner on 2026-11-26 after R76 (design G not built).
+- **Body load path:** choice A (owner, 2026-11-24): the app's rule as it is, plain mapped rows, no copies. It is the headline. Arm A'
+  (owner, 2026-11-27) is a separate, labelled arm: choice A plus a head copy and `down` in a column-major layout, with a same-state
+  stock and a residency gate; an A' number is never quoted as an A number ([CAMPAIGN.md](campaigns/03-dense15-5pct/CAMPAIGN.md), end).
+- **Best estimates, Yi / Llama-2 / DeepSeek, tok/s (*estimated*, [memo-13](campaigns/03-dense15-5pct/reports/memo-13-work/bonnie-ud-check.md)):**
+  choice A with the row skip alone 6.73 / 6.13 / 5.88; arm A' with UD 8.08 / 6.94 / 7.51 (DeepSeek's 7.51 uses width 2 with lookup
+  matches). Nothing reaches 12.
+- **Why:** a width-1 token is bus-bound. The bus term alone is 104 / 122 / 114 ms against 79.2 ms per token for 12 tok/s
+  (*estimated*, [Bonnie](campaigns/03-dense15-5pct/reports/memo-13-work/bonnie-cpu-ladder.md)). A new scheme must cut weight touches per token
+  to about half, in bytes and in arithmetic.
+- **UD** (skip `gate` rows chosen by `up`, then use half the `down` columns) is a numerics change. It passes the host perplexity screens so
+  far: UD over same-build stock 1.0134 to 1.0250 on 40 chunks, Yi full set `-b 512` 1.0179 (repack) / 1.0177 (KleidiAI), kill line 1.035
+  (*host*, [E-T25](campaigns/03-dense15-5pct/reports/memo-13-work/tom-et25.md)). Full-set runs for Llama-2 and DeepSeek were still running on 2026-11-27.
+- **Odds:** P(all three at 12) about 0.002 (judgement). The campaign stays open; closing or realigning it is the owner's decision.
 
 **[Vollie](https://play.google.com/store/apps/details?id=com.insaneutils.vollie) is the Android app that runs
 this work, so you can reproduce the result on your own phone.** The app's source code is not in this repository.

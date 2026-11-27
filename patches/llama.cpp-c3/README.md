@@ -188,3 +188,14 @@ x4s's lead and feeder code, `run_arm`, the rings and the general kernel. Details
 Per arm: `t_ms`, p10/p50/p90 over the measured window of launch, flush, CPU rows, END to seen, wait; then a canary line (0.1 s hot
 sdot on cpu 5, 20 ms register spins on cpu 7 and 4, `dcvsh_freq_limit` of cpu 0/4/7, `isolated`, `thermal_pwrlevel`). Kit r37
 is built from 0001, 0002, 0003, 0005, 0007, 0008, 0009.
+
+## 0010-ud-numerics.patch: UD for E-T25 (declared numerics change, *host* only so far)
+
+Changes only `src/llama-graph.cpp`, on 0001 to 0009 (applies on the README's base; no other c3 patch touches this file). sha256
+`330502f09761ba1ed287b832817ec82c67827bb4ec71111e55d8397a60099908` (checked 2026-11-27). Off unless `VOLLIE_UD=1` (exactly `1`, read
+once); with the knob unset, per-chunk PPL is bit-identical to stock on Llama-2 at `-b 512`, `-ub 32` and `-ub 1`, repack and KleidiAI
+builds (*host*). In `build_ffn`, on the SiLU parallel-gate path after `ggml_swiglu_split`, one `ggml_map_custom2(h, up)` node per row:
+keep h where |up| is at least the k-th largest, k = round(0.7 n) (the product of skipped `gate` rows), then keep the values whose |h| is
+at least the k-th largest, k = round(0.5 n) (the input of `down` on half its columns). Reference path with `nth_element`, not a kernel:
+`gate` and `down` still run dense on the masked values, so *host* seconds per pass are higher and mean nothing for the phone. Every
+position carries the rule, prefill and scored tokens alike. Not built into any kit. Results: `campaigns/03-dense15-5pct/reports/memo-13-work/tom-et25.md`.

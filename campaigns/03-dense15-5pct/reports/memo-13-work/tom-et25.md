@@ -133,3 +133,22 @@ The repack stock values equal memo-12 `tom-numerics.md` §2.1 and the first chun
 - Driver: `lab/c3/et25.sh` (resumable). Table: `lab/c3/et25_table.py`. Logs: `lab/c3/logs/et25/<m>-<R|K>-<stock|ud>-<setting>.log`,
   `id-*.log`, `times.txt`.
 - Tree: `lab/llama.cpp-c3ud`, a git worktree of `lab/llama.cpp-c3`. The freeze tree's working copy is unchanged.
+
+## Audit note (Annie, 2026-11-27)
+
+Checked against `lab/c3/logs/et25/` (UD and same-build KleidiAI stock logs), the S3 freeze and memo-12 stock logs in `lab/logs/p/`
+(repack `-b 512` and `-ub 1` chunk 40, KleidiAI `-ub 1` chunk 40), `times.txt` and `KLEIDIAI = 1` lines. All *host*. Text above is not edited.
+
+- **Match:** every PPL value in the §3 table (18 UD and stock cells, 3 full-set and 6 stock chunk-40 references) equals its log; every
+  ratio in the table equals UD / stock recomputed (4 decimals); the Yi `-b 512` +1.79 % / +1.77 %; the identity rows (UD and stock
+  logs print the same final values at `-b 512`: 7.9916 repack, 8.0004 KleidiAI); the Yi wall times (36.7 / 40.4 / 35.6 min); the
+  KleidiAI logs print `KLEIDIAI = 1` and the repack logs do not; the budget 8.8069 (8.3875 x 1.05 = 8.80688).
+- **Mismatch 1 (summary item 3):** says the highest cell is 1.0254 (Llama-2 KleidiAI `-ub 1`) and gives `-ub 1` as 1.0196 to 1.0254.
+  The table, the logs and the STATUS block give 1.0250 (7.5882 / 7.4034 = 1.02496). Correct values: highest 1.0250, `-ub 1` 1.0196 to
+  1.0250, whole range 1.0134 to 1.0250. Still no cell near 1.035.
+- **Mismatch 2 (summary item 4, repeated in the STATUS block "within 0.3 points"):** `-ub 1` and `-ub 32` differ by 0.28 (Llama-2
+  KleidiAI), 0.21 (DeepSeek repack), 0.64 points (DeepSeek KleidiAI, 1.0198 against 1.0134); the "within 0.3 points on every subject"
+  holds for Yi and Llama-2 but not for DeepSeek KleidiAI. Likewise "the build does not change the ratio by more than 0.4 points" (§3) is
+  0.41 on DeepSeek `-ub 32` (1.0175 against 1.0134).
+- **Not checkable now:** the Llama-2 and DeepSeek full-set `-b 512` rows ("running"; `llama2-7b-R-ud-b512.log` was at chunk 40 when
+  read); the 22:15 KST finish is an estimate in the source. The "about 22 h" for full-set `-ub 1` is an estimate in the source.
