@@ -402,3 +402,9 @@ unchanged and headline; copy-using levers (head copy, `down` in K1 layout) form 
 residency gate.
 
 | 2026-11-27 | 21 (lead) | Arm A′ defined (owner); E-T25 started (Tom). |
+
+**Update 2026-11-27 (lead): E-T25 partial (*host*).** Patch `0010-ud-numerics.patch` (sha256 `330502f0…9908`, `VOLLIE_UD=1`, bit-identical
+with the knob unset). UD under the kill line (same-build stock × 1.035) and inside the budget in every cell so far: Yi full set `-b 512`
+1.0179 (repack) / 1.0177 (KleidiAI); 40 chunks, three subjects, both builds, `-ub 1` and `-ub 32`: 1.0134 to 1.0250 (worst against
+repack stock 1.0286). `-ub 1` and `-ub 32` agree within 0.3 points. Full-set `-ub 1` not run (about 22 h); `-ub 1` evidence is 40 chunks.
+Still running: full-set `-b 512` for Llama-2 and DeepSeek (driver `lab/c3/et25.sh`, done about 22:15 KST). Details `memo-13-work/tom-et25.md`.

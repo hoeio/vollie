@@ -1,0 +1,67 @@
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 7f55e5144..6a11678e5 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -17,9 +17,11 @@
+ #include "llama-memory-hybrid-iswa.h"
+ #include "llama-memory-recurrent.h"
+ 
++#include <algorithm>
+ #include <cassert>
+ #include <cmath>
+ #include <cstring>
++#include <functional>
+ #include <numeric>
+ #include <sstream>
+ #include <string>
+@@ -1868,6 +1870,39 @@ llm_graph_qkv llm_graph_context::build_qkv(
+ }
+ 
+ 
++// vollie c3 0010 (E-T25, declared numerics change): UD on the SiLU-gated FFN, VOLLIE_UD=1 only.
++// Per position: zero h where |up| is not among the 70 % largest (gate rows skipped), then keep only
++// the 50 % largest |h| as the input of down. Reference path (copy + nth_element), not a fast kernel.
++static bool vollie_ud_on() {
++    static const bool on = [] { const char * e = getenv("VOLLIE_UD"); return e && strcmp(e, "1") == 0; }();
++    return on;
++}
++
++// k-th largest |x| over n values (k >= 1)
++static float vollie_ud_kth(const float * x, int64_t n, int64_t k, std::vector<float> & buf) {
++    buf.resize(n);
++    for (int64_t i = 0; i < n; ++i) buf[i] = fabsf(x[i]);
++    std::nth_element(buf.begin(), buf.begin() + (k - 1), buf.end(), std::greater<float>());
++    return buf[k - 1];
++}
++
++static void vollie_ud_op(ggml_tensor * dst, const ggml_tensor * h, const ggml_tensor * up, int ith, int nth, void *) {
++    GGML_ASSERT(h->type == GGML_TYPE_F32 && up->type == GGML_TYPE_F32 && ggml_are_same_shape(h, up));
++    GGML_ASSERT(ggml_is_contiguous(h) && ggml_is_contiguous(up) && ggml_is_contiguous(dst));
++    const int64_t n = h->ne[0], nr = ggml_nrows(h);
++    const int64_t ku = llround(0.7 * n), kh = llround(0.5 * n);
++    std::vector<float> buf;
++    for (int64_t r = ith; r < nr; r += nth) {
++        const float * hr = (const float *) h->data + r * n;
++        const float * ur = (const float *) up->data + r * n;
++        float * o = (float *) dst->data + r * n;
++        const float tu = vollie_ud_kth(ur, n, ku, buf);
++        for (int64_t i = 0; i < n; ++i) o[i] = fabsf(ur[i]) >= tu ? hr[i] : 0.0f;
++        const float th = vollie_ud_kth(o, n, kh, buf);
++        for (int64_t i = 0; i < n; ++i) if (fabsf(o[i]) < th) o[i] = 0.0f;
++    }
++}
++
+ ggml_tensor * llm_graph_context::build_ffn(
+          ggml_tensor * cur,
+          ggml_tensor * up,
+@@ -1973,6 +2008,10 @@ ggml_tensor * llm_graph_context::build_ffn(
+ 
+                 cur = ggml_swiglu_split(ctx0, cur, tmp);
+                 cb(cur, "ffn_swiglu", il);
++                if (vollie_ud_on()) {
++                    cur = ggml_map_custom2(ctx0, cur, tmp, vollie_ud_op, GGML_N_TASKS_MAX, nullptr);
++                    cb(cur, "ffn_vollie_ud", il);
++                }
+                 type_gate = LLM_FFN_SEQ;
+             } else {
+                 cur = ggml_silu(ctx0, cur);
