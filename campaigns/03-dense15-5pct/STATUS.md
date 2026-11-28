@@ -458,3 +458,18 @@ everywhere; Y1b 1.7 to 2.4 × slower than ggml plain at four threads; ggml plain
 (2) re-run R77 under an amendment; (3) stop. Lead recommends (1). Open tags: `prereg-R76`, `prereg-R77`.
 
 | 2026-11-28 | 26 (lead) | R77 scored: 4-7 cells void (off-core rule), no rule fires; descriptive readings; question to the owner. |
+
+## Update 2026-11-28 (lead): owner chose R73 (option 1); kit r39 and served files uploaded
+
+Owner chose option (1) (2026-11-28, "1로 가죠"). Kit r39 (`memo-13-work/tom-r39-build.md`; `5cb177c`) and the prereg
+`prereg/R73-choice-a-stock-decode-device.md` (`81ca591`) are pushed. Uploads (write token given by the owner for this session, not stored):
+- `HoeioUser/vollie-kits` `r39/` (HF commit `b63fbc45`); APK downloaded back, sha256 `ee677765…9470` equals prereg §0.
+- New **public** `HoeioUser/vollie3` (HF commit `1008e6fc`, `private False`), with a card (source commit, conversion, bytes, sha256) and
+  the publishers' licence files (Yi Apache-2.0 + NOTICE; Llama-2 community licence + required notice + AUP link; DeepSeek model
+  licence + modification notice). HF LFS sha256 of all three ggufs equal prereg §0 (`702cc2eb…a299`, `8eb4952f…d4bf`, `f403ddc2…5118`).
+
+Next: owner creates tag `prereg-R73` on `81ca591` (and the open `prereg-R76`, `prereg-R77`), installs r39, downloads the three files with
+the r39 button, runs **c3 decode R73** per prereg §1 and §5, and sends the JSON; the lead scores it with `tools/c3_decode_parse.py`.
+Still open for Annie: results.csv rows for Llama-2 and DeepSeek full-set E-T25; README rows for patches 0012, 0013 and app 0008, 0009.
+
+| 2026-11-28 | 27 (lead) | R73 ready: kit r39 on HF (`b63fbc45`, sha checked), served files public on `HoeioUser/vollie3` (`1008e6fc`, LFS sha = prereg); waiting for tag and run. |
