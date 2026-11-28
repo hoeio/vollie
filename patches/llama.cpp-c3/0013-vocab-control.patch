@@ -1,0 +1,30 @@
+diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
+index 9b5cc2e1c..76e0bfe3b 100644
+--- a/src/llama-vocab.cpp
++++ b/src/llama-vocab.cpp
+@@ -3172,6 +3172,25 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
+         }
+     }
+ 
++    // Vollie c3 (patches/llama.cpp-c3/0013-vocab-control.patch; off unless set, read at model load only).
++    // VOLLIE_VOCAB_CONTROL=<id>[,<id>...]: these token ids become control tokens, so a prompt tokenized with
++    // parse_special matches their text as one token (Yi-1.5's <|im_start|>, id 6, is a normal token in the served
++    // file; owner 2026-11-24: one token). Text tokenized without parse_special (llama-perplexity) is unchanged.
++    if (const char * vc = getenv("VOLLIE_VOCAB_CONTROL")) {
++        for (const char * p = vc; *p; ) {
++            char * e = nullptr;
++            const long id = strtol(p, &e, 10);
++            if (e == p) {
++                break;
++            }
++            if (id >= 0 && id < (long) n_tokens) {
++                id_to_token[id].attr = (llama_token_attr) (id_to_token[id].attr | LLAMA_TOKEN_ATTR_CONTROL);
++                LLAMA_LOG_INFO("%s: vollie-vocab-control id=%ld text='%s'\n", __func__, id, id_to_token[id].text.c_str());
++            }
++            p = *e == ',' ? e + 1 : e;
++        }
++    }
++
+     // build special tokens cache
+     {
+         for (llama_token id = 0; id < (llama_token) n_tokens; ++id) {

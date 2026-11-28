@@ -1,0 +1,613 @@
+diff --git a/lib/research.dart b/lib/research.dart
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -25,11 +25,11 @@ part of 'assistant.dart';
+ /// One model of the kit ([Research.kitModels]).
+ /// load: env set only while the model loads (both arms; r23: OLMoE's VOLLIE_HEAD2_REPACK=1, c1-olmoe 0006).
+ typedef KitModel = ({String id, String name, String arch, String file, int bytes, String sha256, String url, String source,
+-    String template, bool repack, Map<String, String> load, Map<String, String> settings, Map<String, String> num,
++    String template, bool? repack, Map<String, String> load, Map<String, String> settings, Map<String, String> num,
+     List<int> experts});
+ 
+ typedef RunSpec = ({String id, String model, String proto, String group, String phase, String arm, String kind,
+-    Map<String, String> env, bool repack, int threads, int reps, int pause, bool gate, String gateRule, bool hold, String block});
++    Map<String, String> env, bool? repack, int threads, int reps, int pause, bool gate, String gateRule, bool hold, String block});
+ 
+ /// Research kit r27 (memo-30): r26 below plus c1-olmoe 0010 (persistent pool + per-thread mask) and 0011 (PROT_EXEC model
+ /// mapping), the kv clear in every run, pin x exec as a 2x2 per quad, the models copied to internal storage when it
+@@ -46,8 +46,8 @@ typedef RunSpec = ({String id, String model, String proto, String group, String
+ /// power saving and thermal status), T-D's smaps match by inode, the session label (deep-sleeping list) and the power-save
+ /// state read at the start, and T-A's cap probe ([capProbe], no model).
+ extension Research on Assistant {
+-  static const kit = 'r38';
+-  static const app = '1.38.0+38';
++  static const kit = 'r39';
++  static const app = '1.39.0+39';
+ 
+   /// r28: the owner's label for the session, chosen on the start screen before the kit can start (memo-31 §7: session A
+   /// with Samsung's deep-sleeping list, session B without). Recorded in the report and in every cap probe.
+@@ -126,7 +126,10 @@ extension Research on Assistant {
+   /// r27, factor pin (c1-olmoe 0010): a persistent ggml threadpool whose threads set their own affinity to cpus 4-7 at
+   /// every graph start (memo-28 §2.1, §2.4). Off = today's behaviour: a new worker pair per graph, inheriting the mask of
+   /// whichever Dart thread calls (the app's DartWorker pin, [Assistant._pin], stays in both).
+-  static const pinOn = {'VOLLIE_POOL': '1', 'VOLLIE_CPUMASK': '0xf0'};
++  /// r39 (R73): one cpu per thread, thread i (0 = the caller) on cpu 4 + i, as R72's adopted 4-7 cell.
++  static const pinOn = {'VOLLIE_POOL': '1', 'VOLLIE_CPUMASK': '0x10,0x20,0x40,0x80'};
++  /// r39 (R73): the one unscored profiled run per model, campaign 1's per-token line under an A/A label (r16, r26's _profOn).
++  static const _profOn = {'GGML_CPU_PROF': '1', 'GGML_CPU_AB_TOKEN': '1', 'GGML_CPU_AB': 'knob:MMID_FUSE+CHUNK2:1:1'};
+   /// r27, factor exec (c1-olmoe 0011, memo-29 Y1): the model file mapping is PROT_READ|PROT_EXEC (mprotect, applied
+   /// before the run's gate wait through llama_vollie_exec_sync, so the wait and the run have it). Void when the model
+   /// files are not on a mount that accepts it ([kitStorageStep]).
+@@ -167,30 +170,45 @@ extension Research on Assistant {
+   /// folder. template: 'model' = the file's own tokenizer.chat_template (the only source r21 implements).
+   /// repack: weight repack at every load of this model, set explicitly (never the app's size rule).
+   /// settings: the baseline env of both arms (campaign 1's shipping settings without numerics).
++  ///
++  /// Kit r39 (R73, campaign 3's first real decode; memo-13-work/tom-r39-build.md): the three frozen served files
++  /// (memo-10-work/clyde-freeze.md as corrected by the freeze logs: DeepSeek is served unmodified), downloaded from the
++  /// public HF repo HoeioUser/vollie3 into the app's internal folder (the folder they are loaded from; no second copy),
++  /// sha256 checked. repack null = choice A, the app's own rule (Device.canCopyWeights on the file's bytes: no copy for
++  /// these files on an 8 GB phone, plain mapped rows). Yi loads with VOLLIE_VOCAB_CONTROL=6 (patches/llama.cpp-c3/0013:
++  /// its <|im_start|> as one token, owner 2026-11-24). The r28 models (granite, olmoe) are not in r39's table.
++  static const _vollie3 = 'https://huggingface.co/HoeioUser/vollie3/resolve/main';
+   static final List<KitModel> kitModels = [
+     (
+-      id: 'granite', name: 'Granite 4.0 H Tiny · granite-Mi (d6-e6 layout, stock weights)', arch: 'granitehybrid',
+-      file: 'granite-Mi.gguf', bytes: 3161269344, sha256: '8df94de731a08a377150e4fcc5dcbd16212a6d102bc0b628cdc905cba0bc0f45',
+-      url: 'https://huggingface.co/HoeioUser/vollie2/resolve/e893e8a65cff2f09f3de45e4840537c625806e0b/granite-Mi.gguf',
+-      source: 'kit', template: 'model', repack: true, load: const {}, settings: _c1Ship, num: _numGranite,
+-      experts: _graniteExperts,
++      id: 'yi15-6b', name: 'Yi-1.5-6B-Chat · yi15-6b-q4_0 (Q4_0, frozen 2026-11-23)', arch: 'llama',
++      file: 'yi15-6b-q4_0.gguf', bytes: 3479326848, sha256: '702cc2ebaa3bd4933598e25b556961b95ac260ed15df74fa09df2b2b7b48a299',
++      url: '$_vollie3/yi15-6b/yi15-6b-q4_0.gguf',
++      source: 'kit', template: 'model', repack: null, load: const {'VOLLIE_VOCAB_CONTROL': '6'}, settings: _c1Ship, num: const {},
++      experts: const [],
++    ),
++    (
++      id: 'llama2-7b', name: 'Llama-2-7b-chat · llama2-7b-q4_0 (Q4_0, frozen 2026-11-23)', arch: 'llama',
++      file: 'llama2-7b-q4_0.gguf', bytes: 3825808512, sha256: '8eb4952f2592fdfc1288695f6b85aaf48d5628ec5d2c75f9387d3144652ad4bf',
++      url: '$_vollie3/llama2-7b/llama2-7b-q4_0.gguf',
++      source: 'kit', template: 'model', repack: null, load: const {}, settings: _c1Ship, num: const {}, experts: const [],
+     ),
+     (
+-      id: 'olmoe', name: 'OLMoE 1B-7B 0125 Instruct · olmoe-Mi', arch: 'olmoe',
+-      file: 'olmoe-Mi.gguf', bytes: 3072399552, sha256: '5abf710b775cd64fd89d74a783c8a7056a409ba795cd401b9dd448ef8e444abb',
+-      url: 'https://huggingface.co/HoeioUser/vollie2/resolve/e893e8a65cff2f09f3de45e4840537c625806e0b/olmoe-Mi.gguf',
+-      source: 'app', template: 'model', repack: true, load: _loadOlmoe, settings: _c1Ship, num: _numOlmoe,
+-      experts: _olmoeExperts,
++      id: 'deepseek7b', name: 'DeepSeek-LLM-7B-chat · deepseek7b-q4_0 (Q4_0, unmodified, frozen 2026-11-23)', arch: 'llama',
++      file: 'deepseek7b-q4_0.gguf', bytes: 4000061152, sha256: 'f403ddc298020af0fe8dfbbfec9a74cd3f8951938d6c21540054d85f09315118',
++      url: '$_vollie3/deepseek7b/deepseek7b-q4_0.gguf',
++      source: 'kit', template: 'model', repack: null, load: const {}, settings: _c1Ship, num: const {}, experts: const [],
+     ),
+   ];
+   static final Map<String, KitModel> models = {for (final m in kitModels) m.id: m};
+   static final Map<String, KitModel> _byFile = {for (final m in kitModels) m.file: m};
+ 
+-  /// Threads of every run (R62: four plain threads lost on both models and are closed).
+-  static const threads = 3;
++  /// Threads of every run (R62: four plain threads lost on both models and are closed). r39 (R73): 4 on cpus 4-7, R72's
++  /// adopted cell (one thread per cpu, [pinOn]).
++  static const threads = 4;
+ 
+   /// r27 (memo-28 §2.6): the context of every kit load, fixed (4096 in every stored session so far, by the app's rule).
+-  static const nCtx = 4096;
++  /// r39 (R73, clyde-r73-plan §2): 512; the official prompt (153 to 186 tokens) plus 32 fits.
++  static const nCtx = 512;
+ 
+   /// r28 (lead, 2026-11-18): the runtime this APK carries, from assets/kit_build.json ("runtime"; set by
+   /// tools/c2_build_kit.sh, RUNTIME=c2|c1|stock): 'c2' = c1-olmoe 0001-0012 (R68's rehearsal, [blockPlan]); 'c1' =
+@@ -230,15 +248,15 @@ extension Research on Assistant {
+   static const claimRuns = 10;
+   static List<RunSpec> _block(int b, KitModel m, String block, String arm, {bool touch = false, bool nice = false}) {
+     RunSpec r(String phase, bool tc, bool nc) {
+-      final wu = phase == 'warmup';
++      final wu = phase == 'warmup', prof = phase == 'prof';
+       final env = {
+         ...m.settings, ..._io, ..._kv, ..._sched, if (arm == 'num') ...m.num, ...pinOn, ...execOn,
+-        if (tc) ...touchOn, if (nc) ...niceOn,
++        if (tc) ...touchOn, if (nc) ...niceOn, if (prof) ..._profOn,
+       };
+       return (
+-        id: '${m.id}_${arm}_${wu ? 'wu' : block == 'claim' ? 'claim' : 'q'}${!wu && block == 'quad' ? '${tc ? '_touch' : ''}${nc ? '_nice' : ''}' : ''}',
+-        model: m.id, proto: 'r28',
+-        group: 'b$b', phase: phase, arm: arm, kind: 'official32', env: env,
++        id: '${m.id}_${arm}_${wu ? 'wu' : prof ? 'prof' : block == 'claim' ? 'claim' : 'q'}${!wu && block == 'quad' ? '${tc ? '_touch' : ''}${nc ? '_nice' : ''}' : ''}',
++        model: m.id, proto: 'r73',
++        group: 'b$b', phase: phase, arm: arm, kind: prof ? 'profiled32' : 'official32', env: env,
+         repack: m.repack, threads: threads, reps: 1, pause: 0, gate: !wu, gateRule: wu ? 'none' : 'r16', hold: !wu,
+         block: block,
+       );
+@@ -249,6 +267,10 @@ extension Research on Assistant {
+       r('warmup', false, false),
+       if (block == 'claim')
+         for (var i = 0; i < claimRuns; i++) r('on', touch, nice)
++      else if (block == 'claimp') ...[
++        for (var i = 0; i < claimRuns; i++) r('on', touch, nice),
++        r('prof', touch, nice), // r39: one unscored profiled run after the scored ones
++      ]
+       else
+         for (var k = 0; k < 4; k++)
+           for (final c in quadOrders[(k + 2 * mi) % 4]) r('on', cells[c]!.$1, cells[c]!.$2),
+@@ -256,12 +278,10 @@ extension Research on Assistant {
+   }
+ 
+   /// r28 block order (memo-31 §7, T-C): claim-format blocks O G, quad blocks O G, then OLMoE's num claim-format block.
++  /// r39 (R73, one arm): Yi, Llama-2, DeepSeek in this order (the first two meet the two-model rule if the phone stops
++  /// early); per model 2 warm-ups, 10 gated official32 runs, 1 gated profiled32 run; arm off = stock on choice A.
+   static final List<({String model, String block, String arm, bool touch, bool nice})> blockPlan = [
+-    (model: 'olmoe', block: 'claim', arm: 'off', touch: false, nice: false),
+-    (model: 'granite', block: 'claim', arm: 'num', touch: false, nice: false),
+-    (model: 'olmoe', block: 'quad', arm: 'off', touch: false, nice: false),
+-    (model: 'granite', block: 'quad', arm: 'num', touch: false, nice: false),
+-    (model: 'olmoe', block: 'claim', arm: 'num', touch: true, nice: true),
++    for (final m in ['yi15-6b', 'llama2-7b', 'deepseek7b']) (model: m, block: 'claimp', arm: 'off', touch: false, nice: false),
+   ];
+   static List<KitModel> get blockOrder =>
+       runtime == 'c2' ? [for (final p in blockPlan) models[p.model]!] : [for (final m in refPlan) models[m]!];
+@@ -353,6 +373,46 @@ extension Research on Assistant {
+   static String _caps() =>
+       'cap=${[4, 7].map((p) => (int.tryParse(DeviceProfile.sysRead('/sys/devices/system/cpu/cpufreq/policy$p/scaling_max_freq')) ?? 0) ~/ 1000).join('/')}';
+ 
++  /// r39 (K-d, K-g): [ms, cur0, cur4, cur7, max0, max4, max7 (scaling_max_freq), MHz, then each devfreq node's
++  /// cur_freq as read ('' = unreadable)].
++  static List<Object?> _clk(int ms, List<String> df) {
++    int f(int p, String n) => (int.tryParse(DeviceProfile.sysRead('/sys/devices/system/cpu/cpufreq/policy$p/$n')) ?? -1) ~/ 1000;
++    return [ms, for (final p in [0, 4, 7]) f(p, 'scaling_cur_freq'), for (final p in [0, 4, 7]) f(p, 'scaling_max_freq'),
++            for (final d in df) DeviceProfile.sysRead('$d/cur_freq')];
++  }
++  /// r39 (K-g): /sys/class/devfreq/* nodes (bus, DDR, GPU), listed once per session.
++  static List<String> _devfreqNodes() {
++    try {
++      return [for (final e in Directory('/sys/class/devfreq').listSync()) e.path]..sort();
++    } catch (_) {
++      return const [];
++    }
++  }
++  /// r39: the hardware maximum per policy (cpuinfo_max_freq, MHz) and each devfreq node's static fields, once.
++  static Map<String, Object?> _clkStatic(List<String> df) => {
++        'cpuinfo_max_mhz': {for (final p in [0, 4, 7]) '$p': (int.tryParse(DeviceProfile.sysRead('/sys/devices/system/cpu/cpufreq/policy$p/cpuinfo_max_freq')) ?? -1) ~/ 1000},
++        'devfreq': {for (final d in df) d.split('/').last: {for (final n in ['governor', 'min_freq', 'max_freq', 'available_frequencies']) n: DeviceProfile.sysRead('$d/$n')}},
++        'clk_fields': ['ms', 'cur0', 'cur4', 'cur7', 'max0', 'max4', 'max7', for (final d in df) d.split('/').last],
++      };
++  /// r39 (K-f, R72 §10.1): online / isolated cpus and core_ctl of policies 0, 4, 7 ('' = unreadable; 'e: ..' = no dir).
++  static Map<String, Object?> _coreState() {
++    const c = '/sys/devices/system/cpu';
++    Object cc(int p) {
++      try {
++        return {for (final e in Directory('$c/cpu$p/core_ctl').listSync()) e.path.split('/').last: DeviceProfile.sysRead(e.path)};
++      } catch (e) {
++        return 'e: $e';
++      }
++    }
++    return {'online': DeviceProfile.sysRead('$c/online'), 'isolated': DeviceProfile.sysRead('$c/isolated'),
++            'cpu7_online': DeviceProfile.sysRead('$c/cpu7/online'), for (final p in [0, 4, 7]) 'core_ctl$p': cc(p)};
++  }
++  /// r39 (K-i): zram mm_stat and memory / cpu pressure (PSI), '' when unreadable.
++  static Map<String, String> _memSys() => {
++        'zram0_mm_stat': DeviceProfile.sysRead('/sys/block/zram0/mm_stat'),
++        'psi_memory': DeviceProfile.sysRead('/proc/pressure/memory'), 'psi_cpu': DeviceProfile.sysRead('/proc/pressure/cpu'),
++      };
++
+   /// Set for every run and every load: the runtime's lines go to stderr (the kit's log file), whatever the native logger.
+   static const _always = {'VOLLIE_LINES': 'stderr'};
+ 
+@@ -492,17 +552,34 @@ extension Research on Assistant {
+     }
+   }
+ 
++  /// r39: the kit's model folder is the app's internal one (filesDir/kit-models), where [kitStorageStep] loads from, so a
++  /// download is the only copy (r27-r28 downloaded to the external folder and then copied: 2 x 11.3 GB for R73's files).
++  /// Resolved once through the platform channel; null until then (the screen then shows every file as missing).
++  static String? kitIntDir;
++  void _resolveKitDir() {
++    if (Research.kitIntDir != null) return;
++    const MethodChannel('vollie/downloads').invokeMethod<Map>('kitStorage').then((st) {
++      final d = '${st?['internal']}/kit-models';
++      Directory(d).createSync(recursive: true);
++      Research.kitIntDir = d;
++      _kitChanged();
++    }).catchError((Object _) {});
++  }
++
+   /// The kit's own files ([KitModel.source] 'kit') not yet on the phone and checked.
+-  List<KitModel> get kitModelsMissing => _kitDir == null
+-      ? const []
+-      : [for (final m in Research.kitModels) if (m.source == 'kit' && !Research.modelReady(_kitDir!, m)) m];
++  List<KitModel> get kitModelsMissing {
++    _resolveKitDir();
++    final d = Research.kitIntDir;
++    return [for (final m in Research.kitModels) if (m.source == 'kit' && (d == null || !Research.modelReady(d, m))) m];
++  }
+ 
+   /// Every kit file is on the phone and checked.
+-  bool get kitModelReady => _kitDir != null && kitModelsMissing.isEmpty;
++  bool get kitModelReady => _kitDir != null && Research.kitIntDir != null && kitModelsMissing.isEmpty;
+ 
+   /// Bytes still to download for [kitModelsMissing] (a ".part" counts as downloaded).
+   int get kitMissingBytes => [
+-        for (final m in kitModelsMissing) m.bytes - (File('$_kitDir/${m.file}.part').existsSync() ? File('$_kitDir/${m.file}.part').lengthSync() : 0)
++        for (final m in kitModelsMissing)
++          m.bytes - (File('${Research.kitIntDir}/${m.file}.part').existsSync() ? File('${Research.kitIntDir}/${m.file}.part').lengthSync() : 0)
+       ].fold(0, (a, b) => a + b);
+ 
+   /// Every missing kit file of [Research.kitModels] into the models' folder, one after the other: Wi-Fi only, one
+@@ -510,7 +587,7 @@ extension Research on Assistant {
+   /// renamed into place. In the app, with the screen kept on (no background service: keep the app open). Progress and
+   /// errors in [kitNote].
+   Future<void> downloadKitModels() async {
+-    final dir = _kitDir;
++    final dir = Research.kitIntDir; // r39: straight into the internal folder the kit loads from
+     if (dir == null || researching || optimizing != null || kitModelReady) return;
+     const ch = MethodChannel('vollie/downloads');
+     _stopTest = false;
+@@ -525,8 +602,8 @@ extension Research on Assistant {
+             'Nothing was downloaded.';
+         return;
+       }
+-      final info = Map<String, Object?>.from(await ch.invokeMethod<Map>('deviceInfo') ?? const {});
+-      final free = (info['freeStorage'] as int?) ?? 0;
++      final info = Map<String, Object?>.from(await ch.invokeMethod<Map>('kitStorage') ?? const {});
++      final free = (info['internalFree'] as int?) ?? 0;
+       final need = kitMissingBytes + 200000000;
+       final all = Research.kitModels.fold<int>(0, (a, m) => a + m.bytes);
+       if (free < need) {
+@@ -672,6 +749,11 @@ extension Research on Assistant {
+     };
+     rec['external_check'] = ec;
+     final extReady = Research.kitModels.every((m) => Research.modelReady(ext, m));
++    if (ic['pass'] != true && Research.kitModels.every((m) => Research.modelReady(idir, m))) {
++      rec['used'] = 'internal';
++      rec['exec_factor'] = 'void: the internal folder refused an executable mapping';
++      return (paths: intPaths, rec: rec); // r39: the files were downloaded there; run without exec
++    }
+     if (ic['pass'] != true) {
+       rec['used'] = 'external';
+       rec['exec_factor'] = 'void: the internal folder refused an executable mapping';
+@@ -1103,6 +1185,7 @@ extension Research on Assistant {
+     final unmatched = <String>[];
+     var idleLines = 0;
+     DateTime? lastEnd;
++    final df = Research._devfreqNodes(); // r39 (K-g)
+     final report = <String, Object?>{
+       'kit': Research.kit,
+       'app': Research.app,
+@@ -1127,6 +1210,20 @@ extension Research on Assistant {
+       'exec_rule': 'factor exec (c1-olmoe 0011): on = ${Research.execOn}; applied by llama_vollie_exec_sync() right after '
+           'the run\'s env is set, before its gate wait (row exec_sync; the runtime\'s c2-exec line shows want, errno, the '
+           '/proc/self/maps protection); off = PROT_READ; void when storage.exec_factor is not "live"',
++      'r73': {
++        'plan': 'campaign 3 R73, first real decode (memo-13-work/tom-r39-build.md; clyde-r73-plan.md as changed by the lead '
++            '2026-11-28): one arm, stock on choice A; per model 2 warm-ups (no gate, no hold), 10 gated official32 runs (r16 '
++            'gate, hold, kv clear env), 1 gated profiled32 run (unscored); Yi, Llama-2, DeepSeek in this order',
++        'choice_a': 'repack null = the app\'s rule (Device.canCopyWeights(file bytes)); load_rule and load_lines per block',
++        'kv_cache': 'the app\'s own: q8_0 K and V (flash attention on), n_ctx ${Research.nCtx}',
++        'threads': '${Research.threads} on cpus 4-7, ${Research.pinOn}',
++        'reuse_prefix': 'off: the vendored llamadart re-ingests an exact full-prompt replay even with reusePromptPrefix on '
++            '(llama_cpp_service.dart, reusedPrefix == nTokens), so the identical official prompt cannot be reused',
++        'yi_vocab': 'Yi loads with VOLLIE_VOCAB_CONTROL=6 (c3 0013): <|im_start|> is one token (owner 2026-11-24)',
++        'deepseek_prompt': 'candidate a, the app\'s render as is (literal <s>, no BOS token; owner 2026-11-24)',
++        'pin_guard': 'not in this runtime (c3 0004 not applied); placement from c2-pool / c2-sched lines and thread_samples',
++        'clk': Research._clkStatic(df),
++      },
+       'design': {'cells': {for (final e in Research.cells.entries) '${e.key}': {'touch': e.value.$1, 'nice': e.value.$2}},
+                  'quad_orders': Research.quadOrders,
+                  'blocks': [for (final b in Research.blockPlan) {'model': b.model, 'block': b.block, 'arm': b.arm,
+@@ -1161,7 +1258,7 @@ extension Research on Assistant {
+       'mem_start': DeviceProfile.memInfo(),
+       'specs': Research.runs.map(Research._specJson).toList(),
+       'block_order': Research.blockOrder.map((m) => m.id).toList(),
+-      'baseline_note': 'arm off = r22 knob-off arm (campaign 1 shipping settings minus numerics, repack on, GGML_C2_IO=1), '
++      'baseline_note': 'arm off = r22 knob-off arm (campaign 1 shipping settings minus numerics, r39: repack by the app rule (choice A), GGML_C2_IO=1), '
+           'loaded with the model\'s load env (OLMoE VOLLIE_HEAD2_REPACK=1: head in CPU_REPACK, R61); '
+           'arm num = off + the model\'s num env (declared numerics, R59/R61); GGML_PREFILL_COLD and GGML_KEEP_WARM are never set; '
+           'hold = app-side read-back of the pages the gate wait took (memo-22 §2, r23 rule unchanged), no env, in every gated '
+@@ -1293,8 +1390,12 @@ extension Research on Assistant {
+     // r23: the model's load env ([KitModel.load]) is set during the load only; what native code saw is in [loadSeen].
+     Map<String, String>? loadSeen;
+     final libHash = <String, String?>{}; // r27 (memo-28 §3.6): each native library hashed once per session
+-    Future<int?> ensureLoad(String path, KitModel m, bool on, int threads, bool force) async {
+-      if (!force && _loadedPath == path && _loadedAccel == Accel.cpu && _loadedRepack == on) {
++    // r39: on null = the app's rule ([Assistant._params]: Device.canCopyWeights), recorded in [loadRule]; the load's
++    // llama.cpp log lines about buffers, the KV cache and the vocabulary knob in [loadLines].
++    Map<String, Object?>? loadRule;
++    List<String>? loadLines;
++    Future<int?> ensureLoad(String path, KitModel m, bool? on, int threads, bool force) async {
++      if (!force && _loadedPath == path && _loadedAccel == Accel.cpu && (on == null || _loadedRepack == on)) {
+         await _benchOn(Accel.cpu, threads, threads);
+         return null;
+       }
+@@ -1306,11 +1407,39 @@ extension Research on Assistant {
+       final le = Research.runtime == 'c2' ? {...Research.loadEnv, ...m.load} : const <String, String>{}; // r28: c2 knobs only on c2
+       le.forEach(setNativeEnv);
+       loadSeen = Research._envNow();
++      var off0 = 0;
++      try {
++        off0 = File(Assistant._loadLogPath).lengthSync();
++      } catch (_) {}
+       try {
+         await _loadOn(Accel.cpu, threads, threads);
+       } finally {
+         le.keys.forEach(unsetNativeEnv);
+       }
++      final len = File(path).lengthSync();
++      loadRule = {
++        'rule': on == null ? 'app: Device.canCopyWeights(file bytes) = totalRam - bytes >= 5e9' : 'forced $on',
++        'total_ram': device.totalRam, 'file_bytes': len, 'can_copy_weights': device.canCopyWeights(len),
++        'use_extra_buffers': _loadedRepack,
++      };
++      try {
++        final f = File(Assistant._loadLogPath).openSync();
++        try {
++          final n = f.lengthSync();
++          f.setPositionSync(off0 <= n ? off0 : 0);
++          loadLines = [
++            for (final l in utf8.decode(f.readSync(n - (off0 <= n ? off0 : 0)), allowMalformed: true).split('\n'))
++              if (RegExp(r'buffer size|repack|KLEIDIAI|KleidiAI|CPU_Mapped|CPU_REPACK|vollie-vocab|special tokens cache|'
++                      r'n_ctx|type_k|type_v|flash_attn|file type|model size')
++                  .hasMatch(l))
++                l,
++          ];
++        } finally {
++          f.closeSync();
++        }
++      } catch (e) {
++        loadLines = ['load log unreadable: $e'];
++      }
+       await _complete('Hi', 1); // the load's own warm-up (knobs cleared)
+       return DateTime.now().difference(t0).inMilliseconds;
+     }
+@@ -1483,6 +1612,8 @@ extension Research on Assistant {
+         if (reload != null) {
+           row['reload_ms'] = reload;
+           row['load_env_set'] = loadSeen; // r23: the env native code saw during this load (OLMoE: VOLLIE_HEAD2_REPACK=1)
++          row['load_rule'] = loadRule; // r39: choice A's rule and what it gave
++          row['load_lines'] = loadLines; // r39: buffer types actually used (CPU_Mapped = plain rows; CPU_REPACK / CPU_KLEIDIAI = copies)
+           row['libs'] = {for (final l in Research._nativeLibs()) l.split('/').last: libHash[l] ??= await DeviceProfile.sha256(l)};
+           if (!(report['templates'] as Map).containsKey(s.model)) await describe(s.model);
+         }
+@@ -1498,6 +1629,7 @@ extension Research on Assistant {
+         if (s.gate) row['touch_begin'] = DeviceProfile.touchBegin(lastVec[path]);
+         row['threads_loaded'] = [_loadedThreads, _loadedRead];
+         final c0 = DateTime.now();
++        row['zones_gate_start'] = DeviceProfile.zoneTemps(zones); // r39 (K-e)
+         final want = lastVec[path];
+         if (want != null) row['want_mb'] = wantPages(want) * pageSize ~/ 1000000; // resident at the previous run's end
+         final hold = <String, int>{};
+@@ -1607,6 +1739,8 @@ extension Research on Assistant {
+         row['vmstat_before'] = DeviceProfile.vmstat(); // r24: swap-in / major-fault counters, system-wide (memo-23 §1)
+         row['mhz_before'] = DeviceProfile.cpuMhz();
+         row['mem_before'] = DeviceProfile.memInfo();
++        row['core_before'] = Research._coreState(); // r39 (K-f)
++        row['mem_sys_before'] = Research._memSys(); // r39 (K-i)
+         harvest(row); // untagged lines since the last run belong to this row
+         row['proc_before'] = DeviceProfile.procStat(); // r28 (T-B)
+         final f0 = DeviceProfile.pageFaults();
+@@ -1624,7 +1758,12 @@ extension Research on Assistant {
+         // threads (the app's inference threads and the ggml workers they start) in state R and their CPU.
+         final thr = <List<int>>[]; // per sample: [ms into the run, running threads, cpu of each running thread...]
+         var lastSample = -1000000;
+-        final c = await _kitComplete(Assistant._benchPrompt, Assistant._benchTokens, false, (ch) {
++        // r39 (K-d, K-g): 1 Hz clock samples (cur / scaling max per policy, devfreq cur_freq) through the run.
++        final clk = <List<Object?>>[Research._clk(0, df)];
++        final tm = Timer.periodic(const Duration(seconds: 1), (_) => clk.add(Research._clk(sw.elapsedMilliseconds, df)));
++        late final LlamaCompletion c;
++        try {
++        c = await _kitComplete(Assistant._benchPrompt, Assistant._benchTokens, false, (ch) {
+           if (ch.text.isNotEmpty && firstMs == null) {
+             firstMs = sw.elapsedMicroseconds / 1000;
+             // r27 (memo-28 §3.5): no vmstat / /proc/self/io here (both unreadable on this phone)
+@@ -1639,6 +1778,11 @@ extension Research on Assistant {
+             if (r != null) thr.add([ms, r.length, ...r]);
+           }
+         });
++        } finally {
++          tm.cancel();
++        }
++        clk.add(Research._clk(sw.elapsedMilliseconds, df));
++        row['clk_1hz'] = clk;
+         row['thread_samples'] = thr;
+         lastEnd = DateTime.now();
+         row['wall_ms'] = lastEnd!.difference(t0).inMilliseconds;
+@@ -1656,6 +1800,9 @@ extension Research on Assistant {
+         row['workers_after'] = DeviceProfile.workerThreads(); // r28 (T-B): nice / policy / cgroup of the pool's threads
+         row['mhz_after'] = DeviceProfile.cpuMhz();
+         row['mem_after'] = DeviceProfile.memInfo();
++        row['core_after'] = Research._coreState(); // r39 (K-f)
++        row['mem_sys_after'] = Research._memSys(); // r39 (K-i)
++        row['zones_after'] = DeviceProfile.zoneTemps(zones); // r39 (K-e)
+         row['cap_after'] = Research._caps();
+         // r27 (memo-28 §3.2): from the run-end vector (one whole-file mincore less); ms = this count's time
+         row['res_after'] = lastRes = endVec == null ? Research._residency(path) : Research._residencyOf(path, endVec.v, endVec.pageSize);
+@@ -1691,6 +1838,12 @@ extension Research on Assistant {
+         }
+         if (wt0 != null && wt1 != null) row['io_wait_ticks'] = wt1 - wt0;
+         row['text'] = c.text;
++        // r39 (K-h): the reply re-tokenized (no special tokens added); equal ids <=> equal text. Not the sampled ids.
++        try {
++          row['text_ids'] = await _engine.tokenize(c.text, addSpecial: false);
++        } catch (e) {
++          row['text_ids'] = 'error: $e';
++        }
+         final pc = await _engine.getPerformanceContext();
+         row['sample_ms'] = pc?.sampleMs;
+         row['decode_ms'] = pc?.decodeMs;
+diff --git a/lib/settings_screen.dart b/lib/settings_screen.dart
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -411,7 +411,7 @@ class _PerformanceCard extends StatelessWidget {
+           builder: (_, v, __) => OutlinedButton.icon(
+             onPressed: busy || optimizing || v == null ? null : assistant.capProbe,
+             icon: const Icon(Icons.speed_rounded),
+-            label: const Text('Run cap probe r38 (6 min, no model)'),
++            label: const Text('Run cap probe r39 (6 min, no model)'),
+           ),
+         ),
+       if (!assistant.researching && assistant.capProbeReport != null)
+@@ -428,15 +428,6 @@ class _PerformanceCard extends StatelessWidget {
+           icon: const Icon(Icons.save_alt_rounded),
+           label: const Text('Save cap probe to Downloads'),
+         ),
+-      if (!assistant.researching)
+-        ValueListenableBuilder<bool?>(
+-          valueListenable: Research.deepSleep,
+-          builder: (_, v, __) => OutlinedButton.icon(
+-            onPressed: busy || optimizing || v == null ? null : assistant.c3Probe,
+-            icon: const Icon(Icons.memory_rounded),
+-            label: const Text('Run c3 probe r38 (R77: UD and Y1b kernel costs)'),
+-          ),
+-        ),
+       if (!assistant.researching && assistant.c3ProbeReport != null)
+         TextButton.icon(
+           onPressed: () async {
+@@ -462,7 +453,7 @@ class _PerformanceCard extends StatelessWidget {
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.downloadKitModels,
+                 icon: const Icon(Icons.download_rounded),
+-                label: Text('Download kit r38 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
++                label: Text('Download kit r39 models into internal storage: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
+                     '(${(assistant.kitMissingBytes / 1e9).toStringAsFixed(1)} GB, Wi-Fi)'),
+               ),
+       if (assistant.kitModelReady)
+@@ -477,7 +468,7 @@ class _PerformanceCard extends StatelessWidget {
+                 builder: (_, v, __) => OutlinedButton.icon(
+                   onPressed: busy || optimizing || v == null ? null : assistant.researchRun,
+                   icon: const Icon(Icons.science_rounded),
+-                  label: Text(v == null ? 'Run research kit r38: choose the session label first' : 'Run research kit r38 (R68 run list, ~50-110 min)'),
++                  label: Text(v == null ? 'Run research kit r39: choose the session label first' : 'Run research kit r39 (R73: stock decode, Yi, Llama-2, DeepSeek; ~50-80 min)'),
+                 ),
+               ),
+       if (assistant.kitModelReady && !assistant.researching)
+diff --git a/pubspec.yaml b/pubspec.yaml
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@ name: vollie
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.38.0+38
++version: 1.39.0+39
+ 
+ environment:
+   sdk: ^3.10.7
+diff --git a/test/kit_lines_test.dart b/test/kit_lines_test.dart
+--- a/test/kit_lines_test.dart
++++ b/test/kit_lines_test.dart
+@@ -80,97 +80,35 @@ void main() {
+     expect(k.tag, 'granite_num_r16_kv.3');
+     expect(k.line.endsWith('tag=0xb4'), true);
+   });
+-  test('kit r28: run list generated from the block plan', () {
+-    expect(Research.blockOrder.map((m) => m.id).toList(), ['olmoe', 'granite', 'olmoe', 'granite', 'olmoe']);
+-    // the Williams square: every cell once per position, every ordered pair of neighbours once
+-    final pos = <String>{}, pairs = <String>{};
+-    for (final o in Research.quadOrders) {
+-      expect(o.toSet(), {1, 2, 3, 4});
+-      for (var i = 0; i < 4; i++) {
+-        pos.add('${o[i]}@$i');
+-        if (i > 0) pairs.add('${o[i - 1]}>${o[i]}');
+-      }
+-    }
+-    expect(pos.length, 16);
+-    expect(pairs.length, 12);
+-    final cells = <String, Map<String, int>>{}, orders = <String, Set<String>>{};
+-    for (var b = 0; b < Research.blockPlan.length; b++) {
+-      final p = Research.blockPlan[b], m = Research.models[p.model]!;
++  test('kit r39: R73 run list (choice A, one arm, 2 + 10 + 1 per model)', () {
++    expect(Research.blockOrder.map((m) => m.id).toList(), ['yi15-6b', 'llama2-7b', 'deepseek7b']);
++    expect(Research.runs.length, 39);
++    for (var b = 0; b < 3; b++) {
++      final m = Research.blockOrder[b];
+       final blk = Research.runs.where((r) => r.group == 'b${b + 1}').toList();
+-      expect(blk.every((r) => r.model == m.id && r.repack && r.proto == 'r28' && r.threads == 3 && r.reps == 1), true);
+-      expect(blk.every((r) => r.arm == p.arm && r.block == p.block && r.kind == 'official32'), true);
+-      expect(blk.take(2).every((r) => r.phase == 'warmup' && !r.gate && !r.hold && r.gateRule == 'none'), true);
+-      final scored = blk.where((r) => r.phase == 'on').toList();
+-      expect(blk.length, 2 + scored.length);
+-      if (p.block == 'claim') {
+-        expect(scored.length, Research.claimRuns);
+-        expect(scored.map((r) => r.id).toSet(), {'${m.id}_${p.arm}_claim'});
+-        expect(scored.every((r) => r.env.containsKey('VOLLIE_TOUCH') == p.touch && r.env.containsKey('VOLLIE_NICE') == p.nice), true);
+-      } else {
+-        expect(scored.length, 16);
+-        for (var q = 0; q < 4; q++) {
+-          final c = scored.sublist(4 * q, 4 * q + 4)
+-              .map((r) => '${r.env.containsKey('VOLLIE_TOUCH') ? 'T' : 't'}${r.env.containsKey('VOLLIE_NICE') ? 'N' : 'n'}')
+-              .toList();
+-          expect(c.toSet(), {'Tn', 'tN', 'TN', 'tn'});
+-          orders.putIfAbsent(m.id, () => {}).add(c.join());
+-          for (final x in c) {
+-            cells.putIfAbsent(m.id, () => {})[x] = (cells[m.id]![x] ?? 0) + 1;
+-          }
+-        }
+-      }
++      expect(blk.map((r) => r.phase).toList(), ['warmup', 'warmup', for (var i = 0; i < 10; i++) 'on', 'prof']);
++      expect(blk.every((r) => r.model == m.id && r.repack == null && r.threads == 4 && r.arm == 'off' && r.proto == 'r73'), true);
+       for (final r in blk) {
+-        expect(r.env['VOLLIE_KV_DONTNEED'], '1');
+-        expect(r.env['VOLLIE_SCHED'], '1');
+-        expect(r.env['GGML_C2_IO'], '1');
+-        expect(r.env['VOLLIE_POOL'], '1');
+-        expect(r.env['VOLLIE_CPUMASK'], '0xf0');
+-        expect(r.env['VOLLIE_EXEC_MAP'], '1');
+-        expect(r.id.contains('_touch'), r.block == 'quad' && r.env.containsKey('VOLLIE_TOUCH'));
+-        expect(r.id.contains('_nice'), r.block == 'quad' && r.env.containsKey('VOLLIE_NICE'));
+-        if (r.env.containsKey('VOLLIE_TOUCH')) expect(r.env['VOLLIE_TOUCH_S'], '12');
+-        if (r.env.containsKey('VOLLIE_NICE')) expect(r.env['VOLLIE_NICE'], '-10');
+-        expect(r.env.containsKey('GGML_CPU_PROF') || r.env.containsKey('GGML_PREFILL_COLD') || r.env.containsKey('GGML_KEEP_WARM'), false);
+-        expect(r.env.containsKey('VOLLIE_HEAD2_REPACK') || r.env.containsKey('VOLLIE_NO_ATTACH') || r.env.containsKey('VOLLIE_TOUCH_HOST'), false);
+-        for (final e in m.num.entries) {
+-          expect(r.env[e.key], r.arm == 'num' ? e.value : null);
+-        }
+         expect(r.gate, r.phase != 'warmup');
+         expect(r.hold, r.gate);
++        expect(r.kind, r.phase == 'prof' ? 'profiled32' : 'official32');
++        expect(r.env['GGML_CPU_PROF'], r.phase == 'prof' ? '1' : null);
++        expect(r.env['VOLLIE_CPUMASK'], '0x10,0x20,0x40,0x80');
++        for (final k in ['VOLLIE_KV_DONTNEED', 'VOLLIE_SCHED', 'GGML_C2_IO', 'VOLLIE_POOL', 'VOLLIE_EXEC_MAP']) {
++          expect(r.env[k], '1');
++        }
++        expect(r.env.keys.any((k) => const {'VOLLIE_TOUCH', 'VOLLIE_NICE', 'VOLLIE_PIN_GUARD', 'VOLLIE_HEAD2', 'GGML_HEAD2',
++            'GGML_EXPERT_SKIP', 'VOLLIE_SKIP_MASS', 'VOLLIE_VOCAB_CONTROL'}.contains(k)), false);
+       }
+     }
+-    for (final m in ['olmoe', 'granite']) {
+-      expect(cells[m], {'Tn': 4, 'tN': 4, 'TN': 4, 'tn': 4}); // 8 vs 8 per factor per model
+-      expect(orders[m]!.length, 4);
+-    }
+-    expect(Research.blockPlan.last.arm == 'num' && Research.blockPlan.last.model == 'olmoe', true);
+-    expect(Research.models['olmoe']!.num['VOLLIE_SKIP_MASS'], '900');
+-    expect(Research.models['olmoe']!.load, {'VOLLIE_HEAD2_REPACK': '1'});
+-    expect(Research.models['granite']!.load, isEmpty);
+-    for (final m in Research.kitModels) {
+-      expect(m.experts.length.isEven && m.experts.last <= m.bytes, true);
+-    }
++    expect(Research.models['yi15-6b']!.load, {'VOLLIE_VOCAB_CONTROL': '6'});
++    expect(Research.models['llama2-7b']!.load, isEmpty);
++    expect(Research.models['deepseek7b']!.sha256.startsWith('f403ddc2'), true);
++    expect(Research.nCtx, 512);
++    expect(Research.reusePrefix, false);
+     expect(Research.powerLabel({'powerSave': true, 'lowPower': 1}), 'power-save on');
+-    expect(Research.powerLabel({'powerSave': false, 'lowPower': 0}), 'power-save off');
+-    expect(Research.powerLabel({'powerSave': false, 'lowPower': 1}), 'power-save on');
+     expect(Research.powerLabel(const {}), 'power-save unknown');
+   });
+-  test('kit r28: reference runtimes run 10 claim-format runs per model, no c2 knob', () {
+-    for (final rt in ['c1', 'stock']) {
+-      Research.runtime = rt;
+-      expect(Research.blockOrder.map((m) => m.id).toList(), ['granite', 'olmoe']);
+-      final on = Research.runs.where((r) => r.phase == 'on').toList();
+-      expect(on.length, 20);
+-      expect(Research.runs.length, 24);
+-      expect(Research.runs.every((r) => r.arm == rt && r.block == 'ref' && r.threads == 3), true);
+-      expect(on.every((r) => r.gate && r.hold && r.gateRule == 'r16'), true);
+-      expect(Research.runs.every((r) => r.env.keys.every((k) => !k.startsWith('VOLLIE_') || k == 'VOLLIE_SAMPLER_BYPASS')), true);
+-      expect(on.where((r) => r.model == 'granite').first.env['GGML_EXPERT_SKIP'], rt == 'c1' ? '117' : null);
+-      expect(on.where((r) => r.model == 'olmoe').first.env, rt == 'c1' ? Research.refEnv('c1', 'olmoe') : isEmpty);
+-    }
+-    Research.runtime = 'c2';
+-    expect(Research.runs.where((r) => r.phase == 'on').length, 62);
+-  });
+   test('kit r28: the c2-touch and c2-nice lines are tagged', () {
+     expect(Research.parseLine('c2-touch run=olmoe_off_q_touch.3 pass=2 final=1 src=want at_ms=91234 set=700000 '
+             'pages=700000 ms=812.4 cpu=2 majflt=10 minflt=3000 sum=17')!.tag, 'olmoe_off_q_touch.3');
