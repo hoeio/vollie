@@ -447,3 +447,14 @@ Llama-2 at `-b 512`, `-ub 32`, `-ub 1`: class B, not a numerics change).
 tags `prereg-R77`, runs R77 per prereg §6; `prereg-R76` tag also still open.
 
 | 2026-11-28 | 25 (lead) | Kit r38 and R77 prereg committed; r38 on HF, sha re-checked. Waiting for the owner's run. |
+
+## Update 2026-11-28 (lead): R77 ran and is scored
+
+Kit r38, JSON `reports/device/vollie-c3probe-r38-2026-11-28T1617.json` (`9125c67f…7569`). Result `reports/R77-result.md`. Every 4-7
+triplet is void by prereg §4.1 (an off-core label on one of four threads in every stock arm, the R72 pattern), so no decision rule fires.
+Scored: D1 (K1 `down` k, cpu 4) 2.543, hit; D9 identity, hit. Descriptive: K1 under R3's break-even everywhere; R1 above its kill line
+everywhere; Y1b 1.7 to 2.4 × slower than ggml plain at four threads; ggml plain at four threads 0.89 to 1.02 of the repack-type stock
+(void cells), a lead that choice A's stock may be near the packed stock. Owner asked: (1) move to R73, choice A stock decode;
+(2) re-run R77 under an amendment; (3) stop. Lead recommends (1). Open tags: `prereg-R76`, `prereg-R77`.
+
+| 2026-11-28 | 26 (lead) | R77 scored: 4-7 cells void (off-core rule), no rule fires; descriptive readings; question to the owner. |
