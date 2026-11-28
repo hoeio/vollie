@@ -441,3 +441,9 @@ Llama-2 at `-b 512`, `-ub 32`, `-ub 1`: class B, not a numerics change).
   and keep 0.5) would settle them. Next: owner decides.
 
 | 2026-11-28 | 24 (lead) | UD kernels on host: R1 fails cold, R3 (A′) passes; Y1b decode bit-identical (0011). |
+
+**Update 2026-11-28 (lead):** owner approved the R77 device probe ("1로 가죠"). Kit r38 committed (`c82a792`), R77 prereg committed
+(`67ec3f6`), kit uploaded to HF `HoeioUser/vollie-kits` `r38/` (HF commit `f35425b4`; downloaded APK sha256 re-checked). Open: owner
+tags `prereg-R77`, runs R77 per prereg §6; `prereg-R76` tag also still open.
+
+| 2026-11-28 | 25 (lead) | Kit r38 and R77 prereg committed; r38 on HF, sha re-checked. Waiting for the owner's run. |
