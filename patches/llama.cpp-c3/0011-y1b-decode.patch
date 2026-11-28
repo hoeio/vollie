@@ -1,0 +1,85 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index 6512439ca..35717fa50 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1173,6 +1173,48 @@ void ggml_set_f32_nd(const struct ggml_tensor * tensor, int i0, int i1, int i2,
+ 
+ // ggml_compute_forward_mul_mat
+ 
++// vollie c3 0011 (B-T1, no numerics change): env VOLLIE_Y1B=1 (exactly "1", read once). Q4_0 mul_mat on plain rows
++// (extra buffers off, e.g. --no-repack) through the in-place 4-row kernel Y1b (memo-05 T2): per row XOR 0x88, shl 4 /
++// and 0xF0, two sdot, 3 addp for four rows, then the 4x4 repack gemv's float step, so each row equals the repack gemv
++// (and gemm) to the bit. Batches loop positions. Tail groups repeat the last row pointer and store only valid rows.
++#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
++#define VOLLIE_Y1B_BUILT 1
++static int vollie_y1b_on(void) {
++    static int on = -1;
++    if (on < 0) { const char * e = getenv("VOLLIE_Y1B"); on = e && strcmp(e, "1") == 0; }
++    return on;
++}
++static inline float32x4_t vollie_y1b4(int nb, const block_q4_0 * w0, const block_q4_0 * w1, const block_q4_0 * w2, const block_q4_0 * w3, const block_q8_0 * x) {
++    const int8x16_t m88 = vdupq_n_s8((int8_t) 0x88), mf0 = vdupq_n_s8((int8_t) 0xF0); const int32x4_t z = vdupq_n_s32(0); float32x4_t acc = vdupq_n_f32(0);
++    for (int b = 0; b < nb; b++) {
++        const int8x16_t a0 = vld1q_s8(x[b].qs), a1 = vld1q_s8(x[b].qs + 16);
++        const int8x16_t v0 = veorq_s8(vld1q_s8((const int8_t *) w0[b].qs), m88), v1 = veorq_s8(vld1q_s8((const int8_t *) w1[b].qs), m88);
++        const int8x16_t v2 = veorq_s8(vld1q_s8((const int8_t *) w2[b].qs), m88), v3 = veorq_s8(vld1q_s8((const int8_t *) w3[b].qs), m88);
++        const int32x4_t d0 = vdotq_s32(vdotq_s32(z, vshlq_n_s8(v0, 4), a0), vandq_s8(v0, mf0), a1);
++        const int32x4_t d1 = vdotq_s32(vdotq_s32(z, vshlq_n_s8(v1, 4), a0), vandq_s8(v1, mf0), a1);
++        const int32x4_t d2 = vdotq_s32(vdotq_s32(z, vshlq_n_s8(v2, 4), a0), vandq_s8(v2, mf0), a1);
++        const int32x4_t d3 = vdotq_s32(vdotq_s32(z, vshlq_n_s8(v3, 4), a0), vandq_s8(v3, mf0), a1);
++        const int32x4_t ret = vpaddq_s32(vpaddq_s32(d0, d1), vpaddq_s32(d2, d3));
++        float16x4_t bd = vld1_dup_f16((const __fp16 *) &w0[b].d);
++        bd = vld1_lane_f16((const __fp16 *) &w1[b].d, bd, 1); bd = vld1_lane_f16((const __fp16 *) &w2[b].d, bd, 2); bd = vld1_lane_f16((const __fp16 *) &w3[b].d, bd, 3);
++        acc = vfmaq_f32(acc, vcvtq_n_f32_s32(ret, 4), vmulq_f32(vcvt_f32_f16(vld1_dup_f16((const __fp16 *) &x[b].d)), vcvt_f32_f16(bd)));
++    }
++    return acc;
++}
++// rows [ir0, ir1) of src0 (row stride nb01) against one q8_0 column, into dst_col
++static void vollie_y1b_rows(int64_t ne00, const char * src0_row, size_t nb01, const void * src1_col, float * dst_col, int64_t ir0, int64_t ir1) {
++    const int nb = (int) (ne00 / QK8_0); const block_q8_0 * x = (const block_q8_0 *) src1_col;
++    for (int64_t r = ir0; r < ir1; r += 4) {
++        const block_q4_0 * w[4];
++        for (int i = 0; i < 4; i++) w[i] = (const block_q4_0 *) (src0_row + MIN(r + i, ir1 - 1) * nb01);
++        float t[4]; vst1q_f32(t, vollie_y1b4(nb, w[0], w[1], w[2], w[3], x));
++        memcpy(dst_col + r, t, MIN(4, ir1 - r) * sizeof(float));
++    }
++}
++#else
++static int vollie_y1b_on(void) { return 0; }
++#endif
++
+ static void ggml_compute_forward_mul_mat_one_chunk(
+     const struct ggml_compute_params * params,
+     struct ggml_tensor * dst,
+@@ -1251,6 +1293,12 @@ static void ggml_compute_forward_mul_mat_one_chunk(
+                 //    vec_dot(ne00, &dst_col[ir0], src0_row + ir0*nb01, src1_col);
+                 //}
+ 
++#ifdef VOLLIE_Y1B_BUILT
++                if (type == GGML_TYPE_Q4_0 && num_rows_per_vec_dot == 1 && vollie_y1b_on()) {
++                    vollie_y1b_rows(ne00, src0_row, nb01, src1_col, dst_col, iir0, MIN(iir0 + blck_0, ir0_end));
++                    continue;
++                }
++#endif
+                 for (int64_t ir0 = iir0; ir0 < iir0 + blck_0 && ir0 < ir0_end; ir0 += num_rows_per_vec_dot) {
+                     vec_dot(ne00, &tmp[ir0 - iir0], (num_rows_per_vec_dot > 1 ? 16 : 0), src0_row + ir0 * nb01, (num_rows_per_vec_dot > 1 ? nb01 : 0), src1_col, (num_rows_per_vec_dot > 1 ? src1_col_stride : 0), num_rows_per_vec_dot);
+                 }
+@@ -1316,7 +1364,8 @@ void ggml_compute_forward_mul_mat(
+ 
+     const bool src1_cont = ggml_is_contiguous(src1);
+ 
+-    if (!params->use_ref && src1_cont) {
++    const bool vollie_y1b = src0->type == GGML_TYPE_Q4_0 && vollie_y1b_on();
++    if (!params->use_ref && src1_cont && !vollie_y1b) {
+         for (int64_t i13 = 0; i13 < ne13; i13++)
+             for (int64_t i12 = 0; i12 < ne12; i12++)
+                 if (!llamafile_sgemm(params,
+@@ -1395,7 +1444,7 @@ UseGgmlGemm1:;
+     ggml_barrier(params->threadpool);
+ 
+ #if GGML_USE_LLAMAFILE
+-    if (!params->use_ref && src1->type != vec_dot_type) {
++    if (!params->use_ref && src1->type != vec_dot_type && !vollie_y1b) {
+         const void* wdata = (src1->type == vec_dot_type) ? src1->data : params->wdata;
+         const size_t row_size = ggml_row_size(vec_dot_type, ne10);
+ 

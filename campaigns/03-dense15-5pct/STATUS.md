@@ -428,3 +428,16 @@ full-set `-b 512` to be filled by the lead after about 22:15 KST).
 × 1.05). `-ub 1` evidence stays 40 chunks (1.0196 to 1.0250). UD passes E-T25. Next: the owner chooses the next research direction.
 
 | 2026-11-27 | 23 (lead) | E-T25 complete: UD inside on all three subjects, both builds, full set `-b 512`. |
+
+**Update 2026-11-28 (lead): UD kernel host tests (*host*; prices *estimated*).** Details `memo-13-work/tom-ud-kernels.md`; new patch
+`0011-y1b-decode.patch` (sha256 `89bc4874…3b19`, `VOLLIE_Y1B=1` with `--no-repack`; per-chunk PPL identical to the repack build on
+Llama-2 at `-b 512`, `-ub 32`, `-ub 1`: class B, not a numerics change).
+- **R1 (`gate` row skip, path A): fails** its kill line cold (2.57 to 2.60 per touched weight > 1.3): +2 to −6 ms at C 50, a loss at
+  C 40. On strict choice A, UD's speed side is under +0.3 tok/s.
+- **R3 (`down` half columns through K1, arm A′): passes** on host: 1.64 to 1.71 cold vs break-even 4.5 to 4.7 (C 50); bytes exactly
+  0.5556. A′ UD at host-cold costs −18.7 / −20.3 / −18.8 ms, 7.81 / 6.82 / 6.86 tok/s. Ebony's hot line (1.6) fires by 0.06 to 0.10.
+- **Y1b dense:** 1.46 to 1.49 hot; cold 1.50 to 2.46, `down` above B-T2's 1.8 line: both B-T2 kill lines fire cold.
+- All decisive numbers are host cold costs, which memo-05 showed can mislead; phone cells (0002 `y1b_rows`, 0003 K1 at 11,008 inputs
+  and keep 0.5) would settle them. Next: owner decides.
+
+| 2026-11-28 | 24 (lead) | UD kernels on host: R1 fails cold, R3 (A′) passes; Y1b decode bit-identical (0011). |
