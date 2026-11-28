@@ -1,0 +1,92 @@
+diff --git a/lib/research.dart b/lib/research.dart
+--- a/lib/research.dart
++++ b/lib/research.dart
+@@ -46,8 +46,8 @@
+ /// power saving and thermal status), T-D's smaps match by inode, the session label (deep-sleeping list) and the power-save
+ /// state read at the start, and T-A's cap probe ([capProbe], no model).
+ extension Research on Assistant {
+-  static const kit = 'r37';
+-  static const app = '1.37.0+37';
++  static const kit = 'r38';
++  static const app = '1.38.0+38';
+ 
+   /// r28: the owner's label for the session, chosen on the start screen before the kit can start (memo-31 §7: session A
+   /// with Samsung's deep-sleeping list, session B without). Recorded in the report and in every cap probe.
+@@ -910,7 +910,11 @@
+   /// Kit r37 (R76, patches/llama.cpp-c3/0009): x4s's split re-celled: x4i (kernel build), x4sc (cool pass: cpu | lead split |
+   /// cpu triplets at shares 0.40 to 0.55 ascending then descending, a feeder triplet at 0.25, the stall triplet), x4sg (launch +
+   /// flush against the GPU idle gap, 0 to 5 ms), x4sh (heat pass at share 0.45, last). Every other r36 block is dropped.
+-  static const c3Blocks = ['x4i', 'x4sc', 'x4sg', 'x4sh'];
++  ///
++  /// Kit r38 (R77, patches/llama.cpp-c3/0012): the CPU kernel costs of UD's A' half and Y1b, no GPU, no model: udk1 (K1 on
++  /// `down` 4096 x 11008 at keep 0.5 on real UD masks), udr1 (Y1b in place on real 70 % `gate` row lists, 11008 x 4096), y1bd
++  /// (dense Y1b against ggml plain / repack / KleidiAI at 4096 x 4096, 11008 x 4096, 4096 x 11008). Every r37 block is dropped.
++  static const c3Blocks = ['udk1', 'udr1', 'y1bd'];
+   /// r36: a block that has not returned after this long is recorded as hung (`hang`, the lines it wrote to
+   /// <dir>/x4-live-<blk>.txt plus `x4 hang blk=`) and the run goes on; the native call is left behind in its isolate.
+   static const c3BlockLimit = Duration(seconds: 600);
+@@ -962,10 +966,10 @@
+           'battery_c_start': b0.tempC, 'plugged_start': b0.plugged, 'model_unloaded': unloaded,
+           'kernel_release': DeviceProfile.unameRelease(), 'probe_dir': dir,
+           'free_start': st['internalFree'],
+-          'design': 'campaign 3 R76 x4s re-cell (memo-12-work/tom-r37-build.md): blocks '
++          'design': 'campaign 3 R77 UD and Y1b kernel costs (memo-13-work/tom-r38-build.md): blocks '
+               '${Research.c3Blocks.join(' ')}; r16 gate before each block (up to 180 s); cool start (no other probe before it); '
+-              'x4sc triplets cpu 0.5 s | split 1.0 s | cpu 0.5 s with 6 s rests; x4sg 5 s gap sweep; x4sh heat pass at share 0.45 '
+-              'until 10 s after the second CPU cap step or 45 s; canary line after every arm; event waits give up after 2 s; a block not done after '
++              'CPU only, weights streamed cold from DRAM; sets 4-7 and cpu 4; chains stock | lever | stock, arms 0.3 s warm-up + clock wait + 1.0 s measured; '
++              'canary line after every arm; a block not done after '
+               '${Research.c3BlockLimit.inSeconds} s is recorded as hung and the run goes on; report saved before and after every block',
+           'blocks': blocks,
+         };
+diff --git a/lib/settings_screen.dart b/lib/settings_screen.dart
+--- a/lib/settings_screen.dart
++++ b/lib/settings_screen.dart
+@@ -411,7 +411,7 @@
+           builder: (_, v, __) => OutlinedButton.icon(
+             onPressed: busy || optimizing || v == null ? null : assistant.capProbe,
+             icon: const Icon(Icons.speed_rounded),
+-            label: const Text('Run cap probe r37 (6 min, no model)'),
++            label: const Text('Run cap probe r38 (6 min, no model)'),
+           ),
+         ),
+       if (!assistant.researching && assistant.capProbeReport != null)
+@@ -434,7 +434,7 @@
+           builder: (_, v, __) => OutlinedButton.icon(
+             onPressed: busy || optimizing || v == null ? null : assistant.c3Probe,
+             icon: const Icon(Icons.memory_rounded),
+-            label: const Text('Run c3 probe r37 (R76: cool pass, gap sweep, heat pass)'),
++            label: const Text('Run c3 probe r38 (R77: UD and Y1b kernel costs)'),
+           ),
+         ),
+       if (!assistant.researching && assistant.c3ProbeReport != null)
+@@ -462,7 +462,7 @@
+             : OutlinedButton.icon(
+                 onPressed: busy || optimizing ? null : assistant.downloadKitModels,
+                 icon: const Icon(Icons.download_rounded),
+-                label: Text('Download kit r37 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
++                label: Text('Download kit r38 models: ${assistant.kitModelsMissing.map((m) => m.file).join(', ')} '
+                     '(${(assistant.kitMissingBytes / 1e9).toStringAsFixed(1)} GB, Wi-Fi)'),
+               ),
+       if (assistant.kitModelReady)
+@@ -477,7 +477,7 @@
+                 builder: (_, v, __) => OutlinedButton.icon(
+                   onPressed: busy || optimizing || v == null ? null : assistant.researchRun,
+                   icon: const Icon(Icons.science_rounded),
+-                  label: Text(v == null ? 'Run research kit r37: choose the session label first' : 'Run research kit r37 (R68 run list, ~50-110 min)'),
++                  label: Text(v == null ? 'Run research kit r38: choose the session label first' : 'Run research kit r38 (R68 run list, ~50-110 min)'),
+                 ),
+               ),
+       if (assistant.kitModelReady && !assistant.researching)
+diff --git a/pubspec.yaml b/pubspec.yaml
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -2,7 +2,7 @@
+ description: "Vollie — a private AI assistant that runs entirely on your Android phone."
+ publish_to: 'none'
+ 
+-version: 1.37.0+37
++version: 1.38.0+38
+ 
+ environment:
+   sdk: ^3.10.7

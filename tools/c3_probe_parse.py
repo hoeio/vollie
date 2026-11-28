@@ -5,7 +5,8 @@
 # the R75 x4 blocks x4i / x4a / x4b / x4f / x4c / x4d / x4e / x4s / x4r under "R75 x4 GPU join", see x4report; x3-tagged lines
 # printed inside an x4 block (build, load, identity, alone, cond) are reported there, not under R74); kit r36, 0008-x4f-fix:
 # x4 la dl= / stopped_at= / flush_recovered=, the x4f no-flush check (x4 la nf), x4 dl per block, x4 pin (x4i), x4 hang and the
-# block's 'hang' flag (the app's per-block timeout); kit r37, 0009-r37-cells: the R76 blocks x4sc / x4sg / x4sh under "R76", see r37report.
+# block's 'hang' flag (the app's per-block timeout); kit r37, 0009-r37-cells: the R76 blocks x4sc / x4sg / x4sh under "R76", see r37report;
+# kit r38, 0012-r38-cells: the R77 blocks udk1 / udr1 / y1bd (the 'ud' lines and their 'x4 <blk> can' canaries) under "R77", see r38report.
 # usage: python3 -I tools/c3_probe_parse.py <vollie-c3probe-r29-*.json>      python3 -I tools/c3_probe_parse.py --selftest
 # Every number it prints is *device* (from the phone's lines); the ratios are arithmetic on them. A cell whose workers did
 # not all stay on their cpu (cpu_ok < n) is marked '*' and should not be used for a claim.
@@ -27,7 +28,7 @@ def num(v):
 
 def parse(rep):
     out = {'p2': [], 'p2hot': [], 'p2col': [], 'p2col_id': None, 'x1': [], 'x2': [], 'x1gpu': [], 'p1': [], 'p1_info': {},
-           'p2d': [], 'p2d_id': None, 'hdr': [], 'r32': {t: [] for t in R32}, 'x3': [], 'x4': [],
+           'p2d': [], 'p2d_id': None, 'hdr': [], 'r32': {t: [] for t in R32}, 'x3': [], 'x4': [], 'ud': [],
            'gates': [], 'errors': [], 'meta': {k: rep.get(k) for k in ('kit', 'app', 'started', 'label', 'session_label',
                                                                           'deep_sleeping_list', 'stopped_early', 'model_unloaded')}}
     for b in rep.get('blocks', []):
@@ -55,6 +56,9 @@ def parse(rep):
                 out['p1'].append(f)
             elif tag == 'p1':
                 out['p1_info'].update(f)
+            elif tag == 'ud' or (tag == 'x4' and line.split('c3-probe:', 1)[1].split()[1:3] in (['udk1', 'can'], ['udr1', 'can'], ['y1bd', 'can'])):   # kit r38
+                w = line.split('c3-probe:', 1)[1].split()
+                out['ud'].append(('can' if tag == 'x4' else w[1], f, b.get('block')))
             elif tag in ('x4', 'x4d') or (tag == 'x3' and str(b.get('block', '')).startswith('x4')):
                 w = line.split('c3-probe:', 1)[1].split()
                 kind = 'x4d_' + w[1] if tag == 'x4d' else w[1]
@@ -312,6 +316,7 @@ def report(p):
     L += x3report(p['x3'])
     L += x4report(p['x4'])
     L += r37report(p['x4'])
+    L += r38report(p['ud'])
     L += header(p['hdr'])
     return '\n'.join(L)
 
@@ -603,6 +608,77 @@ def r37report(x4):
     return L
 
 
+
+R38_VOID = 0.03   # stock_diff above this voids a triplet (r37's 3 % cpu_diff rule; the prereg decides, this only marks it)
+
+
+def r38report(ud):
+    """kit r38 (R77): CPU kernel costs of UD's A' half and Y1b, as printed by the phone (*device*). k = lever ns per touched weight
+    / mean stock ns per weight of the two stock arms beside it (same shape, same cores); t_vs_stock = lever ms per matrix / that
+    mean. Void marks are echoed for the lead, not scored here."""
+    if not ud:
+        return []
+    by = {}
+    for kind, f, blk in ud:
+        by.setdefault(kind, []).append(dict(f, block=blk))
+    L = ['\nR77 (kit r38; numbers *device*; probe = kernels in the probe, ggml_* = the ggml mat-vec through a graph)']
+    for k in ('therm', 'identity', 'setup', 'backend', 'ggml', 'skip'):
+        for f in by.get(k, []):
+            L.append('  %s: ' % k + ', '.join('%s=%s' % kv_ for kv_ in f.items() if kv_[0] != 'block'))
+    ms = by.get('mask', [])
+    if ms:
+        L.append('\nreal UD masks embedded (%d)' % len(ms))
+        table(L, ms, ['subj', 't', 'l', 'ok', 'rows_kept', 'rows_list', 'in_kept', 'in_blk_min', 'in_blk_mean', 'in_blk_max', 'k1_bytes_share'])
+    trips = [dict(f, void='v' if (num(f.get('stock_diff')) or 0) > R38_VOID else '') for f in by.get('trip', [])]
+    if trips:
+        L.append('\ntriplets (v = stock arms more than %d %% apart)' % round(R38_VOID * 100))
+        table(L, trips, ['block', 'pos', 'cores', 'kern', 'subj', 'rows', 'k_in', 'd', 'st1_ms', 'lever_ms', 'st2_ms', 'stock_diff', 't_vs_stock', 'k', 'void'])
+    arms = labelled(by.get('arm', []))
+    if arms:
+        L.append('\narms (ms_p = p10/p50/p90 of the per-matrix times; labels as l1-l4)')
+        table(L, arms, ['block', 'pos', 't_ms', 'cores', 'kern', 'subj', 'rows', 'k_in', 'mats', 'ms_per_mat', 'ms_p', 'ns_per_touched_w', 'gbs', 'buft', 'labels',
+                        'ramp_ok', 'max_mhz', 'hr'])
+    cans = by.get('can', [])
+    if cans:
+        L.append('\ncanary after each arm')
+        table(L, cans, ['block', 'pos', 't_ms', 'c5_ns_per_w', 'c5_at', 'spin7_mhz', 'spin7_at', 'spin4_mhz', 'spin4_at', 'dcvsh', 'thermal_pwrlevel'])
+    # inputs for the lead (descriptive): per block and core set
+    T = {(f['block'], f['cores'], f['kern'], f['subj'], f['rows'], f['k_in']): f for f in trips}
+    g = lambda blk, cores, kern, rows, kin, fld, subj='-': num(T.get((blk, cores, kern, subj, rows, kin), {}).get(fld))
+    fm = lambda v: '-' if v is None else '%.3f' % v
+    L.append('\nR77 inputs (for the lead, not scored here):')
+    for cores in sorted({f['cores'] for f in trips}, key=len, reverse=True):
+        L.append('  cores %s:' % cores)
+        k1 = [g('udk1', cores, 'k1', '4096', '11008', 'k', s_) for s_ in R38_SUBJ]
+        L.append('    udk1 K1 `down` keep 0.5, k per touched weight (Yi / Llama-2 / DeepSeek): %s' % ' / '.join(map(fm, k1)))
+        yb = g('udr1', cores, 'y1b', '11008', '4096', 'k')
+        rk = [g('udr1', cores, 'rows', '11008', '4096', 'k', s_) for s_ in R38_SUBJ]
+        rt = [g('udr1', cores, 'rows', '11008', '4096', 'lever_ms', s_) for s_ in R38_SUBJ]
+        ym = g('udr1', cores, 'y1b', '11008', '4096', 'lever_ms')
+        L.append('    udr1 `gate` dense Y1b k %s; rows k (Yi / Llama-2 / DeepSeek) %s; rows ms / dense Y1b ms %s' % (
+            fm(yb), ' / '.join(map(fm, rk)), ' / '.join(fm(v / ym) if v and ym else '-' for v in rt)))
+        for rows, kin in (('4096', '4096'), ('11008', '4096'), ('4096', '11008')):
+            v = {k: g('y1bd', cores, k, rows, kin, 't_vs_stock') for k in ('y1b', 'ggml_plain', 'ggml_repack', 'ggml_kai')}
+            L.append('    y1bd %sx%s t_vs_stock: y1b %s, ggml_plain %s, ggml_repack %s, ggml_kai %s; y1b / ggml_kai %s' % (
+                rows, kin, fm(v['y1b']), fm(v['ggml_plain']), fm(v['ggml_repack']), fm(v['ggml_kai']),
+                fm(v['y1b'] / v['ggml_kai']) if v['y1b'] and v['ggml_kai'] else '-'))
+        kai = g('y1bd', cores, 'ggml_kai', '4096', '11008', 't_vs_stock')
+        L.append('    K1 `down` time / ggml_kai `down` time (two blocks, through their stock arms): %s' % ' / '.join(
+            fm(g('udk1', cores, 'k1', '4096', '11008', 't_vs_stock', s_) / kai) if kai and g('udk1', cores, 'k1', '4096', '11008', 't_vs_stock', s_) else '-' for s_ in R38_SUBJ))
+    L.append('  void marks: triplets %s; arms with ramp_ok=0: %s; arms off-core (*): %s; canaries with thermal_pwrlevel > 0: %s' % (
+        ','.join('%s:%s' % (f['block'], f['pos']) for f in trips if f['void']) or 'none',
+        ','.join('%s:%s' % (f['block'], f['pos']) for f in arms if f.get('ramp_ok') == '0') or 'none',
+        ','.join('%s:%s' % (f['block'], f['pos']) for f in arms if 'cpu_ok' in f and okmark(f)) or 'none',
+        ','.join('%s:%s' % (f['block'], f['pos']) for f in cans if (num(f.get('thermal_pwrlevel')) or 0) > 0) or 'none'))
+    bad = [f['block'] for f in by.get('identity', []) if any(v.split('/')[0] != v.split('/')[-1] if '/' in v else v != '1'
+                                                            for k, v in f.items() if k in ('k1_real', 'y1b', 'y1b_rows_real'))]
+    L.append('  identity not all equal: %s' % (','.join(bad) or 'none'))
+    return L
+
+
+R38_SUBJ = ('yi15-6b', 'llama2-7b', 'deepseek7b')
+
+
 MM_STAT = ('orig_data_size', 'compr_data_size', 'mem_used_total', 'mem_limit', 'mem_used_max', 'same_pages', 'pages_compacted',
            'huge_pages', 'huge_pages_since')
 
@@ -713,6 +789,7 @@ def selftest():
     x4selftest()
     x4r36selftest()
     x4r37selftest()
+    r38selftest()
     print('selftest ok')
 
 
@@ -935,6 +1012,54 @@ def x4r37selftest():
     assert 'G1 lf p50 at 0.5 ms - at 0.2 ms: 80.0 us' in r and '(1 of 2 samples)' in r and 'stop=second_cpu_step+10s' in r, r
     assert 'thermal_pwrlevel above 0 in C or G: none' in r and '| x4sc | 1 | 2056 | 0.0310 |' in r, r
     print('selftest r37 ok')
+
+
+R38A = ' cpu_ok=4/4 thr=4:1.000:4:0:0/386@-1,5:1.000:1:0:0/386@-1,6:1.000:0:0:0/386@-1,7:1.000:0:0:0/386@-1 mhz=1804/2419/2841->1804/2419/2841 mhz_range=1804/2419/2841..1804/2419/2841,n=10 ramp_s=0.31 ramp_ok=1 max_mhz=p4:2419/2419,p7:2841/2841'
+R38CAN = 'c3-probe: x4 %s can pos=%d t_ms=1331 c5_ns_per_w=0.0420 c5_pin=1 c5_at=5 c5_cur=2419200/2419200 spin7_mhz=2840 spin7_pin=1 spin7_at=7 spin7_cur=-/- spin4_mhz=2419 spin4_pin=1 spin4_at=4 spin4_cur=-/- dcvsh=cpu0:e2,cpu4:e2,cpu7:e2 isolated=empty thermal_pwrlevel=%d'
+def r38arm(blk, pos, kern, subj, rows, kin, d, ms, extra=R38A, buft='probe'):
+    return ('c3-probe: ud arm blk=%s pos=%d t_ms=%d cores=4,5,6,7 threads=4 kern=%s subj=%s rows=%d k_in=%d d=%.4f mats=600 ms_per_mat=%.4f ms_p=1/2/3 '
+            'ns_per_touched_w=0.1 bytes_per_mat=1 gbs=20.00 buft=%s hr=0.400 status=0' % (blk, pos, 1000 * pos, kern, subj, rows, kin, d, ms, buft)) + extra
+def r38trip(blk, pos, kern, subj, rows, kin, d, s1, lv, s2):
+    sm = (s1 + s2) / 2
+    return ('c3-probe: ud trip blk=%s pos=%d cores=4,5,6,7 kern=%s subj=%s rows=%d k_in=%d d=%.4f st1_ms=%.4f lever_ms=%.4f st2_ms=%.4f stock_diff=%.4f t_vs_stock=%.4f k=%.4f'
+            % (blk, pos, kern, subj, rows, kin, d, s1, lv, s2, abs(s1 - s2) / sm, lv / sm, lv / sm / d))
+R38TEST = {'kit': 'r38', 'blocks': [
+    {'block': 'udk1', 'rc': 100, 'ms': 30000, 'gate': {'timeout': False, 'series': []}, 'lines': [
+        'c3-probe: ud therm blk=udk1 when=before status=0 hr=0.410 thermal_pwrlevel=0 max_mhz=p0:1804/1804,p4:2419/2419,p7:2841/2841',
+        'c3-probe: ud mask subj=yi15-6b t=2 l=4 file16=8c24c3f415b585af ok=1 rows_kept=0.7000 rows_list=7704 in_kept=0.5000 in_blk_min=8 in_blk_mean=16.00 in_blk_max=23 k1_bytes_share=0.5556',
+        'c3-probe: ud identity blk=udk1 rows=256 k_in=11008 k1_real=12/12',
+        'c3-probe: ud setup blk=udk1 shape=4096x11008 arena_mb=256 copies=10 warm_s=0.3 meas_s=1.0 sets=4-7|4 setup_s=0.4',
+        r38arm('udk1', 0, 'stock', '-', 4096, 11008, 1, 2.0), R38CAN % ('udk1', 0, 0),
+        r38arm('udk1', 1, 'k1', 'yi15-6b', 4096, 11008, 0.5, 2.1), R38CAN % ('udk1', 1, 0),
+        r38arm('udk1', 2, 'stock', '-', 4096, 11008, 1, 2.0), R38CAN % ('udk1', 2, 1),
+        r38trip('udk1', 1, 'k1', 'yi15-6b', 4096, 11008, 0.5, 2.0, 2.1, 2.0),
+        'c3-probe: udk1 end s=30.0']},
+    {'block': 'udr1', 'rc': 100, 'ms': 30000, 'gate': {'timeout': False, 'series': []}, 'lines': [
+        'c3-probe: ud identity blk=udr1 rows=256 k_in=4096 y1b=1 y1b_rows_real=11/12',
+        r38arm('udr1', 1, 'y1b', '-', 11008, 4096, 1, 3.0, R38A.replace('ramp_ok=1', 'ramp_ok=0')),
+        r38trip('udr1', 1, 'y1b', '-', 11008, 4096, 1, 2.0, 3.0, 2.2),
+        r38trip('udr1', 3, 'rows', 'yi15-6b', 11008, 4096, 0.6999, 2.0, 3.6, 2.0)]},
+    {'block': 'y1bd', 'rc': 100, 'ms': 30000, 'gate': {'timeout': False, 'series': []}, 'lines': [
+        'c3-probe: ud skip blk=y1bd kern=ggml_kai rows=4096 k_in=4096 buft=CPU_KLEIDIAI got=none',
+        r38arm('y1bd', 5, 'ggml_kai', '-', 4096, 11008, 1, 2.5, ' set=4,5,6,7 threads=4 calls=100 cpu0_ok=1 ramp_ok=1', 'CPU_KLEIDIAI'),
+        r38trip('y1bd', 1, 'y1b', '-', 4096, 11008, 1, 2.0, 5.0, 2.0),
+        r38trip('y1bd', 5, 'ggml_kai', '-', 4096, 11008, 1, 2.0, 2.5, 2.0)]}]}
+
+
+def r38selftest():
+    p = parse(R38TEST)
+    assert len(p['ud']) == 19 and p['meta']['udk1_s'] == '30.0' and not p['x4'] and not p['errors'], (len(p['ud']), p['x4'], p['errors'])
+    r = report(p)
+    assert '| udk1 | 1 | 4,5,6,7 | k1 | yi15-6b | 4096 | 11008 | 0.5000 | 2.0000 | 2.1000 | 2.0000 | 0.0000 | 1.0500 | 2.1000 |  |' in r, r
+    assert '| udr1 | 1 | 4,5,6,7 | y1b | - | 11008 | 4096 | 1.0000 | 2.0000 | 3.0000 | 2.2000 | 0.0952 | 1.4286 | 1.4286 | v |' in r, r
+    assert 'udk1 K1 `down` keep 0.5, k per touched weight (Yi / Llama-2 / DeepSeek): 2.100 / - / -' in r, r
+    assert 'udr1 `gate` dense Y1b k 1.429; rows k (Yi / Llama-2 / DeepSeek) 2.572 / - / -; rows ms / dense Y1b ms 1.200 / - / -' in r, r
+    assert 'y1bd 4096x11008 t_vs_stock: y1b 2.500, ggml_plain -, ggml_repack -, ggml_kai 1.250; y1b / ggml_kai 2.000' in r, r
+    assert 'K1 `down` time / ggml_kai `down` time (two blocks, through their stock arms): 0.840 / - / -' in r, r
+    assert 'void marks: triplets udr1:1; arms with ramp_ok=0: udr1:1; arms off-core (*): none; canaries with thermal_pwrlevel > 0: udk1:2' in r, r
+    assert 'identity not all equal: udr1' in r and '| udk1 | 1 | 1000 | 4,5,6,7 | k1 | yi15-6b | 4096 | 11008 | 600 | 2.1000 | 1/2/3 |' in r, r
+    assert 'skip: blk=y1bd, kern=ggml_kai, rows=4096, k_in=4096, buft=CPU_KLEIDIAI, got=none' in r and '4:C,5:C,6:C,7:C' in r, r
+    print('selftest r38 ok')
 
 
 if __name__ == '__main__':
